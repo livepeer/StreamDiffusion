@@ -102,6 +102,14 @@ def main():
     # Get preprocessor name for display
     preprocessor_name = config.controlnets[0].preprocessor.replace("_", " ").title()
     
+    # Profiling variables
+    profile_times = {
+        'preprocessing': [],
+        'generation': [],
+        'display': [],
+        'total': []
+    }
+    
     try:
         while True:
             start_time = time.time()
@@ -115,13 +123,21 @@ def main():
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame_pil = Image.fromarray(frame_rgb)
             
-            # Update ControlNet with current frame efficiently 
+            # Profile preprocessing
+            prep_start = time.time()
             pipeline.update_control_image_efficient(frame_pil)
+            prep_time = time.time() - prep_start
+            profile_times['preprocessing'].append(prep_time)
             
-            # Generate image
+            # Profile generation
+            gen_start = time.time()
             x_output = pipeline(frame_pil)
             output_image = postprocess_image(x_output, output_type="pil")[0]
+            gen_time = time.time() - gen_start
+            profile_times['generation'].append(gen_time)
             
+            # Profile display processing
+            display_start = time.time()
             # Convert back to BGR for display
             output_cv = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGB2BGR)
             
@@ -152,13 +168,39 @@ def main():
                 # Simple side-by-side layout
                 combined = np.hstack([display_frame, output_display])
             
+            display_time = time.time() - display_start
+            profile_times['display'].append(display_time)
+            
             # Calculate FPS
             end_time = time.time()
             frame_time = end_time - start_time
             fps_counter.append(frame_time)
+            profile_times['total'].append(frame_time)
+            
             if len(fps_counter) > 30:  # Keep last 30 frames
                 fps_counter.pop(0)
             avg_fps = len(fps_counter) / sum(fps_counter) if fps_counter else 0
+            
+            # Show profiling info every 30 frames
+            if frame_count % 30 == 0 and frame_count > 0:
+                recent_prep = profile_times['preprocessing'][-30:]
+                recent_gen = profile_times['generation'][-30:]
+                recent_display = profile_times['display'][-30:]
+                recent_total = profile_times['total'][-30:]
+                
+                print(f"\n📊 Performance Profile (last 30 frames):")
+                print(f"  Preprocessing: {sum(recent_prep)/len(recent_prep)*1000:.1f}ms avg")
+                print(f"  Generation:    {sum(recent_gen)/len(recent_gen)*1000:.1f}ms avg")
+                print(f"  Display:       {sum(recent_display)/len(recent_display)*1000:.1f}ms avg")
+                print(f"  Total:         {sum(recent_total)/len(recent_total)*1000:.1f}ms avg")
+                print(f"  FPS:           {avg_fps:.1f}")
+                
+                # Check if tensor processing is being used
+                preprocessor = pipeline.preprocessors[0]
+                if preprocessor and hasattr(preprocessor, 'process_tensor'):
+                    print(f"  ✓ Tensor processing available for {type(preprocessor).__name__}")
+                else:
+                    print(f"  ⚠️  No tensor processing for {type(preprocessor).__name__}")
             
             # Add info overlay
             current_scale = pipeline.controlnet_scales[0]
@@ -171,6 +213,12 @@ def main():
             preprocessor_text = f"Preprocessor: {preprocessor_name}"
             cv2.putText(combined, preprocessor_text, (10, 60), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            
+            # Add timing info
+            if frame_count > 0:
+                timing_text = f"Prep: {prep_time*1000:.1f}ms | Gen: {gen_time*1000:.1f}ms"
+                cv2.putText(combined, timing_text, (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
             
             # Add labels
             if show_preprocessed and control_cv is not None:
