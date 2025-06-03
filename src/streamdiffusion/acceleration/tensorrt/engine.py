@@ -1,16 +1,77 @@
 from typing import *
 
 import torch
-from diffusers.models.autoencoder_tiny import AutoencoderTinyOutput
-from diffusers.models.unet_2d_condition import UNet2DConditionOutput
-from diffusers.models.vae import DecoderOutput
+from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTinyOutput
+from diffusers.models.controlnet import ControlNetOutput
+from diffusers.models.unets.unet_2d_condition import UNet2DConditionOutput
+from diffusers.models.autoencoders.vae import DecoderOutput
 from polygraphy import cuda
 
 from .utilities import Engine
 
 
+class UNet2DConditionControlNetModelEngine:
+    def __init__(
+        self, 
+        filepath: str, 
+        stream: cuda.Stream, 
+        use_cuda_graph: bool = False
+    ):
+        self.engine = Engine(filepath)
+        self.stream = stream
+        self.use_cuda_graph = use_cuda_graph
+
+        self.engine.load()
+        self.engine.activate()
+
+    def __call__(
+        self,
+        latent_model_input: torch.Tensor,
+        timestep: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        image,
+        **kwargs,
+    ) -> Any:
+        if timestep.dtype != torch.float32:
+            timestep = timestep.float()
+
+        self.engine.allocate_buffers(
+            shape_dict={
+                "sample": latent_model_input.shape,
+                "timestep": timestep.shape,
+                "encoder_hidden_states": encoder_hidden_states.shape,
+                "image": image.shape,
+                "latent": latent_model_input.shape,
+            },
+            device=latent_model_input.device,
+        )
+
+        noise_pred = self.engine.infer(
+            {
+                "sample": latent_model_input,
+                "timestep": timestep,
+                "encoder_hidden_states": encoder_hidden_states,
+                "image": image,
+            },
+            self.stream,
+            use_cuda_graph=self.use_cuda_graph,
+        )["latent"]
+        return UNet2DConditionOutput(sample=noise_pred)
+
+    def to(self, *args, **kwargs):
+        pass
+
+    def forward(self, *args, **kwargs):
+        pass
+
+
 class UNet2DConditionModelEngine:
-    def __init__(self, filepath: str, stream: cuda.Stream, use_cuda_graph: bool = False):
+    def __init__(
+        self, 
+        filepath: str, 
+        stream: cuda.Stream, 
+        use_cuda_graph: bool = False
+    ):
         self.engine = Engine(filepath)
         self.stream = stream
         self.use_cuda_graph = use_cuda_graph

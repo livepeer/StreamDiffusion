@@ -435,7 +435,10 @@ def optimize_onnx(
     model_data: BaseModel,
 ):
     onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
-    onnx.save(onnx_opt_graph, onnx_opt_path)
+    try:
+        onnx.save(onnx_opt_graph, onnx_opt_path)
+    except ValueError:
+        onnx.save(onnx_opt_graph, onnx_opt_path, save_as_external_data=True)
     del onnx_opt_graph
     gc.collect()
     torch.cuda.empty_cache()
