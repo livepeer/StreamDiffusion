@@ -7,15 +7,15 @@ from setuptools import find_packages, setup
 _deps = [
     "torch",
     "xformers",
-    "diffusers==0.24.0",
+    "diffusers>=0.31.0",
     "transformers",
     "accelerate",
     "fire",
     "omegaconf",
     "cuda-python",
-    "onnx==1.15.0",
-    "onnxruntime==1.16.3",
-    "protobuf==3.20.2",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.16.3",
+    "protobuf>=3.20.2",
     "colored",
     "pywin32;sys_platform == 'win32'"
 ]
