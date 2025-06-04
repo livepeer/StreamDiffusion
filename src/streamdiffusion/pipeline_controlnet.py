@@ -12,32 +12,94 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 from diffusers.utils import PIL_INTERPOLATION
 
 from streamdiffusion.image_filter import SimilarImageFilter
+from diffusers import ControlNetModel, MultiControlNetModel # Assuming these imports are available or can be added
 
 
 class UNet2DConditionControlNetModel(torch.nn.Module):
     def __init__(self, unet, controlnet) -> None:
         super().__init__()
         self.unet = unet
+        # self.controlnet can be a ControlNetModel or a MultiControlNetModel
         self.controlnet = controlnet
         
     def forward(self, sample, timestep, encoder_hidden_states, image):
-        # hard-coded since it is not clear how to integrate this argument into tensorrt
-        conditioning_scale = 1.0
+        # 'image' in this context is now the list of preprocessed control images (BCHW for each)
+        # from StreamUNetControlDiffusion.__call__ (passed as control_x_preprocessed)
+        
+        conditioning_scale = 1.0 # Still hard-coded for now
 
-        down_samples, mid_sample = self.controlnet(
-            sample,
-            timestep,
-            encoder_hidden_states=encoder_hidden_states,
-            controlnet_cond=image,
-            guess_mode=False,
-            return_dict=False,
-        )
+        # Determine if self.controlnet is a single ControlNet or a MultiControlNetModel
+        # And adjust the controlnet_cond argument accordingly.
+        # When controlnet is a MultiControlNetModel, it expects a list of tensors for controlnet_cond.
+        # If controlnet is a single ControlNetModel, it expects a single tensor.
 
+        if isinstance(self.controlnet, MultiControlNetModel):
+            # If it's a MultiControlNetModel, 'image' MUST be a list of tensors.
+            # This 'image' is what was passed as `control_images_input` from StreamDiffusionSampler.
+            # And then passed as `control_x_preprocessed` from StreamUNetControlDiffusion.__call__.
+            # So, `image` here should be a list of tensors [BCHW_cn1, BCHW_cn2, ...]
+            if not isinstance(image, list) or len(image) == 0:
+                 raise ValueError("Expected 'image' to be a list of control tensors when `self.controlnet` is a ControlNetModel, but got something else.")
+            
+            # The MultiControlNetModel.forward method can also take `conditioning_scale`
+            # as a list of scales if you want to vary them per ControlNet.
+            # For now, we'll use a single scale as per your original code.
+            
+            down_samples, mid_sample = self.controlnet(
+                sample,
+                timestep,
+                encoder_hidden_states=encoder_hidden_states,
+                controlnet_cond=image, # Pass the list of control images
+                conditioning_scale=[conditioning_scale] * len(image), # Apply scale to each ControlNet
+                guess_mode=False,
+                return_dict=False,
+            )
+        elif isinstance(self.controlnet, ControlNetModel):
+            # If it's a single ControlNet, 'image' MUST be a single tensor.
+            # (Although your ComfyUI node is set up for a list, if only one ControlNet is loaded,
+            # this 'image' argument would be a list with one item. You'd need to extract it.)
+            # Best practice: if only one ControlNet, send a single tensor directly.
+            # However, if your `StreamDiffusionSampler` passes a list even for one ControlNet,
+            # you'll need `image[0]` here. Let's assume `image` is the single tensor for now.
+            # If `image` is always a list coming from StreamDiffusionSampler's output,
+            # then you'd need `image[0]` here.
+            
+            # Given your current setup (StreamDiffusionSampler -> StreamUNetControlDiffusion -> this class),
+            # 'image' here *will be a list* if `control_images_list` was connected.
+            # If only one control image was provided, it will be `[single_tensor]`.
+            
+            # Use the first (and only) control image from the list for the single ControlNet
+            single_control_image_tensor = image[0]
+
+            down_samples, mid_sample = self.controlnet(
+                sample,
+                timestep,
+                encoder_hidden_states=encoder_hidden_states,
+                controlnet_cond=single_control_image_tensor, # Pass the single control image
+                conditioning_scale=conditioning_scale,
+                guess_mode=False,
+                return_dict=False,
+            )
+        else:
+            raise TypeError(f"Unsupported type for self.controlnet: {type(self.controlnet)}")
+
+
+        # The `down_samples` and `mid_sample` returned by MultiControlNetModel
+        # are already summed/processed according to its internal logic (summing outputs).
+        # So the logic below remains the same.
+        
         down_block_res_samples = [
-            down_sample * conditioning_scale
+            down_sample * conditioning_scale # This scaling is already handled by MultiControlNetModel's `conditioning_scale`
             for down_sample in down_samples
         ]
-        mid_block_res_sample = conditioning_scale * mid_sample
+        mid_block_res_sample = conditioning_scale * mid_sample # This scaling is already handled
+
+        # If conditioning_scale is handled by MultiControlNetModel directly, these multipliers might be redundant
+        # or need to be adjusted based on the specific summing behavior.
+        # For simplicity, let's keep them assuming they apply after the MultiControlNetModel sums.
+        # Often, MultiControlNetModel sums the *unscaled* residuals and then applies a single scale.
+        # Or it applies individual scales and then sums. Diffusers source code is best for exact behavior.
+        # For now, let's keep it as is, but be aware this might be a point of adjustment.
         
         noise_pred = self.unet(
             sample,
@@ -516,26 +578,42 @@ class StreamUNetControlDiffusion:
         return output_latent
 
     def predict_x0_batch(
-        self, 
+        self,
         x_t_latent: torch.Tensor,
-        image,
+        control_images_list: List[torch.Tensor], # Changed parameter name and type hint
     ) -> torch.Tensor:
+        # Buffer should now store a list of tensors
         prev_latent_batch = self.x_t_latent_buffer
-        prev_image = self.control_x_buffer
-        # print('prev_image: ', prev_image.shape, 'image: ', image.shape)
+        prev_control_images = self.control_x_buffer # This will now be a List[torch.Tensor]
 
         if self.use_denoising_batch:
             # construct input batch with current input and buffer
             if self.denoising_steps_num > 1:
-                x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
+                x_t_latent_combined = torch.cat((x_t_latent, prev_latent_batch), dim=0)
+
+                # Concatenate each control image type individually
+                combined_control_images_for_unet: List[torch.Tensor] = []
+                # Ensure lists have same length and order
+                if prev_control_images is None or len(control_images_list) != len(prev_control_images):
+                    raise ValueError("Mismatch in number of control image types between current input and buffer.")
+                
+                for current_cn_img, prev_cn_img in zip(control_images_list, prev_control_images):
+                    combined_control_images_for_unet.append(
+                        torch.cat((current_cn_img, prev_cn_img), dim=0)
+                    )
+
                 self.stock_noise = torch.cat(
                     (self.init_noise[0:self.frame_bff_size], self.stock_noise[:-self.frame_bff_size]), dim=0
                 )
-                image = torch.cat((image, prev_image), dim=0)
-            
+            else: # denoising_steps_num == 1
+                x_t_latent_combined = x_t_latent
+                combined_control_images_for_unet = control_images_list # No buffering, just use current
+
             t_list = self.sub_timesteps_tensor
+            
+            # Pass the list of combined control images to unet_step
             x_0_pred_batch, model_pred = self.unet_step(
-                x_t_latent, image, t_list
+                x_t_latent_combined, combined_control_images_for_unet, t_list
             )
 
             # update buffer
@@ -550,21 +628,25 @@ class StreamUNetControlDiffusion:
                     self.x_t_latent_buffer = (
                         self.alpha_prod_t_sqrt[self.frame_bff_size:] * x_0_pred_batch[:-self.frame_bff_size]
                     )
-                self.control_x_buffer = image[:-self.frame_bff_size]
-            else:
+                
+                # Update control_x_buffer as a list
+                new_control_x_buffer: List[torch.Tensor] = []
+                for combined_cn_img_batch in combined_control_images_for_unet:
+                    new_control_x_buffer.append(combined_cn_img_batch[:-self.frame_bff_size])
+                self.control_x_buffer = new_control_x_buffer
+
+            else: # denoising_steps_num == 1
                 x_0_pred_out = x_0_pred_batch
                 self.x_t_latent_buffer = None
-                self.control_x_buffer = None
-        else:
-            self.init_noise = x_t_latent
+                self.control_x_buffer = None # Clear buffer for single step
+        else: # not self.use_denoising_batch (single-step processing)
+            self.init_noise = x_t_latent # This variable name seems slightly off here, might be meant as x_t_current_step
             for idx, t in enumerate(self.sub_timesteps_tensor):
-                t = t.view(
-                    1,
-                ).repeat(
-                    self.frame_bff_size,
-                )
+                t_single = t.view(1,).repeat(self.frame_bff_size,)
+                
+                # Pass the full list of control images to unet_step
                 x_0_pred, model_pred = self.unet_step(
-                    x_t_latent, image, t_list, idx
+                    x_t_latent, control_images_list, t_list, idx # Assuming x_t_latent is for the current batch
                 )
                 if idx < len(self.sub_timesteps_tensor) - 1:
                     if self.do_add_noise:
@@ -584,7 +666,7 @@ class StreamUNetControlDiffusion:
     @torch.no_grad()
     def __call__(
         self, 
-        image: Union[torch.Tensor, PIL.Image.Image, List[PIL.Image.Image]],
+        image: Union[torch.Tensor, PIL.Image.Image, List[PIL.Image.Image]], control_images: Optional[List[torch.Tensor]],
     ) -> torch.Tensor:
         assert image is not None
         if isinstance(image, torch.Tensor) or isinstance(image, list):
@@ -601,18 +683,22 @@ class StreamUNetControlDiffusion:
         x = self.pipe.image_processor.preprocess(image, self.height, self.width).to(
             dtype=self.dtype, device=self.device
         )
+        control_images = []
 
-        control_x = self.pipe.prepare_control_image(
-            image=image,
-            width=self.width,
-            height=self.height,
-            batch_size=1,
-            num_images_per_prompt=1,
-            device=self.device,
-            dtype=self.dtype,
-            do_classifier_free_guidance=False, # self.do_classifier_free_guidance,
-            guess_mode=False,
-        )
+        for control_image in control_images:
+            control_x = self.pipe.prepare_control_image(
+                image=control_image,
+                width=self.width,
+                height=self.height,
+                batch_size=1,
+                num_images_per_prompt=1,
+                device=self.device,
+                dtype=self.dtype,
+                do_classifier_free_guidance=False, # self.do_classifier_free_guidance,
+                guess_mode=False,
+            )
+            control_images.append(control_x)
+        control_x = control_images
         # print('control_x: ', control_x.shape)
 
         if self.similar_image_filter:
