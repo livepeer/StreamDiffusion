@@ -47,8 +47,9 @@ def compile_vae_decoder(
     onnx_opt_path: str,
     engine_path: str,
     engine_build_options: dict = {},
+    dtype: torch.dtype = torch.float16, 
 ):
-    vae = vae.to(torch.device("cuda"))
+    vae = vae.to(torch.device("cuda"), dtype=dtype)
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
     builder.build(
         onnx_path,
@@ -120,11 +121,13 @@ def accelerate_with_tensorrt(
         device=stream.device,
         max_batch_size=max_batch_size,
         min_batch_size=min_batch_size,
+        fp16=True,
     )
     vae_encoder_model = VAEEncoder(
         device=stream.device,
         max_batch_size=max_batch_size,
         min_batch_size=min_batch_size,
+        fp16=True,
     )
 
     if not os.path.exists(unet_engine_path):
@@ -247,13 +250,18 @@ def accelerate_with_tensorrt_unetcontrol(
 
     if not os.path.exists(vae_decoder_engine_path):
         vae.forward = vae.decode
+        vae = vae.half()
+        assert all(t.dtype == torch.float16 for t in vae.parameters()) and \
+            all(b.dtype == torch.float16 for b in vae.buffers()), "VAE not fully in float16"
+
         compile_vae_decoder(
             vae,
             vae_decoder_model,
             create_onnx_path("vae_decoder", onnx_dir, opt=False),
             create_onnx_path("vae_decoder", onnx_dir, opt=True),
             vae_decoder_engine_path,
-            engine_build_options=engine_build_options
+            engine_build_options=engine_build_options,
+            dtype=stream.dtype,
         )
 
     if not os.path.exists(vae_encoder_engine_path):
@@ -264,7 +272,8 @@ def accelerate_with_tensorrt_unetcontrol(
             create_onnx_path("vae_encoder", onnx_dir, opt=False),
             create_onnx_path("vae_encoder", onnx_dir, opt=True),
             vae_encoder_engine_path,
-            engine_build_options=engine_build_options
+            engine_build_options=engine_build_options,
+            dtype=stream.dtype,
         )
 
     del vae

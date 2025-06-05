@@ -120,7 +120,7 @@ class StreamUNetControlDiffusion:
         self.unet = UNet2DConditionControlNetModel(
             pipe.unet, pipe.controlnet
         )
-        self.vae = pipe.vae
+        self.vae = pipe.config.vae
 
         self.inference_time_ema = 0
         self.prompt_update_idx = 1
@@ -188,9 +188,11 @@ class StreamUNetControlDiffusion:
         negative_prompt: str = "",
         guidance_scale: float = 1.2,
         delta: float = 1.0,
-        generator: Optional[torch.Generator] = torch.Generator(),
+        generator: Optional[torch.Generator] = None,
         seed: int = 2,
     ) -> None:
+        if generator is None:
+            generator = torch.Generator(device=self.device)
         self.generator = generator
         self.generator.manual_seed(seed)
         
@@ -284,7 +286,9 @@ class StreamUNetControlDiffusion:
         self.init_noise = torch.randn(
             (self.denoising_steps_num, 4, self.latent_height, self.latent_width),
             generator=generator,
-        ).to(device=self.device, dtype=self.dtype)
+            device=self.device,
+            dtype=self.dtype
+        )
         self.init_noise = torch.repeat_interleave(
             self.init_noise,
             repeats=self.frame_bff_size if self.use_denoising_batch else 1,

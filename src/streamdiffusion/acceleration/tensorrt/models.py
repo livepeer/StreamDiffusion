@@ -20,10 +20,12 @@
 import os
 import onnx
 from onnx import shape_inference
+import onnx.checker as checker
 import onnx_graphsurgeon as gs
 import torch
 import tempfile
 from polygraphy.backend.onnx.loader import fold_constants
+
 
 
 class Optimizer:
@@ -89,6 +91,7 @@ class BaseModel:
     ):
         self.name = "SD Model"
         self.fp16 = fp16
+        self.dtype = torch.float16 if self.fp16 else torch.float32
         self.device = device
         self.verbose = verbose
 
@@ -307,13 +310,12 @@ class UNet(BaseModel):
 
     def get_sample_input(self, batch_size, image_height, image_width):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
-        dtype = torch.float16 if self.fp16 else torch.float32
         return (
             torch.randn(
-                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
+                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=self.dtype, device=self.device
             ),
-            torch.ones((2 * batch_size,), dtype=torch.float32, device=self.device),
-            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
+            torch.ones((2 * batch_size,), dtype=self.dtype, device=self.device),
+            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=self.dtype, device=self.device),
         )
 
 
@@ -340,7 +342,7 @@ class UNetControlNet(BaseModel):
         self.name = "UNetControlNet"
 
     def get_input_names(self):
-        return ["sample", "timestep", "encoder_hidden_states", "image"]
+        return ["sample", "timestep", "encoder_hidden_states", "control_image"]
 
     def get_output_names(self):
         return ["latent"]
@@ -350,7 +352,7 @@ class UNetControlNet(BaseModel):
             "sample": {0: "2B", 2: "H", 3: "W"},
             "timestep": {0: "2B"},
             "encoder_hidden_states": {0: "2B"},
-            "image": {0: "2B", 2: '8H', 3: '8W'},
+            "control_image": {0: "2B", 2: '8H', 3: '8W'},
             "latent": {0: "2B", 2: "H", 3: "W"},
         }
 
@@ -380,7 +382,7 @@ class UNetControlNet(BaseModel):
                 (batch_size, self.text_maxlen, self.embedding_dim),
                 (max_batch, self.text_maxlen, self.embedding_dim),
             ],
-            'image': [(min_batch, 3, min_image_height, min_image_width),
+            'control_image': [(min_batch, 3, min_image_height, min_image_width),
                        (batch_size, 3, image_height, image_width),
                        (max_batch, 3, max_image_height, max_image_width)]
         }
@@ -397,16 +399,37 @@ class UNetControlNet(BaseModel):
 
     def get_sample_input(self, batch_size, image_height, image_width):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
-        dtype = torch.float16 if self.fp16 else torch.float32
         return (
             torch.randn(
-                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
+                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=self.dtype, device=self.device
             ),
-            torch.ones((2 * batch_size,), dtype=torch.float32, device=self.device),
-            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
-            torch.randn(2 * batch_size, 3, image_height, image_width, dtype=torch.float32, device=self.device),
+            torch.ones((2 * batch_size,), dtype=self.dtype, device=self.device),
+            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=self.dtype, device=self.device),
+            torch.randn(2 * batch_size, 3, image_height, image_width, dtype=self.dtype, device=self.device),
         )
 
+
+    def optimize(self, onnx_model):
+        """
+        Applies graph optimizations and shape inference to the provided ONNX model.
+        Returns a valid, cleaned-up ONNX model ready for export or TRT conversion.
+        """
+        optimizer = Optimizer(onnx_model, verbose=True)
+
+        # Optional: rename outputs if needed (commented out)
+        # optimizer.select_outputs([0], names=["latent"])
+
+        # Step-by-step optimization
+        optimizer.fold_constants()
+        optimizer.infer_shapes()
+
+        # Export ONNX graph
+        onnx_opt_graph = optimizer.cleanup(return_onnx=True)
+
+        # Validate ONNX graph integrity
+        checker.check_model(onnx_opt_graph)
+
+        return onnx_opt_graph
 
 sd1_hs = [
     *([(320, 1)]) * 3,
@@ -511,13 +534,12 @@ class ControlNet(UNet):
 
     def get_sample_input(self, batch_size, image_height, image_width):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
-        dtype = torch.float16 if self.fp16 else torch.float32
         return (
             torch.randn(
-                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
+                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=self.dtype, device=self.device
             ),
-            torch.ones((2 * batch_size,), dtype=torch.float32, device=self.device),
-            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
+            torch.ones((2 * batch_size,), dtype=self.dtype, device=self.device),
+            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=self.dtype, device=self.device),
         )
 
 
@@ -579,7 +601,7 @@ class VAE(BaseModel):
             4,
             latent_height,
             latent_width,
-            dtype=torch.float32,
+            dtype=self.dtype,
             device=self.device,
         )
 
@@ -646,6 +668,6 @@ class VAEEncoder(BaseModel):
             3,
             image_height,
             image_width,
-            dtype=torch.float32,
+            dtype=self.dtype,
             device=self.device,
         )

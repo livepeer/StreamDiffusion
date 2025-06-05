@@ -39,7 +39,7 @@ from polygraphy.backend.trt import (
     network_from_onnx_path,
     save_engine,
 )
-from polygraphy.backend.trt import util as trt_util
+
 
 from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
@@ -246,17 +246,25 @@ class Engine:
             self.context = self.engine.create_execution_context()
 
     def allocate_buffers(self, shape_dict=None, device="cuda"):
-        for idx in range(trt_util.get_bindings_per_profile(self.engine)):
-            binding = self.engine[idx]
-            if shape_dict and binding in shape_dict:
-                shape = shape_dict[binding]
+        for idx in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(idx)
+            mode = self.engine.get_tensor_mode(name)
+
+            if shape_dict and name in shape_dict:
+                shape = shape_dict[name]
             else:
-                shape = self.engine.get_binding_shape(binding)
-            dtype = trt.nptype(self.engine.get_binding_dtype(binding))
-            if self.engine.binding_is_input(binding):
-                self.context.set_binding_shape(idx, shape)
-            tensor = torch.empty(tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]).to(device=device)
-            self.tensors[binding] = tensor
+                shape = self.engine.get_tensor_shape(name)
+                if not shape or -1 in shape:
+                    raise ValueError(f"[!] Dynamic shape unresolved for tensor '{name}'. Provide shape_dict.")
+
+            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+            torch_dtype = numpy_to_torch_dtype_dict[dtype]
+
+            if mode == trt.TensorIOMode.INPUT:
+                self.context.set_input_shape(name, shape)
+
+            tensor = torch.empty(tuple(shape), dtype=torch_dtype, device=device)
+            self.tensors[name] = tensor
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
         for name, buf in feed_dict.items():
@@ -411,8 +419,11 @@ def export_onnx(
     opt_batch_size: int,
     onnx_opset: int,
 ):
-    with torch.inference_mode(), torch.autocast("cuda"):
+    with torch.inference_mode():
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
+        # sanity check input names
+        print("Exporting ONNX with inputs:", model_data.get_input_names())
+
         torch.onnx.export(
             model,
             inputs,
@@ -429,16 +440,49 @@ def export_onnx(
     torch.cuda.empty_cache()
 
 
+# def optimize_onnx(
+#     onnx_path: str,
+#     onnx_opt_path: str,
+#     model_data: BaseModel,
+# ):
+#     onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
+#     try:
+#         onnx.save(onnx_opt_graph, onnx_opt_path)
+#     except ValueError:
+#         onnx.save(onnx_opt_graph, onnx_opt_path, save_as_external_data=True)
+#     del onnx_opt_graph
+#     gc.collect()
+#     torch.cuda.empty_cache()
+
+
 def optimize_onnx(
     onnx_path: str,
     onnx_opt_path: str,
     model_data: BaseModel,
 ):
-    onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
+    import onnx
+    import gc
+
+    onnx_model = onnx.load(onnx_path)
+    onnx_opt_graph = model_data.optimize(onnx_model)  # <- Requires the .optimize() method we added
+    onnx.checker.check_model(onnx_opt_graph)  # Optional sanity check, useful during debugging
+
     try:
         onnx.save(onnx_opt_graph, onnx_opt_path)
     except ValueError:
+        # Fallback in case the model is too large
         onnx.save(onnx_opt_graph, onnx_opt_path, save_as_external_data=True)
+
     del onnx_opt_graph
     gc.collect()
     torch.cuda.empty_cache()
+
+# import shutil
+
+# def optimize_onnx(
+#     onnx_path: str,
+#     onnx_opt_path: str,
+#     model_data: BaseModel,
+# ):
+#     shutil.copyfile(onnx_path, onnx_opt_path)
+#     print(f"[✓] Skipped optimization — copied {onnx_path} to {onnx_opt_path}")
