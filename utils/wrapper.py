@@ -563,41 +563,52 @@ class StreamDiffusionWrapper:
                     print(f"⚠️ ControlNet architecture detection failed: {e}, compiling without ControlNet support")
 
                 engine_dir = Path(engine_dir)
-                unet_path = os.path.join(
-                    engine_dir,
-                    create_prefix(
-                        model_id_or_path=model_id_or_path,
-                        max_batch=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
-                    ),
-                    "unet.engine",
+                
+                # Create prefixes for engine paths with debug logging
+                unet_prefix = create_prefix(
+                    model_id_or_path=model_id_or_path,
+                    max_batch=stream.trt_unet_batch_size,
+                    min_batch_size=stream.trt_unet_batch_size,
                 )
-                vae_encoder_path = os.path.join(
-                    engine_dir,
-                    create_prefix(
-                        model_id_or_path=model_id_or_path,
-                        max_batch=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                    ),
-                    "vae_encoder.engine",
+                vae_prefix = create_prefix(
+                    model_id_or_path=model_id_or_path,
+                    max_batch=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                 )
-                vae_decoder_path = os.path.join(
-                    engine_dir,
-                    create_prefix(
-                        model_id_or_path=model_id_or_path,
-                        max_batch=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                    ),
-                    "vae_decoder.engine",
-                )
+                
+                # Construct full engine paths
+                unet_path = os.path.join(engine_dir, unet_prefix, "unet.engine")
+                vae_encoder_path = os.path.join(engine_dir, vae_prefix, "vae_encoder.engine")
+                vae_decoder_path = os.path.join(engine_dir, vae_prefix, "vae_decoder.engine")
+                
+                # 🔍 DEBUG: Print expected engine paths
+                print(f"🔍 Expected TensorRT engine paths:")
+                print(f"   UNet: {unet_path}")
+                print(f"   VAE Encoder: {vae_encoder_path}")
+                print(f"   VAE Decoder: {vae_decoder_path}")
+                print(f"🔍 Engine path components:")
+                print(f"   Model: {model_id_or_path}")
+                print(f"   UNet batch size: {stream.trt_unet_batch_size}")
+                print(f"   VAE batch size: {self.batch_size if self.mode == 'txt2img' else stream.frame_bff_size}")
+                print(f"   LCM LoRA: {use_lcm_lora}")
+                print(f"   Tiny VAE: {use_tiny_vae}")
+                print(f"   Mode: {self.mode}")
+                
+                # Check if engines exist
+                if os.path.exists(unet_path):
+                    print(f"✅ Found existing UNet engine")
+                else:
+                    print(f"❌ UNet engine missing - will rebuild from scratch")
+                    
+                if os.path.exists(vae_encoder_path):
+                    print(f"✅ Found existing VAE encoder engine")
+                else:
+                    print(f"❌ VAE encoder engine missing - will rebuild from scratch")
+                    
+                if os.path.exists(vae_decoder_path):
+                    print(f"✅ Found existing VAE decoder engine") 
+                else:
+                    print(f"❌ VAE decoder engine missing - will rebuild from scratch")
 
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)

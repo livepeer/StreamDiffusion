@@ -145,7 +145,7 @@ def accelerate_with_tensorrt(
     unet_model = UNet(
         fp16=True,
         device=stream.device,
-        max_batch_size=max_batch_size,
+        max_batch=max_batch_size,
         min_batch_size=min_batch_size,
         embedding_dim=text_encoder.config.hidden_size,
         unet_dim=unet.config.in_channels,
@@ -155,12 +155,12 @@ def accelerate_with_tensorrt(
     
     vae_decoder_model = VAE(
         device=stream.device,
-        max_batch_size=max_batch_size,
+        max_batch=max_batch_size,
         min_batch_size=min_batch_size,
     )
     vae_encoder_model = VAEEncoder(
         device=stream.device,
-        max_batch_size=max_batch_size,
+        max_batch=max_batch_size,
         min_batch_size=min_batch_size,
     )
 
