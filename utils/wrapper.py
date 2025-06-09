@@ -352,7 +352,7 @@ class StreamDiffusionWrapper:
         self, image_tensor: torch.Tensor, output_type: str = "pil"
     ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
         """
-        Postprocesses the image.
+        Postprocesses the image (OPTIMIZED VERSION)
 
         Parameters
         ----------
@@ -364,10 +364,79 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The postprocessed image.
         """
+        # Fast paths for non-PIL outputs (avoid unnecessary conversions)
+        if output_type == "latent":
+            return image_tensor
+        elif output_type == "pt":
+            # Denormalize on GPU, return tensor
+            return self._denormalize_on_gpu(image_tensor)
+        elif output_type == "np":
+            # Denormalize on GPU, then single efficient CPU transfer
+            denormalized = self._denormalize_on_gpu(image_tensor)
+            return denormalized.cpu().permute(0, 2, 3, 1).float().numpy()
+        
+        # PIL output path (optimized)
+        if output_type == "pil":
+            if self.frame_buffer_size > 1:
+                return self._tensor_to_pil_optimized(image_tensor)
+            else:
+                return self._tensor_to_pil_optimized(image_tensor)[0]
+        
+        # Fallback to original method for any unexpected output types
         if self.frame_buffer_size > 1:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)
         else:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
+    
+    def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Denormalize image tensor on GPU for efficiency
+        
+        Args:
+            image_tensor: Input tensor on GPU
+            
+        Returns:
+            Denormalized tensor on GPU, clamped to [0,1]
+        """
+        return (image_tensor / 2 + 0.5).clamp(0, 1)
+    
+    def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
+        """
+        Optimized tensor to PIL conversion with minimal CPU transfers
+        
+        Args:
+            image_tensor: Input tensor on GPU
+            
+        Returns:
+            List of PIL Images
+        """
+        # Denormalize on GPU first
+        denormalized = self._denormalize_on_gpu(image_tensor)
+        
+        # Convert to uint8 on GPU to reduce transfer size
+        # Scale to [0, 255] and convert to uint8 
+        uint8_tensor = (denormalized * 255).clamp(0, 255).to(torch.uint8)
+        
+        # Single efficient CPU transfer
+        cpu_tensor = uint8_tensor.cpu()
+        
+        # Convert to HWC format for PIL
+        # From BCHW to BHWC
+        cpu_tensor = cpu_tensor.permute(0, 2, 3, 1)
+        
+        # Convert to PIL images efficiently
+        pil_images = []
+        for i in range(cpu_tensor.shape[0]):
+            img_array = cpu_tensor[i].numpy()
+            
+            if img_array.shape[-1] == 1:
+                # Grayscale
+                pil_images.append(Image.fromarray(img_array.squeeze(-1), mode="L"))
+            else:
+                # RGB
+                pil_images.append(Image.fromarray(img_array))
+        
+        return pil_images
 
     def _load_model(
         self,
