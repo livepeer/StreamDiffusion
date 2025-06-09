@@ -211,6 +211,15 @@ class BaseControlNetPipeline:
             control_tensor = control_image.to(device=self.device, dtype=self.dtype)
         elif isinstance(control_image, str):
             control_image = load_image(control_image)
+            # Convert loaded image to tensor for GPU processing
+            import torchvision.transforms as transforms
+            to_tensor = transforms.ToTensor()
+            control_tensor = to_tensor(control_image).unsqueeze(0).to(device=self.device, dtype=self.dtype)
+        elif isinstance(control_image, Image.Image):
+            # Convert PIL Image to tensor for GPU processing
+            import torchvision.transforms as transforms
+            to_tensor = transforms.ToTensor()
+            control_tensor = to_tensor(control_image).unsqueeze(0).to(device=self.device, dtype=self.dtype)
         
         # Clear and rebuild active indices efficiently
         self._active_indices_cache.clear()
