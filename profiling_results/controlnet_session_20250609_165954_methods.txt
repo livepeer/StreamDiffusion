@@ -1,0 +1,128 @@
+tensorrt buffer optim
+
+
+ControlNet Methods Execution Times - DEBUG VERSION
+============================================================
+Session: controlnet_session_20250609_165954
+Total Runtime: 7.24 seconds
+
+DEBUG: ALL CAPTURED METHODS (First 30):
+--------------------------------------------------
+Total Time   File                                     Method                        
+------------------------------------------------------------------------------------------
+5.4630       wrapper.py:229                           __call__                      
+5.4630       wrapper.py:291                           img2img                       
+4.3210       base_controlnet_pipeline.py:1061         __call__                      
+4.3200       _contextlib.py:113                       decorate_context              
+4.3140       pipeline.py:439                          __call__                      
+2.1970       pipeline.py:389                          predict_x0_batch              
+2.1730       base_controlnet_pipeline.py:742          patched_unet_step_tensorrt    
+1.8200       __init__.py:1030                         synchronize                   
+1.6860       utilities.py:323                         infer                         
+1.0830       base_controlnet_pipeline.py:569          _get_controlnet_conditioning  
+1.0730       controlnet_engine.py:253                 __call__                      
+1.0710       controlnet_engine.py:72                  __call__                      
+1.0300       queue.py:154                             get                           
+1.0280       threading.py:295                         wait                          
+1.0050       engine.py:22                             __call__                      
+0.6370       wrapper.py:940                           update_control_image_efficient
+0.6360       base_controlnet_pipeline.py:186          update_control_image_efficient
+0.5920       Image.py:3241                            fromarray                     
+0.5770       wrapper.py:351                           postprocess_image             
+0.5760       wrapper.py:403                           _tensor_to_pil_optimized      
+0.5540       wrapper.py:328                           preprocess_image              
+0.5120       image_processor.py:607                   preprocess                    
+0.4600       base_controlnet_pipeline.py:478          _prepare_control_image        
+0.4530       depth_tensorrt.py:214                    process_tensor                
+0.3600       cuda.py:240                              synchronize                   
+0.3600       cuda.py:114                              stream_synchronize            
+0.3110       image_processor.py:156                   pil_to_numpy                  
+0.2610       depth_tensorrt.py:77                     infer                         
+0.2160       image_processor.py:171                   <listcomp>                    
+0.1280       Image.py:3157                            frombuffer                    
+
+Total ALL methods captured: 259
+
+FILTERED: METHODS FROM YOUR CONTROLNET FILES ONLY:
+------------------------------------------------------------
+Total Time   Own Time   Calls    File                           Method                                  
+--------------------------------------------------------------------------------------------------------------
+5.4630       0.0000     200      wrapper.py:229                 __call__                                
+5.4630       0.0100     200      wrapper.py:291                 img2img                                 
+4.3210       0.0000     200      base_controlnet_pipeline.py:1061 __call__                                
+2.1730       0.0390     200      base_controlnet_pipeline.py:742 patched_unet_step_tensorrt              
+1.6860       0.0080     800      utilities.py:323               infer                                   
+1.0830       0.0030     200      base_controlnet_pipeline.py:569 _get_controlnet_conditioning            
+1.0730       0.0020     200      controlnet_engine.py:253       __call__                                
+1.0710       0.0020     200      controlnet_engine.py:72        __call__                                
+1.0050       0.0020     200      engine.py:22                   __call__                                
+0.6370       0.0010     200      wrapper.py:940                 update_control_image_efficient          
+0.6360       0.0180     200      base_controlnet_pipeline.py:186 update_control_image_efficient          
+0.5770       0.0020     200      wrapper.py:351                 postprocess_image                       
+0.5760       0.0070     200      wrapper.py:403                 _tensor_to_pil_optimized                
+0.5540       0.0130     200      wrapper.py:328                 preprocess_image                        
+0.4600       0.0020     200      base_controlnet_pipeline.py:478 _prepare_control_image                  
+0.4530       0.0170     200      depth_tensorrt.py:214          process_tensor                          
+0.2610       0.0010     200      depth_tensorrt.py:77           infer                                   
+0.1140       0.0000     200      depth_tensorrt.py:135          engine                                  
+0.0870       0.0000     1        depth_tensorrt.py:56           activate                                
+0.0840       0.0020     200      engine.py:181                  decode                                  
+0.0720       0.0700     200      shape_base.py:372              stack                                   
+0.0660       0.0020     200      engine.py:161                  encode                                  
+0.0540       0.0120     200      controlnet_engine.py:41        _resolve_output_shapes                  
+0.0330       0.0330     13000    controlnet_engine.py:63        <genexpr>                               
+0.0260       0.0020     1        depth_tensorrt.py:51           load                                    
+0.0240       0.0110     200      wrapper.py:391                 _denormalize_on_gpu                     
+0.0130       0.0010     800      utilities.py:252               allocate_buffers                        
+0.0070       0.0050     800      utilities.py:282               _can_reuse_buffers                      
+0.0030       0.0030     200      controlnet_engine.py:146       _extract_controlnet_outputs             
+0.0020       0.0020     200      engine.py:106                  _add_controlnet_residuals               
+0.0010       0.0000     200      shape_base.py:362              _stack_dispatcher                       
+0.0010       0.0000     1        depth_tensorrt.py:62           allocate_buffers                        
+0.0000       0.0000     200      controlnet_engine.py:117       <dictcomp>                              
+0.0000       0.0000     200      base_controlnet_pipeline.py:593 <listcomp>                              
+0.0000       0.0000     200      shape_base.py:455              <listcomp>                              
+0.0000       0.0000     200      shape_base.py:447              <setcomp>                               
+0.0000       0.0000     200      shape_base.py:207              _arrays_for_stack_dispatcher            
+0.0000       0.0000     200      base_controlnet_pipeline.py:1065 __getattr__                             
+0.0000       0.0000     200      shape_base.py:443              <listcomp>                              
+0.0000       0.0000     400      base_controlnet_pipeline.py:194 <genexpr>                               
+0.0000       0.0000     400      controlnet_engine.py:308       is_using_tensorrt                       
+0.0000       0.0000     200      base_controlnet_pipeline.py:1082 _get_conditioning_context               
+0.0000       0.0000     200      base_controlnet_pipeline.py:1095 _get_additional_controlnet_kwargs       
+0.0000       0.0000     2        utilities.py:20                __init__                                
+0.0000       0.0000     2        utilities.py:113               set_colorterm                           
+0.0000       0.0000     1        depth_tensorrt.py:44           __init__                                
+0.0000       0.0000     1        utilities.py:30                is_color_exist                          
+0.0000       0.0000     1        utilities.py:52                is_style_exist                          
+
+Total ControlNet methods found: 48
+Total ALL methods: 259
+
+TARGET FILES WE'RE LOOKING FOR:
+- base_controlnet_pipeline.py
+- config.py
+- controlnet_pipeline.py
+- controlnet_sdxlturbo_pipeline.py
+- base.py
+- canny.py
+- depth.py
+- depth_tensorrt.py
+- lineart.py
+- openpose.py
+- passthrough.py
+- controlnet_engine.py
+- controlnet_models.py
+- controlnet_wrapper.py
+- engine_pool.py
+- model_detection.py
+- wrapper.py
+- builder.py
+- engine.py
+- models.py
+- utilities.py
+
+NOTES:
+- Total Time = time including calls to other functions
+- Own Time = time spent only in this method
+- Focus on methods with high Total Time
