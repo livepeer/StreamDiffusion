@@ -21,6 +21,15 @@ import queue
 from collections import deque
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import signal
+
+# Import profiler
+try:
+    from .profiler import start_profiling, stop_profiling
+except ImportError:
+    # Handle relative import when run as script
+    sys.path.append(os.path.dirname(__file__))
+    from profiler import start_profiling, stop_profiling
 
 
 class ControlNetGUI:
@@ -28,6 +37,9 @@ class ControlNetGUI:
         self.wrapper = wrapper
         self.config = config
         self.args = args
+        
+        # Profiling state
+        self.profiling_active = False
         
         # Create main window
         self.root = tk.Tk()
@@ -43,6 +55,10 @@ class ControlNetGUI:
         # Performance tracking
         self.fps_counter = deque(maxlen=30)
         self.frame_count = 0
+        
+        # TESTING: Hard-coded frame limit for scientific benchmarking
+        self.MAX_FRAMES_FOR_TESTING = 200  # Stop after 200 frames
+        print(f"TESTING MODE: Will automatically stop after {self.MAX_FRAMES_FOR_TESTING} frames")
         
         # GUI variables
         self.prompt_var = tk.StringVar(value=config.prompt if hasattr(config, 'prompt') else "")
@@ -77,6 +93,9 @@ class ControlNetGUI:
         self.status_var = tk.StringVar(value="Ready")
         
         self.setup_gui()
+        
+        # Setup signal handlers for clean profiling shutdown
+        self.setup_signal_handlers()
         
     def setup_gui(self):
         """Setup the GUI layout"""
@@ -500,7 +519,7 @@ class ControlNetGUI:
             
             self.running = True
             self.start_button.config(text="Stop Camera")
-            self.status_var.set("Running")
+            self.status_var.set("Running (Profiling Active)")
             
             # Start processing threads
             self.capture_thread = threading.Thread(target=self.capture_frames, daemon=True)
@@ -523,6 +542,8 @@ class ControlNetGUI:
         
         self.start_button.config(text="Start Camera")
         self.status_var.set("Stopped")
+        
+        # Profiling will be stopped by the process_frames thread when it exits
         
         # Clear queues
         while not self.frame_queue.empty():
@@ -556,19 +577,31 @@ class ControlNetGUI:
     
     def process_frames(self):
         """Process frames with StreamDiffusion"""
+        # Start profiling in the worker thread where ControlNet actually executes
+        if not self.profiling_active:
+            print("process_frames: Starting profiling session in worker thread...")
+            start_profiling()
+            self.profiling_active = True
+        
         while self.running:
             try:
                 frame = self.frame_queue.get(timeout=0.1)
                 start_time = time.time()
                 
+                # TESTING: Check frame limit
+                if self.frame_count >= self.MAX_FRAMES_FOR_TESTING:
+                    print(f"TESTING: Reached frame limit ({self.MAX_FRAMES_FOR_TESTING}), stopping...")
+                    self.root.after(0, self.stop_camera)
+                    break
+                
                 # Convert frame to PIL
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_pil = Image.fromarray(frame_rgb)
                 
-                # Update control image
+                # Update control image - THIS IS WHERE CONTROLNET PREPROCESSING HAPPENS
                 self.wrapper.update_control_image_efficient(frame_pil)
                 
-                # Generate image
+                # Generate image - THIS IS WHERE CONTROLNET DIFFUSION HAPPENS
                 output_image = self.wrapper(frame_pil)
                 
                 # Calculate processing time
@@ -585,6 +618,20 @@ class ControlNetGUI:
                 continue
             except Exception as e:
                 print(f"Processing error: {e}")
+        
+        # Stop profiling when processing thread ends
+        if self.profiling_active:
+            print("process_frames: Stopping profiling session in worker thread...")
+            try:
+                prof_file, summary_file = stop_profiling()
+                self.profiling_active = False
+                print(f"process_frames: Profiling results saved:")
+                print(f"  - Profile file: {prof_file}")
+                print(f"  - Summary file: {summary_file}")
+                print(f"  - Run 'snakeviz {prof_file}' to view interactive profile")
+            except Exception as e:
+                print(f"process_frames: Error saving profiling results: {e}")
+                self.profiling_active = False
     
     def display_results(self):
         """Display results and update GUI"""
@@ -596,9 +643,14 @@ class ControlNetGUI:
                 self.fps_counter.append(process_time)
                 self.frame_count += 1
                 
+                # TESTING: Progress indicator
+                if self.frame_count % 10 == 0:  # Log every 10 frames
+                    progress = (self.frame_count / self.MAX_FRAMES_FOR_TESTING) * 100
+                    print(f"TESTING: Processed {self.frame_count}/{self.MAX_FRAMES_FOR_TESTING} frames ({progress:.1f}%)")
+                
                 if self.show_fps_var.get() and len(self.fps_counter) > 0:
                     avg_fps = len(self.fps_counter) / sum(self.fps_counter)
-                    self.fps_var.set(f"FPS: {avg_fps:.1f}")
+                    self.fps_var.set(f"FPS: {avg_fps:.1f} | Frame: {self.frame_count}/{self.MAX_FRAMES_FOR_TESTING}")
                 
                 # Convert output to display format
                 output_array = np.array(output_image)
@@ -665,18 +717,44 @@ class ControlNetGUI:
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
             self.root.mainloop()
         except KeyboardInterrupt:
-            print("Interrupted by user")
+            print("run: Interrupted by user")
+        except Exception as e:
+            print(f"run: Unexpected error: {e}")
         finally:
-            self.cleanup()
+            self.cleanup_with_profiling()
     
     def on_closing(self):
         """Handle window closing"""
         if self.running:
             self.stop_camera()
-        self.cleanup()
+        self.cleanup_with_profiling()
         self.root.destroy()
         # Force exit the entire application
         sys.exit(0)
+    
+    def cleanup_with_profiling(self):
+        """Cleanup resources with profiling support"""
+        # Stop processing first to trigger profiling cleanup in worker thread
+        self.running = False
+        
+        # Give the worker thread a moment to stop profiling
+        time.sleep(0.5)
+        
+        # If profiling is still somehow active, try to stop it
+        if self.profiling_active:
+            print("cleanup_with_profiling: Saving any remaining profiling data...")
+            try:
+                prof_file, summary_file = stop_profiling()
+                self.profiling_active = False
+                print(f"cleanup_with_profiling: Profiling results saved:")
+                print(f"  - Profile file: {prof_file}")
+                print(f"  - Summary file: {summary_file}")
+                print(f"  - Run 'snakeviz {prof_file}' to view interactive profile")
+            except Exception as e:
+                print(f"cleanup_with_profiling: Error saving profiling results: {e}")
+        
+        # Standard cleanup
+        self.cleanup()
     
     def cleanup(self):
         """Cleanup resources"""
@@ -697,6 +775,16 @@ class ControlNetGUI:
                 self.result_queue.get_nowait()
         except:
             pass
+
+    def setup_signal_handlers(self):
+        """Setup signal handlers for clean shutdown"""
+        def signal_handler(signum, frame):
+            print("signal_handler: Received shutdown signal, stopping profiling and cleaning up...")
+            self.cleanup_with_profiling()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
 
 def main():
@@ -842,6 +930,14 @@ def main():
     
     print("Pipeline prepared successfully")
     print("Starting GUI...")
+    print("")
+    print("PROFILING ENABLED:")
+    print("- Profiling will start automatically when ControlNet processing begins")
+    print("- Profiling captures the actual ControlNet execution in the worker thread")  
+    print("- Profiling will stop when you click 'Stop Camera' or exit")
+    print("- Results will be saved to 'profiling_results/' directory")
+    print("- Use 'snakeviz <filename>.prof' to view interactive profile")
+    print("")
     
     # Create and run GUI
     gui = ControlNetGUI(wrapper, config, args)
