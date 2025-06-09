@@ -90,6 +90,10 @@ class Engine:
         self.buffers = OrderedDict()
         self.tensors = OrderedDict()
         self.cuda_graph_instance = None  # cuda graph
+        
+        # Buffer reuse optimization tracking
+        self._last_shape_dict = None
+        self._last_device = None
 
     def __del__(self):
         [buf.free() for buf in self.buffers.values() if isinstance(buf, cuda.DeviceArray)]
@@ -246,6 +250,13 @@ class Engine:
             self.context = self.engine.create_execution_context()
 
     def allocate_buffers(self, shape_dict=None, device="cuda"):
+        # Check if we can reuse existing buffers (OPTIMIZATION)
+        if self._can_reuse_buffers(shape_dict, device):
+            return
+            
+        # Clear existing buffers before reallocating
+        self.tensors.clear()
+        
         for idx in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(idx)
 
@@ -263,6 +274,51 @@ class Engine:
                                  dtype=numpy_to_torch_dtype_dict[dtype_np]) \
                           .to(device=device)
             self.tensors[name] = tensor
+        
+        # Cache allocation parameters for reuse check
+        self._last_shape_dict = shape_dict.copy() if shape_dict else None
+        self._last_device = device
+    
+    def _can_reuse_buffers(self, shape_dict=None, device="cuda"):
+        """
+        Check if existing buffers can be reused (avoiding expensive reallocation)
+        
+        Returns:
+            bool: True if buffers can be reused, False if reallocation needed
+        """
+        # No existing tensors - need to allocate
+        if not self.tensors:
+            return False
+        
+        # Device changed - need to reallocate
+        if not hasattr(self, '_last_device') or self._last_device != device:
+            return False
+        
+        # Check if shape_dict changed
+        if not hasattr(self, '_last_shape_dict'):
+            return False
+            
+        # Compare current vs cached shape_dict
+        if shape_dict is None and self._last_shape_dict is None:
+            return True
+        elif shape_dict is None or self._last_shape_dict is None:
+            return False
+        
+        # Compare shapes for all tensors
+        for name in self.tensors.keys():
+            if name in shape_dict:
+                new_shape = shape_dict[name]
+                cached_shape = self._last_shape_dict.get(name)
+                if cached_shape != new_shape:
+                    return False
+            else:
+                # Check engine default shape vs cached
+                default_shape = self.engine.get_tensor_shape(name)
+                cached_shape = self._last_shape_dict.get(name)
+                if cached_shape != default_shape:
+                    return False
+        
+        return True
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
         for name, buf in feed_dict.items():
