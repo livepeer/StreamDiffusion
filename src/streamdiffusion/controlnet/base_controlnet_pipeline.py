@@ -572,7 +572,7 @@ class BaseControlNetPipeline:
                                    encoder_hidden_states: torch.Tensor,
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
         """
-        Get combined conditioning from all active ControlNets
+        Get combined conditioning from all active ControlNets (OPTIMIZED VERSION)
         
         Args:
             x_t_latent: Latent input
@@ -584,17 +584,14 @@ class BaseControlNetPipeline:
             Tuple of (down_block_res_samples, mid_block_res_sample)
         """
         if not self.controlnets:
-            # print("🔍 DEBUG: No ControlNets configured, returning None conditioning")
             return None, None
         
-        #  Use cached active indices if available (from recent update_control_image_efficient call)
+        # Use cached active indices if available (from recent update_control_image_efficient call)
         if hasattr(self, '_active_indices_cache') and self._active_indices_cache:
-            # Verify cached indices are still valid (scales might have changed)
+            # Quick validation of cached indices
             active_indices = [
                 i for i in self._active_indices_cache 
                 if i < len(self.controlnets) and 
-                   self.controlnets[i] is not None and 
-                   self.controlnet_images[i] is not None and 
                    self.controlnet_scales[i] > 0
             ]
         else:
@@ -606,115 +603,70 @@ class BaseControlNetPipeline:
             ]
         
         if not active_indices:
-            # print("🔍 DEBUG: No active ControlNets found (all scales are 0 or missing images)")
             return None, None
         
-        # print(f"🎯 DEBUG: Processing {len(active_indices)} active ControlNets: {[self.controlnets[i].__class__.__name__ if hasattr(self.controlnets[i], '__class__') else str(type(self.controlnets[i])) for i in active_indices]}")
+        # Pre-compute batch expansion once for all ControlNets
+        main_batch_size = x_t_latent.shape[0]
         
-        #  Pre-compute common controlnet_kwargs base
+        # Pre-compute base controlnet_kwargs once
         base_kwargs = {
             'sample': x_t_latent,
             'timestep': timestep,
             'encoder_hidden_states': encoder_hidden_states,
             'return_dict': False,
         }
-        additional_kwargs = self._get_additional_controlnet_kwargs(**kwargs)
-        base_kwargs.update(additional_kwargs)
+        base_kwargs.update(self._get_additional_controlnet_kwargs(**kwargs))
         
-        #  Batch processing - collect all ControlNet outputs first, then combine vectorized
+        # Process all active ControlNets with optimized loop
         down_samples_list = []
         mid_samples_list = []
-        scales_list = []
         
-        # Process all active ControlNets and collect outputs
         for i in active_indices:
             controlnet = self.controlnets[i]
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
             
-            # print(f"🎮 DEBUG: Calling ControlNet {i} (scale: {scale}, type: {type(controlnet).__name__})")
-            
-            # Debug the TensorRT detection
-            has_is_using_tensorrt = hasattr(controlnet, 'is_using_tensorrt')
-            is_using_tensorrt = controlnet.is_using_tensorrt if has_is_using_tensorrt else False
-            has_use_tensorrt = hasattr(controlnet, 'use_tensorrt')
-            use_tensorrt = controlnet.use_tensorrt if has_use_tensorrt else False
-            has_trt_engine = hasattr(controlnet, 'trt_engine')
-            trt_engine_exists = (controlnet.trt_engine is not None) if has_trt_engine else False
-            # print(f"🔍 DEBUG: ControlNet {i} - has_is_using_tensorrt: {has_is_using_tensorrt}, is_using_tensorrt: {is_using_tensorrt}")
-            # print(f"🔍 DEBUG: ControlNet {i} - has_use_tensorrt: {has_use_tensorrt}, use_tensorrt: {use_tensorrt}, trt_engine_exists: {trt_engine_exists}")
-            
-            # Handle batch expansion for TensorRT ControlNets
+            # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
-            # Check if TensorRT engine exists (regardless of current failure state)
-            if hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None:
-                # TensorRT ControlNet detected - ensure batch dimension matches main inputs
-                main_batch_size = x_t_latent.shape[0]
-                control_batch_size = control_image.shape[0] if control_image.dim() == 4 else 1
-                
-                if control_batch_size != main_batch_size:
-                    # print(f"🔧 DEBUG: Expanding ControlNet batch from {control_batch_size} to {main_batch_size} for TensorRT")
-                    # Expand control image to match main batch size
-                    if control_image.dim() == 4:
-                        # Already has batch dim, expand it
-                        current_control_image = control_image.repeat(main_batch_size // control_batch_size, 1, 1, 1)
-                    else:
-                        # Add batch dim and expand
-                        current_control_image = control_image.unsqueeze(0).repeat(main_batch_size, 1, 1, 1)
+            if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
+                control_image.shape[0] != main_batch_size):
+                # Only expand if needed for TensorRT and batch sizes don't match
+                if control_image.dim() == 4:
+                    current_control_image = control_image.repeat(main_batch_size // control_image.shape[0], 1, 1, 1)
+                else:
+                    current_control_image = control_image.unsqueeze(0).repeat(main_batch_size, 1, 1, 1)
+            
+            # Optimized kwargs - reuse base dict and only update specific values
+            controlnet_kwargs = base_kwargs
+            controlnet_kwargs['controlnet_cond'] = current_control_image
+            controlnet_kwargs['conditioning_scale'] = scale
             
             # Forward pass through ControlNet
             try:
-                #  Use pre-computed base kwargs and only add specific values
-                controlnet_kwargs = base_kwargs.copy()
-                controlnet_kwargs.update({
-                    'controlnet_cond': current_control_image,
-                    'conditioning_scale': scale,
-                })
-                
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
-                scales_list.append(scale)
-                
-                # print(f"✅ DEBUG: ControlNet {i} completed successfully")
-                    
             except Exception as e:
-                print(f"❌ DEBUG: ControlNet {i} failed: {e}")
+                print(f"_get_controlnet_conditioning: ControlNet {i} failed: {e}")
                 continue
         
-        #  Vectorized combination instead of sequential addition
+        # Early exit if no outputs
         if not down_samples_list:
-            # print("🔍 DEBUG: No ControlNet outputs collected, returning None conditioning")
             return None, None
         
-        # print(f"🎯 DEBUG: Combining outputs from {len(down_samples_list)} ControlNets")
-        
-        # Combine outputs using vectorized operations
+        # Optimized combination - single pass for single ControlNet
         if len(down_samples_list) == 1:
-            # Single ControlNet - no combination needed
-            down_block_res_samples = down_samples_list[0]
-            mid_block_res_sample = mid_samples_list[0]
-        else:
-            # Multiple ControlNets - use vectorized addition
-            down_block_res_samples = None
-            mid_block_res_sample = None
-            
-            # Process down block samples
-            for down_samples in down_samples_list:
-                if down_block_res_samples is None:
-                    down_block_res_samples = down_samples
-                else:
-                    #  Vectorized in-place addition
-                    for j in range(len(down_block_res_samples)):
-                        down_block_res_samples[j] = down_block_res_samples[j] + down_samples[j]
-            
-            # Process middle block samples  
-            for mid_sample in mid_samples_list:
-                if mid_block_res_sample is None:
-                    mid_block_res_sample = mid_sample
-                else:
-                    #  Vectorized addition
-                    mid_block_res_sample = mid_block_res_sample + mid_sample
+            return down_samples_list[0], mid_samples_list[0]
+        
+        # Vectorized combination for multiple ControlNets
+        down_block_res_samples = down_samples_list[0]
+        mid_block_res_sample = mid_samples_list[0]
+        
+        # In-place addition for remaining ControlNets
+        for down_samples, mid_sample in zip(down_samples_list[1:], mid_samples_list[1:]):
+            for j in range(len(down_block_res_samples)):
+                down_block_res_samples[j] += down_samples[j]
+            mid_block_res_sample += mid_sample
         
         return down_block_res_samples, mid_block_res_sample
     
