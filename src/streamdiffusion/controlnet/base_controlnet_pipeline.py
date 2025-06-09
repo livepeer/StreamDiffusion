@@ -190,73 +190,72 @@ class BaseControlNetPipeline:
         Args:
             control_image: New control image to apply to all ControlNets
         """
+        # Early exit: check for active ControlNets first
+        if not any(scale > 0 for scale in self.controlnet_scales):
+            return
+        
         # Check if we need to reprocess (use id comparison for objects, content hash for simple types)
-        if self._last_input_frame is not None:
-            # For tensor/array inputs, compare by identity (same object)
-            if isinstance(control_image, (torch.Tensor, np.ndarray)) and isinstance(self._last_input_frame, type(control_image)):
-                if control_image is self._last_input_frame:
-                    return  # Same object, use cached results
-            # For PIL images, compare by identity
-            elif isinstance(control_image, Image.Image) and isinstance(self._last_input_frame, Image.Image):
-                if control_image is self._last_input_frame:
-                    return  # Same object, use cached results
+        if (self._last_input_frame is not None and 
+            isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
+            control_image is self._last_input_frame):
+            return  # Same object, use cached results
         
         self._last_input_frame = control_image
         
         # Clear cache for new frame
         self._preprocessed_cache.clear()
         
-        # Convert to tensor early for GPU processing
-        try:
-            control_tensor = self._convert_to_tensor_early(control_image)
-            use_tensor_processing = True
-        except Exception as e:
-            # Fallback to original input if tensor conversion fails
-            use_tensor_processing = False
+        # Convert to tensor early for GPU processing (optimized)
+        control_tensor = None
+        if isinstance(control_image, torch.Tensor):
+            control_tensor = control_image.to(device=self.device, dtype=self.dtype)
+        elif isinstance(control_image, str):
+            control_image = load_image(control_image)
         
-        # Reuse active indices list and clear only when needed
+        # Clear and rebuild active indices efficiently
         self._active_indices_cache.clear()
+        active_controlnets = []
         
-        # Group ControlNets by preprocessor type to avoid duplicate processing
+        # Group ControlNets by preprocessor to avoid duplicate processing
         preprocessor_groups = {}
-        for i in range(len(self.controlnets)):
-            if self.controlnet_scales[i] > 0:  # Only process active ones
-                self._active_indices_cache.append(i)  # Cache active indices
+        for i, scale in enumerate(self.controlnet_scales):
+            if scale > 0:  # Only process active ones
+                self._active_indices_cache.append(i)
                 preprocessor = self.preprocessors[i]
-                if preprocessor is not None:
-                    # Use cached preprocessor type name
-                    preprocessor_id = id(preprocessor)
-                    if preprocessor_id not in self._preprocessor_type_cache:
-                        self._preprocessor_type_cache[preprocessor_id] = type(preprocessor).__name__
-                    preprocessor_type = self._preprocessor_type_cache[preprocessor_id]
-                    
-                    if preprocessor_type not in preprocessor_groups:
-                        preprocessor_groups[preprocessor_type] = {
-                            'preprocessor': preprocessor,
-                            'indices': []
-                        }
-                    preprocessor_groups[preprocessor_type]['indices'].append(i)
+                
+                # Group by preprocessor object identity (faster than type name)
+                preprocessor_key = id(preprocessor) if preprocessor is not None else 'passthrough'
+                
+                if preprocessor_key not in preprocessor_groups:
+                    preprocessor_groups[preprocessor_key] = {
+                        'preprocessor': preprocessor,
+                        'indices': []
+                    }
+                preprocessor_groups[preprocessor_key]['indices'].append(i)
         
         # Early exit if no active ControlNets
         if not self._active_indices_cache:
             return
         
         # Process once per preprocessor type
-        for preprocessor_type, group in preprocessor_groups.items():
+        for preprocessor_key, group in preprocessor_groups.items():
             preprocessor = group['preprocessor']
             
-            # Check tensor processing capability once per group
-            has_tensor_processing = hasattr(preprocessor, 'process_tensor')
-            using_tensor = use_tensor_processing and has_tensor_processing
-            
-            # Use tensor processing if available and input is tensor
-            if using_tensor:
-                processed_image = self._prepare_control_image(control_tensor, preprocessor)
+            # Use tensor processing if available and we have a tensor
+            if (preprocessor is not None and 
+                hasattr(preprocessor, 'process_tensor') and 
+                control_tensor is not None):
+                try:
+                    processed_image = self._prepare_control_image(control_tensor, preprocessor)
+                except Exception:
+                    # Fallback to PIL processing
+                    processed_image = self._prepare_control_image(control_image, preprocessor)
             else:
                 processed_image = self._prepare_control_image(control_image, preprocessor)
             
-            # Cache the result
-            self._preprocessed_cache[preprocessor_type] = processed_image
+            # Cache the result using preprocessor key instead of type name
+            cache_key = f"prep_{preprocessor_key}"
+            self._preprocessed_cache[cache_key] = processed_image
             
             # Apply to all ControlNets using this preprocessor
             for index in group['indices']:
@@ -484,96 +483,79 @@ class BaseControlNetPipeline:
         if isinstance(control_image, str):
             control_image = load_image(control_image)
         
-        # Check if we can use tensor processing to avoid GPU→CPU transfers
-        if preprocessor is not None and isinstance(control_image, torch.Tensor) and hasattr(preprocessor, 'process_tensor'):
-            # Use GPU-native tensor processing
-            try:
-                processed_tensor = preprocessor.process_tensor(control_image)
-                
-                # Ensure correct format for ControlNet
-                if processed_tensor.dim() == 3:  # CHW
-                    processed_tensor = processed_tensor.unsqueeze(0)  # Add batch dim
-                
-                # Ensure correct device and dtype
-                processed_tensor = processed_tensor.to(device=self.device, dtype=self.dtype)
-                return self._post_process_control_image(processed_tensor)
-            except Exception as e:
-                # Fall through to PIL processing
-                pass
-        
-        # Check if input is already a tensor that we can work with directly
-        if isinstance(control_image, torch.Tensor) and preprocessor is None:
-            # Direct tensor path for passthrough
-            target_size = (self.stream.width, self.stream.height)
+        # Direct tensor processing path (fastest)
+        if isinstance(control_image, torch.Tensor):
+            # Fast path for tensor input with GPU preprocessor
+            if preprocessor is not None and hasattr(preprocessor, 'process_tensor'):
+                try:
+                    processed_tensor = preprocessor.process_tensor(control_image)
+                    if processed_tensor.dim() == 3:
+                        processed_tensor = processed_tensor.unsqueeze(0)
+                    return processed_tensor.to(device=self.device, dtype=self.dtype)
+                except Exception:
+                    pass  # Fall through to PIL processing
             
-            # Handle dimensions
-            if control_image.dim() == 4:
-                control_image = control_image[0]  # Remove batch dim
-            if control_image.dim() == 3 and control_image.shape[0] not in [1, 3]:
-                control_image = control_image.permute(2, 0, 1)  # HWC to CHW
-            
-            # Resize if needed using torch operations
-            current_size = control_image.shape[-2:]
-            if current_size != target_size:
-                import torch.nn.functional as F
+            # Direct tensor passthrough (no preprocessor)
+            if preprocessor is None:
+                target_size = (self.stream.width, self.stream.height)
+                
+                # Handle dimensions efficiently
+                if control_image.dim() == 4:
+                    control_image = control_image[0]
+                if control_image.dim() == 3 and control_image.shape[0] not in [1, 3]:
+                    control_image = control_image.permute(2, 0, 1)
+                
+                # Resize if needed
+                if control_image.shape[-2:] != target_size:
+                    if control_image.dim() == 3:
+                        control_image = control_image.unsqueeze(0)
+                    control_image = torch.nn.functional.interpolate(
+                        control_image, size=target_size, mode='bilinear', align_corners=False
+                    )
+                    if control_image.shape[0] == 1:
+                        control_image = control_image.squeeze(0)
+                
                 if control_image.dim() == 3:
                     control_image = control_image.unsqueeze(0)
                 
-                control_image = F.interpolate(
-                    control_image,
-                    size=target_size,
-                    mode='bilinear',
-                    align_corners=False
-                )
-                
-                if control_image.shape[0] == 1:
-                    control_image = control_image.squeeze(0)
-            
-            # Ensure correct format and device
-            if control_image.dim() == 3:
-                control_image = control_image.unsqueeze(0)
-            
-            control_image = control_image.to(device=self.device, dtype=self.dtype)
-            return self._post_process_control_image(control_image)
+                return control_image.to(device=self.device, dtype=self.dtype)
         
-        # Apply preprocessor if available (fallback to PIL processing)
+        # Apply preprocessor to non-tensor inputs
         if preprocessor is not None:
             control_image = preprocessor.process(control_image)
         
-        # Fast path for PIL Images (most common case)
+        # Optimized PIL to tensor conversion
         if isinstance(control_image, Image.Image):
-            # Resize first if needed
             target_size = (self.stream.width, self.stream.height)
             if control_image.size != target_size:
                 control_image = control_image.resize(target_size, Image.LANCZOS)
             
-            # Use cached transform
             control_tensor = self._cached_transform(control_image).unsqueeze(0)
-            control_tensor = control_tensor.to(device=self.device, dtype=self.dtype)
-            return self._post_process_control_image(control_tensor)
+            return control_tensor.to(device=self.device, dtype=self.dtype)
         
-        # Handle other types (less common, keep existing logic but optimize)
+        # Handle numpy arrays efficiently
         if isinstance(control_image, np.ndarray):
             if control_image.max() <= 1.0:
                 control_image = (control_image * 255).astype(np.uint8)
             control_image = Image.fromarray(control_image)
-        elif isinstance(control_image, torch.Tensor):
-            # Optimize tensor to PIL conversion
+            return self._prepare_control_image(control_image, None)  # Recursive call will hit PIL path
+        
+        # Handle other tensor types
+        if isinstance(control_image, torch.Tensor):
             if control_image.dim() == 4:
                 control_image = control_image[0]
             if control_image.dim() == 3 and control_image.shape[0] in [1, 3]:
                 control_image = control_image.permute(1, 2, 0)
             
-            # Keep on GPU if possible, convert to numpy only when needed
             if control_image.is_cuda:
                 control_image = control_image.cpu()
             control_image = control_image.numpy()
             if control_image.max() <= 1.0:
                 control_image = (control_image * 255).astype(np.uint8)
             control_image = Image.fromarray(control_image.astype(np.uint8))
+            return self._prepare_control_image(control_image, None)  # Recursive call will hit PIL path
         
-        # Resize and convert (recursive call will hit fast path)
-        return self._prepare_control_image(control_image, None)
+        raise ValueError(f"Unsupported control image type: {type(control_image)}")
     
     def _get_controlnet_conditioning(self, 
                                    x_t_latent: torch.Tensor,
