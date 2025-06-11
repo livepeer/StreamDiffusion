@@ -3,6 +3,7 @@ from typing import List, Optional, Union, Dict, Any, Tuple
 from PIL import Image
 import numpy as np
 from pathlib import Path
+import time
 
 from diffusers.models import ControlNetModel
 from diffusers.utils import load_image
@@ -60,6 +61,11 @@ class BaseControlNetPipeline:
         
         # Pre-allocate active indices list to avoid repeated allocations
         self._active_indices_cache = []
+        
+        # Profiling variables for 100-frame averaging
+        self._frame_count = 0
+        self._controlnet_time_sum = 0.0
+        self._unet_time_sum = 0.0
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -705,10 +711,17 @@ class BaseControlNetPipeline:
             # Get pipeline-specific conditioning context
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
+            # Time ControlNet inference
+            torch.cuda.synchronize()
+            controlnet_start = time.perf_counter()
+            
             # Get ControlNet conditioning
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
+            
+            torch.cuda.synchronize()
+            controlnet_time = time.perf_counter() - controlnet_start
             
             # FIXED: TensorRT engine now expects CORRECT varying spatial dimensions
             # No upsampling needed - tensors are passed through at their native sizes
@@ -718,6 +731,10 @@ class BaseControlNetPipeline:
             
             if mid_block_res_sample is not None:
                 pass
+            
+            # Time UNet inference
+            torch.cuda.synchronize()
+            unet_start = time.perf_counter()
             
             # Call TensorRT engine with ControlNet inputs (using diffusers-style interface)
             # print(f"🚀 DEBUG: Calling TensorRT UNet with ControlNet conditioning - down_blocks: {len(down_block_res_samples) if down_block_res_samples else 0}, mid_block: {'Yes' if mid_block_res_sample is not None else 'No'}")
@@ -730,7 +747,25 @@ class BaseControlNetPipeline:
                 mid_block_additional_residual=mid_block_res_sample,
             ).sample
             
-            # print(f"✅ DEBUG: TensorRT UNet with ControlNet completed successfully")
+            torch.cuda.synchronize()
+            unet_time = time.perf_counter() - unet_start
+            
+            # Accumulate timing for 100-frame averaging
+            self._frame_count += 1
+            self._controlnet_time_sum += controlnet_time
+            self._unet_time_sum += unet_time
+            
+            # Print average every 100 frames
+            if self._frame_count >= 100:
+                avg_controlnet = self._controlnet_time_sum / self._frame_count
+                avg_unet = self._unet_time_sum / self._frame_count
+                avg_total = avg_controlnet + avg_unet
+                print(f"[PROFILE] 100-frame avg - ControlNet: {avg_controlnet*1000:.2f}ms | UNet: {avg_unet*1000:.2f}ms | Total: {avg_total*1000:.2f}ms")
+                
+                # Reset counters
+                self._frame_count = 0
+                self._controlnet_time_sum = 0.0
+                self._unet_time_sum = 0.0
             
             # Continue with original CFG logic
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
@@ -807,10 +842,17 @@ class BaseControlNetPipeline:
             # Get pipeline-specific conditioning context
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
+            # Time ControlNet inference
+            torch.cuda.synchronize()
+            controlnet_start = time.perf_counter()
+            
             # Get ControlNet conditioning
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
+            
+            torch.cuda.synchronize()
+            controlnet_time = time.perf_counter() - controlnet_start
             
             # Prepare UNet kwargs
             unet_kwargs = {
@@ -829,8 +871,32 @@ class BaseControlNetPipeline:
             # Allow subclasses to add additional UNet kwargs (e.g., SDXL added_cond_kwargs)
             unet_kwargs.update(self._get_additional_unet_kwargs(**conditioning_context))
             
+            # Time UNet inference
+            torch.cuda.synchronize()
+            unet_start = time.perf_counter()
+            
             # Call UNet with ControlNet conditioning
             model_pred = self.stream.unet(**unet_kwargs)[0]
+            
+            torch.cuda.synchronize()
+            unet_time = time.perf_counter() - unet_start
+            
+            # Accumulate timing for 100-frame averaging
+            self._frame_count += 1
+            self._controlnet_time_sum += controlnet_time
+            self._unet_time_sum += unet_time
+            
+            # Print average every 100 frames
+            if self._frame_count >= 100:
+                avg_controlnet = self._controlnet_time_sum / self._frame_count
+                avg_unet = self._unet_time_sum / self._frame_count
+                avg_total = avg_controlnet + avg_unet
+                print(f"[PROFILE] 100-frame avg - ControlNet: {avg_controlnet*1000:.2f}ms | UNet: {avg_unet*1000:.2f}ms | Total: {avg_total*1000:.2f}ms")
+                
+                # Reset counters
+                self._frame_count = 0
+                self._controlnet_time_sum = 0.0
+                self._unet_time_sum = 0.0
             
             # Continue with original CFG logic (same as TensorRT version)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
