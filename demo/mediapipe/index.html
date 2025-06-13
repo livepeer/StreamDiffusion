@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediaPipe Demo</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="header">
+        <h1>MediaPipe Demo</h1>
+        <p>Real-time pose, hand, face detection and selfie segmentation</p>
+    </div>
+
+    <div class="controls">
+        <button id="startButton">Start Camera</button>
+        <button id="stopButton" disabled>Stop Camera</button>
+        <select id="detectionMode">
+            <option value="pose">Pose Detection</option>
+            <option value="hands">Hand Detection</option>
+            <option value="face">Face Mesh</option>
+            <option value="segmentation">Selfie Segmentation</option>
+        </select>
+    </div>
+
+    <div class="video-container">
+        <div class="video-panel">
+            <h3>Input</h3>
+            <video id="inputVideo" autoplay muted playsinline></video>
+        </div>
+        
+        <div class="video-panel">
+            <h3>MediaPipe Output</h3>
+            <canvas id="outputCanvas"></canvas>
+        </div>
+    </div>
+
+    <div class="status">
+        <span id="statusText">Click "Start Camera" to begin</span>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html> 
