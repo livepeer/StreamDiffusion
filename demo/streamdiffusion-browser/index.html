@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamDiffusion + MediaPipe Pose Demo</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils@0.6/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5/pose.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="header">
+        <h1>StreamDiffusion + MediaPipe Pose</h1>
+        <p>Client-side pose detection + Server-side AI generation</p>
+    </div>
+
+    <div class="controls">
+        <button id="startButton">Start Camera</button>
+        <button id="stopButton" disabled>Stop Camera</button>
+        <button id="generateButton" disabled>Start Generation</button>
+        <button id="stopGenButton" disabled>Stop Generation</button>
+        
+        <div class="prompt-section">
+            <input type="text" id="promptInput" placeholder="Enter your prompt..." value="anime style character, vibrant colors">
+            <input type="range" id="strengthSlider" min="0.5" max="2.0" step="0.1" value="1.0">
+            <span id="strengthValue">1.0</span>
+        </div>
+    </div>
+
+    <div class="video-container">
+        <div class="video-panel">
+            <h3>Camera Input</h3>
+            <video id="inputVideo" autoplay muted playsinline></video>
+        </div>
+        
+        <div class="video-panel">
+            <h3>Pose Detection</h3>
+            <canvas id="poseCanvas"></canvas>
+        </div>
+        
+        <div class="video-panel">
+            <h3>AI Generated</h3>
+            <canvas id="outputCanvas"></canvas>
+        </div>
+    </div>
+
+    <div class="status">
+        <span id="statusText">Click "Start Camera" to begin</span>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html> 

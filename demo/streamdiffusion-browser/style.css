@@ -1,0 +1,218 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    color: #333;
+}
+
+.header {
+    text-align: center;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    margin-bottom: 20px;
+}
+
+.header h1 {
+    color: white;
+    font-size: 2.5em;
+    margin-bottom: 10px;
+    font-weight: 300;
+}
+
+.header p {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 1.1em;
+}
+
+.controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 30px;
+    flex-wrap: wrap;
+    padding: 0 20px;
+}
+
+button {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 25px;
+    color: white;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+button:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+button:disabled {
+    background: #cccccc;
+    cursor: not-allowed;
+    transform: none;
+}
+
+#startButton, #generateButton {
+    background: #4CAF50;
+}
+
+#startButton:hover:not(:disabled), #generateButton:hover:not(:disabled) {
+    background: #45a049;
+}
+
+#stopButton, #stopGenButton {
+    background: #f44336;
+}
+
+#stopButton:hover:not(:disabled), #stopGenButton:hover:not(:disabled) {
+    background: #da190b;
+}
+
+.prompt-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 10px 15px;
+    border-radius: 25px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+#promptInput {
+    border: none;
+    padding: 8px 12px;
+    border-radius: 15px;
+    font-size: 14px;
+    min-width: 250px;
+    background: #f8f8f8;
+}
+
+#strengthSlider {
+    width: 100px;
+}
+
+#strengthValue {
+    font-weight: bold;
+    min-width: 30px;
+    color: #333;
+}
+
+.video-container {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    padding: 0 20px;
+    flex-wrap: wrap;
+}
+
+.video-panel {
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 15px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    backdrop-filter: blur(10px);
+    text-align: center;
+    min-width: 300px;
+    flex: 1;
+    max-width: 350px;
+}
+
+.video-panel h3 {
+    margin-bottom: 15px;
+    color: #333;
+    font-size: 1.2em;
+    font-weight: 500;
+}
+
+#inputVideo, #poseCanvas, #outputCanvas {
+    width: 100%;
+    max-width: 300px;
+    height: 225px;
+    border-radius: 10px;
+    background: #f0f0f0;
+    object-fit: cover;
+}
+
+#poseCanvas, #outputCanvas {
+    border: 2px solid #ddd;
+}
+
+.status {
+    text-align: center;
+    margin-top: 30px;
+    padding: 20px;
+}
+
+#statusText {
+    background: rgba(255, 255, 255, 0.9);
+    padding: 12px 24px;
+    border-radius: 25px;
+    color: #333;
+    font-weight: 500;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+/* Generation status indicators */
+.generating {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
+/* Responsive design */
+@media (max-width: 1024px) {
+    .video-container {
+        flex-direction: column;
+        align-items: center;
+    }
+    
+    .video-panel {
+        min-width: auto;
+        width: 100%;
+        max-width: 400px;
+    }
+    
+    .controls {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .prompt-section {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    #promptInput {
+        min-width: 200px;
+    }
+}
+
+@media (max-width: 768px) {
+    .header h1 {
+        font-size: 2em;
+    }
+    
+    .video-panel {
+        padding: 15px;
+    }
+    
+    #inputVideo, #poseCanvas, #outputCanvas {
+        max-width: 250px;
+        height: 190px;
+    }
+} 
