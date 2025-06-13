@@ -4,6 +4,7 @@ from .depth import DepthPreprocessor
 from .openpose import OpenPosePreprocessor
 from .lineart import LineartPreprocessor
 from .passthrough import PassthroughPreprocessor
+from .browser import BrowserPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -34,6 +35,7 @@ _preprocessor_registry = {
     "openpose": OpenPosePreprocessor,
     "lineart": LineartPreprocessor,
     "passthrough": PassthroughPreprocessor,
+    "browser": BrowserPreprocessor,
 }
 
 # Add TensorRT preprocessors if available
@@ -91,6 +93,7 @@ __all__ = [
     "OpenPosePreprocessor",
     "LineartPreprocessor",
     "PassthroughPreprocessor",
+    "BrowserPreprocessor",
     "get_preprocessor",
     "register_preprocessor",
     "list_preprocessors",

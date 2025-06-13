@@ -11,6 +11,7 @@ prompt: "a beautiful anime girl with purple hair, masterpiece"
 negative_prompt: "blurry, low quality, distorted, render, cartoon, oversaturated, noise"
 guidance_scale: 1.0 
 num_inference_steps: 50
+frame_buffer_size: 3
 
 # SD-XL Turbo optimizations
 use_taesd: true  # Use Tiny AutoEncoder XL for faster decoding
@@ -20,8 +21,8 @@ safety_checker: false
 pipeline_type: "sdxlturbo"
 use_lcm_lora: false  # SD-XL Turbo already has optimizations built-in
 use_tiny_vae: true
-acceleration: "none"  # Can be "tensorrt" for additional speed
-cfg_type: "none"
+acceleration: "tensorrt"  # Can be "tensorrt" for additional speed
+cfg_type: "self"
 seed: 12345
 
 controlnets:
@@ -32,4 +33,4 @@ controlnets:
       engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\depth_anything_vits14-fp16.engine"
       detect_resolution: 518
       image_resolution: 512
-    enabled: true 
+    enabled: true

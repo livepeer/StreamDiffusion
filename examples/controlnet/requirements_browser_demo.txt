@@ -1,0 +1,15 @@
+# StreamDiffusion Browser Pose Demo Requirements
+
+# Core dependencies (already included with StreamDiffusion)
+torch>=2.0.0
+diffusers>=0.21.0
+transformers>=4.25.0
+accelerate>=0.23.0
+Pillow>=9.0.0
+
+# Web server for browser demo
+Flask>=2.3.0
+Werkzeug>=2.3.0
+
+# Optional: For CORS support if accessing from different domains
+Flask-CORS>=4.0.0 
