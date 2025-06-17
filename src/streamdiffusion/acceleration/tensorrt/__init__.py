@@ -32,7 +32,6 @@ def compile_vae_encoder(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
@@ -40,7 +39,6 @@ def compile_vae_encoder(
         onnx_path,
         onnx_opt_path,
         engine_path,
-        opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
 
@@ -51,7 +49,6 @@ def compile_vae_decoder(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
     vae = vae.to(torch.device("cuda"))
@@ -60,7 +57,6 @@ def compile_vae_decoder(
         onnx_path,
         onnx_opt_path,
         engine_path,
-        opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
 
@@ -71,7 +67,6 @@ def compile_unet(
     onnx_path: str,
     onnx_opt_path: str,
     engine_path: str,
-    opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
     unet = unet.to(torch.device("cuda"), dtype=torch.float16)
@@ -80,7 +75,6 @@ def compile_unet(
         onnx_path,
         onnx_opt_path,
         engine_path,
-        opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
 
@@ -91,6 +85,9 @@ def accelerate_with_tensorrt(
     max_batch_size: int = 2,
     min_batch_size: int = 1,
     use_cuda_graph: bool = False,
+    use_dynamic_batch: bool = False,
+    frame_buffer_size: int = 1,
+    use_denoising_batch: bool = True,
     engine_build_options: dict = {},
 ):
     if "opt_batch_size" not in engine_build_options or engine_build_options["opt_batch_size"] is None:
@@ -142,88 +139,255 @@ def accelerate_with_tensorrt(
     vae_encoder_engine_path = f"{engine_dir}/vae_encoder.engine"
     vae_decoder_engine_path = f"{engine_dir}/vae_decoder.engine"
 
-    # Create UNet model with ControlNet support if needed
-    unet_model = UNet(
-        fp16=True,
-        device=stream.device,
-        max_batch_size=max_batch_size,
-        min_batch_size=min_batch_size,
-        embedding_dim=text_encoder.config.hidden_size,
-        unet_dim=unet.config.in_channels,
-        use_control=use_controlnet,
-        unet_arch=unet_arch if use_controlnet else None,
-    )
-    
-    vae_decoder_model = VAE(
-        device=stream.device,
-        max_batch_size=max_batch_size,
-        min_batch_size=min_batch_size,
-    )
-    vae_encoder_model = VAEEncoder(
-        device=stream.device,
-        max_batch_size=max_batch_size,
-        min_batch_size=min_batch_size,
-    )
+    # Import dynamic models if using dynamic batching
+    if use_dynamic_batch and use_denoising_batch:
+        from .dynamic_models import DynamicUNet, DynamicVAE, DynamicVAEEncoder
+        from .builder import compile_dynamic_unet, compile_dynamic_vae
+        
+        print(f"\n=== DYNAMIC BATCH CONFIGURATION ===")
+        print(f"Original parameters:")
+        print(f"  frame_buffer_size: {frame_buffer_size}")
+        print(f"  min_batch_size: {min_batch_size}")
+        print(f"  max_batch_size: {max_batch_size}")
+        print(f"  use_denoising_batch: {use_denoising_batch}")
+        
+        # Calculate optimal batch size based on frame buffer size
+        opt_batch_size = frame_buffer_size
+        
+        # UNet uses 2x batch size for CFG, so we need to account for this in our batch size ranges
+        unet_min_batch = 2 * min_batch_size
+        unet_opt_batch = 2 * opt_batch_size
+        unet_max_batch = 2 * max_batch_size
+        
+        # VAE uses regular batch sizes
+        vae_min_batch = min_batch_size
+        vae_opt_batch = opt_batch_size
+        vae_max_batch = max_batch_size
+        
+        # Update engine_build_options to reflect the UNet's actual optimal batch size
+        engine_build_options["opt_batch_size"] = unet_opt_batch
+        
+        print(f"Calculated batch sizes:")
+        print(f"  UNet batch sizes: min={unet_min_batch}, opt={unet_opt_batch}, max={unet_max_batch}")
+        print(f"  VAE batch sizes: min={vae_min_batch}, opt={vae_opt_batch}, max={vae_max_batch}")
+        print(f"Updated engine_build_options:")
+        for key, value in engine_build_options.items():
+            print(f"  {key}: {value}")
+        print("=====================================\n")
+        
+        # Create dynamic UNet model with ControlNet support if needed
+        unet_model = DynamicUNet(
+            fp16=True,
+            device=stream.device,
+            max_batch_size=unet_max_batch,    # Use UNet-specific max batch
+            min_batch_size=unet_min_batch,    # Use UNet-specific min batch
+            opt_batch_size=unet_opt_batch,    # Use UNet-specific opt batch
+            embedding_dim=text_encoder.config.hidden_size,
+            unet_dim=unet.config.in_channels,
+            use_control=use_controlnet,
+            unet_arch=unet_arch if use_controlnet else None,
+            enable_dynamic_batch=True,
+        )
+        
+        vae_decoder_model = DynamicVAE(
+            device=stream.device,
+            max_batch_size=vae_max_batch,     # Use VAE-specific max batch
+            min_batch_size=vae_min_batch,     # Use VAE-specific min batch  
+            opt_batch_size=vae_opt_batch,     # Use VAE-specific opt batch
+            enable_dynamic_batch=True,
+        )
+        vae_encoder_model = DynamicVAEEncoder(
+            device=stream.device,
+            max_batch_size=vae_max_batch,     # Use VAE-specific max batch
+            min_batch_size=vae_min_batch,     # Use VAE-specific min batch
+            opt_batch_size=vae_opt_batch,     # Use VAE-specific opt batch
+            enable_dynamic_batch=True,
+        )
+    else:
+        # Use standard models for fixed batch size
+        unet_model = UNet(
+            fp16=True,
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+            embedding_dim=text_encoder.config.hidden_size,
+            unet_dim=unet.config.in_channels,
+            use_control=use_controlnet,
+            unet_arch=unet_arch if use_controlnet else None,
+        )
+        
+        vae_decoder_model = VAE(
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+        )
+        vae_encoder_model = VAEEncoder(
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+        )
 
     if not os.path.exists(unet_engine_path):
-        if use_controlnet:
-            print("Compiling UNet with ControlNet support")
-            
-            # Create ControlNet-aware wrapper for ONNX export
-            control_input_names = unet_model.get_input_names()
-            wrapped_unet = create_controlnet_wrapper(unet, control_input_names)
-            
-            # Compile with ControlNet support
-            compile_unet(
-                wrapped_unet,  # Use wrapped UNet
-                unet_model,
-                create_onnx_path("unet", onnx_dir, opt=False),
-                create_onnx_path("unet", onnx_dir, opt=True),
-                unet_engine_path,
-                **engine_build_options,
-            )
+        if use_dynamic_batch and use_denoising_batch:
+            print("Compiling dynamic UNet with batch denoising support")
+            if use_controlnet:
+                print("- With ControlNet support")
+                # Create ControlNet-aware wrapper for ONNX export
+                control_input_names = unet_model.get_input_names()
+                wrapped_unet = create_controlnet_wrapper(unet, control_input_names)
+                
+                # Compile with dynamic batch and ControlNet support
+                compile_dynamic_unet(
+                    wrapped_unet,
+                    unet_model,
+                    create_onnx_path("unet", onnx_dir, opt=False),
+                    create_onnx_path("unet", onnx_dir, opt=True),
+                    unet_engine_path,
+                    min_batch_size=unet_min_batch,    # Use UNet-specific batch sizes
+                    max_batch_size=unet_max_batch,    # Use UNet-specific batch sizes  
+                    engine_build_options=engine_build_options,
+                )
+            else:
+                # Compile with dynamic batch support only
+                compile_dynamic_unet(
+                    unet,
+                    unet_model,
+                    create_onnx_path("unet", onnx_dir, opt=False),
+                    create_onnx_path("unet", onnx_dir, opt=True),
+                    unet_engine_path,
+                    min_batch_size=unet_min_batch,    # Use UNet-specific batch sizes
+                    max_batch_size=unet_max_batch,    # Use UNet-specific batch sizes
+                    engine_build_options=engine_build_options,
+                )
         else:
-            print("Compiling UNet without ControlNet support")
-            compile_unet(
-                unet,
-                unet_model,
-                create_onnx_path("unet", onnx_dir, opt=False),
-                create_onnx_path("unet", onnx_dir, opt=True),
-                unet_engine_path,
-                **engine_build_options,
-            )
+            # Standard fixed batch compilation
+            if use_controlnet:
+                print("Compiling UNet with ControlNet support")
+                
+                # Create ControlNet-aware wrapper for ONNX export
+                control_input_names = unet_model.get_input_names()
+                wrapped_unet = create_controlnet_wrapper(unet, control_input_names)
+                
+                # Compile with ControlNet support
+                compile_unet(
+                    wrapped_unet,  # Use wrapped UNet
+                    unet_model,
+                    create_onnx_path("unet", onnx_dir, opt=False),
+                    create_onnx_path("unet", onnx_dir, opt=True),
+                    unet_engine_path,
+                    **engine_build_options,
+                )
+            else:
+                print("Compiling UNet without ControlNet support")
+                compile_unet(
+                    unet,
+                    unet_model,
+                    create_onnx_path("unet", onnx_dir, opt=False),
+                    create_onnx_path("unet", onnx_dir, opt=True),
+                    unet_engine_path,
+                    **engine_build_options,
+                )
     else:
         print("Using existing UNet engine")
         del unet
 
     if not os.path.exists(vae_decoder_engine_path):
         vae.forward = vae.decode
-        compile_vae_decoder(
-            vae,
-            vae_decoder_model,
-            create_onnx_path("vae_decoder", onnx_dir, opt=False),
-            create_onnx_path("vae_decoder", onnx_dir, opt=True),
-            vae_decoder_engine_path,
-            **engine_build_options,
-        )
+        if use_dynamic_batch and use_denoising_batch:
+            print("Compiling dynamic VAE decoder with batch denoising support")
+            compile_dynamic_vae(
+                vae,
+                vae_decoder_model,
+                create_onnx_path("vae_decoder", onnx_dir, opt=False),
+                create_onnx_path("vae_decoder", onnx_dir, opt=True),
+                vae_decoder_engine_path,
+                min_batch_size=vae_min_batch,     # Use VAE-specific batch sizes
+                max_batch_size=vae_max_batch,     # Use VAE-specific batch sizes
+                engine_build_options=engine_build_options,
+            )
+        else:
+            compile_vae_decoder(
+                vae,
+                vae_decoder_model,
+                create_onnx_path("vae_decoder", onnx_dir, opt=False),
+                create_onnx_path("vae_decoder", onnx_dir, opt=True),
+                vae_decoder_engine_path,
+                **engine_build_options,
+            )
 
     if not os.path.exists(vae_encoder_engine_path):
         vae_encoder = TorchVAEEncoder(vae).to(torch.device("cuda"))
-        compile_vae_encoder(
-            vae_encoder,
-            vae_encoder_model,
-            create_onnx_path("vae_encoder", onnx_dir, opt=False),
-            create_onnx_path("vae_encoder", onnx_dir, opt=True),
-            vae_encoder_engine_path,
-            **engine_build_options,
-        )
+        if use_dynamic_batch and use_denoising_batch:
+            print("Compiling dynamic VAE encoder with batch denoising support")
+            compile_dynamic_vae(
+                vae_encoder,
+                vae_encoder_model,
+                create_onnx_path("vae_encoder", onnx_dir, opt=False),
+                create_onnx_path("vae_encoder", onnx_dir, opt=True),
+                vae_encoder_engine_path,
+                min_batch_size=min_batch_size,
+                max_batch_size=max_batch_size,
+                engine_build_options=engine_build_options,
+            )
+        else:
+            compile_vae_encoder(
+                vae_encoder,
+                vae_encoder_model,
+                create_onnx_path("vae_encoder", onnx_dir, opt=False),
+                create_onnx_path("vae_encoder", onnx_dir, opt=True),
+                vae_encoder_engine_path,
+                **engine_build_options,
+            )
 
     del vae
 
     cuda_stream = cuda.Stream()
 
-    # Create TensorRT engine with ControlNet awareness
-    stream.unet = UNet2DConditionModelEngine(unet_engine_path, cuda_stream, use_cuda_graph=use_cuda_graph)
+    # Create TensorRT engine with dynamic batch support if enabled
+    if use_dynamic_batch and use_denoising_batch:
+        from .dynamic_engine import DynamicUNet2DConditionModelEngine, DynamicAutoencoderKLEngine
+        
+        print("Creating dynamic TensorRT engines for batched denoising")
+        stream.unet = DynamicUNet2DConditionModelEngine(
+            unet_engine_path, 
+            cuda_stream, 
+            use_cuda_graph=use_cuda_graph,
+            enable_dynamic_batch=True,
+            min_batch_size=min_batch_size,
+            max_batch_size=max_batch_size,
+            opt_batch_size=opt_batch_size,
+        )
+        
+        stream.vae = DynamicAutoencoderKLEngine(
+            vae_encoder_engine_path,
+            vae_decoder_engine_path,
+            cuda_stream,
+            stream.pipe.vae_scale_factor,
+            use_cuda_graph=use_cuda_graph,
+            enable_dynamic_batch=True,
+            min_batch_size=min_batch_size,
+            max_batch_size=max_batch_size,
+            opt_batch_size=opt_batch_size,
+        )
+        
+        # Store dynamic batch metadata
+        setattr(stream.unet, 'dynamic_batch_enabled', True)
+        setattr(stream.vae, 'dynamic_batch_enabled', True)
+        print(f"Dynamic batch size range: [{min_batch_size}, {max_batch_size}], optimal: {opt_batch_size}")
+    else:
+        # Use standard engines
+        stream.unet = UNet2DConditionModelEngine(unet_engine_path, cuda_stream, use_cuda_graph=use_cuda_graph)
+        
+        stream.vae = AutoencoderKLEngine(
+            vae_encoder_engine_path,
+            vae_decoder_engine_path,
+            cuda_stream,
+            stream.pipe.vae_scale_factor,
+            use_cuda_graph=use_cuda_graph,
+        )
+        
+        setattr(stream.unet, 'dynamic_batch_enabled', False)
+        setattr(stream.vae, 'dynamic_batch_enabled', False)
     
     # Store ControlNet metadata on the engine for runtime use
     if use_controlnet:
@@ -244,13 +408,6 @@ def accelerate_with_tensorrt(
     else:
         setattr(stream.unet, 'use_control', False)
     
-    stream.vae = AutoencoderKLEngine(
-        vae_encoder_engine_path,
-        vae_decoder_engine_path,
-        cuda_stream,
-        stream.pipe.vae_scale_factor,
-        use_cuda_graph=use_cuda_graph,
-    )
     setattr(stream.vae, "config", vae_config)
     setattr(stream.vae, "dtype", vae_dtype)
 

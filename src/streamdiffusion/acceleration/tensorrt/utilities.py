@@ -434,9 +434,22 @@ def build_engine(
     opt_batch_size: int,
     build_static_batch: bool = False,
     build_dynamic_shape: bool = False,
+    build_dynamic_batch: bool = False,
+    min_batch_size: int = 1,
+    max_batch_size: int = 4,
     build_all_tactics: bool = False,
     build_enable_refit: bool = False,
 ):
+    print(f"\n=== BUILD_ENGINE ===")
+    print(f"  engine_path: {engine_path}")
+    print(f"  onnx_opt_path: {onnx_opt_path}")
+    print(f"  build_dynamic_batch: {build_dynamic_batch}")
+    print(f"  min_batch_size: {min_batch_size}")
+    print(f"  opt_batch_size: {opt_batch_size}")
+    print(f"  max_batch_size: {max_batch_size}")
+    print(f"  opt_image_height: {opt_image_height}")
+    print(f"  opt_image_width: {opt_image_width}")
+    
     _, free_mem, _ = cudart.cudaMemGetInfo()
     GiB = 2**30
     if free_mem > 6 * GiB:
@@ -445,13 +458,30 @@ def build_engine(
     else:
         max_workspace_size = 0
     engine = Engine(engine_path)
-    input_profile = model_data.get_input_profile(
-        opt_batch_size,
-        opt_image_height,
-        opt_image_width,
-        static_batch=build_static_batch,
-        static_shape=not build_dynamic_shape,
-    )
+    
+    # Get input profile with dynamic batch support if enabled
+    if build_dynamic_batch and hasattr(model_data, 'get_dynamic_input_profile'):
+        print(f"  Using dynamic input profile")
+        input_profile = model_data.get_dynamic_input_profile(
+            opt_batch_size,
+            opt_image_height,
+            opt_image_width,
+            min_batch_size=min_batch_size,
+            max_batch_size=max_batch_size,
+        )
+    else:
+        print(f"  Using standard input profile")
+        input_profile = model_data.get_input_profile(
+            opt_batch_size,
+            opt_image_height,
+            opt_image_width,
+            static_batch=build_static_batch,
+            static_shape=not build_dynamic_shape,
+        )
+    
+    print(f"  Generated input_profile: {input_profile}")
+    print("====================\n")
+    
     engine.build(
         onnx_opt_path,
         fp16=True,
@@ -472,9 +502,41 @@ def export_onnx(
     opt_image_width: int,
     opt_batch_size: int,
     onnx_opset: int,
+    enable_dynamic_batch: bool = False,
 ):
+    print(f"\n=== EXPORT_ONNX ===")
+    print(f"  onnx_path: {onnx_path}")
+    print(f"  opt_batch_size: {opt_batch_size}")
+    print(f"  opt_image_height: {opt_image_height}")
+    print(f"  opt_image_width: {opt_image_width}")
+    print(f"  enable_dynamic_batch: {enable_dynamic_batch}")
+    
     with torch.inference_mode(), torch.autocast("cuda"):
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
+        
+        print(f"  Sample inputs from model_data.get_sample_input():")
+        if isinstance(inputs, (list, tuple)):
+            for i, inp in enumerate(inputs):
+                if hasattr(inp, 'shape'):
+                    print(f"    Input {i}: {list(inp.shape)} ({inp.dtype})")
+                else:
+                    print(f"    Input {i}: {inp}")
+        else:
+            if hasattr(inputs, 'shape'):
+                print(f"    Single input: {list(inputs.shape)} ({inputs.dtype})")
+            else:
+                print(f"    Single input: {inputs}")
+        
+        # Get dynamic axes - use dynamic batch axes if enabled and supported
+        if enable_dynamic_batch and hasattr(model_data, 'get_dynamic_axes'):
+            dynamic_axes = model_data.get_dynamic_axes()
+            print(f"  Using dynamic axes: {dynamic_axes}")
+        else:
+            dynamic_axes = getattr(model_data, 'get_dynamic_axes', lambda: {})()
+            print(f"  Using standard dynamic axes: {dynamic_axes}")
+        
+        print("===================\n")
+        
         torch.onnx.export(
             model,
             inputs,
@@ -484,7 +546,7 @@ def export_onnx(
             do_constant_folding=True,
             input_names=model_data.get_input_names(),
             output_names=model_data.get_output_names(),
-            dynamic_axes=model_data.get_dynamic_axes(),
+            dynamic_axes=dynamic_axes,
         )
     del model
     gc.collect()
