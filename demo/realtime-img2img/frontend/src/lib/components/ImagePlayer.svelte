@@ -1,6 +1,6 @@
 <script lang="ts">
   import { lcmLiveStatus, LCMLiveStatus, streamId } from '$lib/lcmLive';
-  import { getPipelineValues } from '$lib/store';
+  import { getPipelineValues, fps } from '$lib/store';
 
   import Button from '$lib/components/Button.svelte';
   import Floppy from '$lib/icons/floppy.svelte';
@@ -9,6 +9,7 @@
   $: isLCMRunning = $lcmLiveStatus !== LCMLiveStatus.DISCONNECTED;
   $: console.log('isLCMRunning', isLCMRunning);
   let imageEl: HTMLImageElement;
+  
   async function takeSnapshot() {
     if (isLCMRunning) {
       await snapImage(imageEl, {
@@ -31,6 +32,12 @@
       class="aspect-square w-full rounded-lg"
       src={'/api/stream/' + $streamId}
     />
+    <!-- FPS Counter -->
+    <div class="absolute top-2 right-2">
+      <div class="bg-black bg-opacity-70 text-white text-sm font-mono px-2 py-1 rounded shadow-lg">
+        {$fps} FPS
+      </div>
+    </div>
     <div class="absolute bottom-1 right-1">
       <Button
         on:click={takeSnapshot}

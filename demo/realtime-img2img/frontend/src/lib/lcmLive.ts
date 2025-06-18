@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { fpsCalculator } from './store.js';
 
 
 export enum LCMLiveStatus {
@@ -30,6 +31,7 @@ export const lcmLiveActions = {
                 };
                 websocket.onclose = () => {
                     lcmLiveStatus.set(LCMLiveStatus.DISCONNECTED);
+                    fpsCalculator.reset();
                     console.log("Disconnected from websocket");
                 };
                 websocket.onerror = (err) => {
@@ -45,6 +47,7 @@ export const lcmLiveActions = {
                             break;
                         case "send_frame":
                             lcmLiveStatus.set(LCMLiveStatus.SEND_FRAME);
+                            fpsCalculator.recordFrame();
                             const streamData = getSreamdata();
                             websocket?.send(JSON.stringify({ status: "next_frame" }));
                             for (const d of streamData) {
@@ -58,12 +61,14 @@ export const lcmLiveActions = {
                             console.log("timeout");
                             lcmLiveStatus.set(LCMLiveStatus.TIMEOUT);
                             streamId.set(null);
+                            fpsCalculator.reset();
                             reject(new Error("timeout"));
                             break;
                         case "error":
                             console.log(data.message);
                             lcmLiveStatus.set(LCMLiveStatus.DISCONNECTED);
                             streamId.set(null);
+                            fpsCalculator.reset();
                             reject(new Error(data.message));
                             break;
                     }
@@ -73,6 +78,7 @@ export const lcmLiveActions = {
                 console.error(err);
                 lcmLiveStatus.set(LCMLiveStatus.DISCONNECTED);
                 streamId.set(null);
+                fpsCalculator.reset();
                 reject(err);
             }
         });
@@ -95,5 +101,6 @@ export const lcmLiveActions = {
         }
         websocket = null;
         streamId.set(null);
+        fpsCalculator.reset();
     },
 };
