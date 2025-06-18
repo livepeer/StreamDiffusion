@@ -226,6 +226,9 @@ class StreamDiffusionWrapper:
             delta=delta,
         )
 
+    def update_t_index_list(self, t_index_list: List[int]) -> None:
+        self.stream.update_t_index_list(t_index_list)
+
     def __call__(
         self,
         image: Optional[Union[str, Image.Image, torch.Tensor]] = None,

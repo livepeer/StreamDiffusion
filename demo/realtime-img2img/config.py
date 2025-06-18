@@ -17,6 +17,7 @@ class Args(NamedTuple):
     debug: bool
     acceleration: str
     engine_dir: str
+    controlnet_config: str
     frame_buffer_size: int
 
     def pretty_print(self):
@@ -105,6 +106,13 @@ parser.add_argument(
     type=str,
     default=ENGINE_DIR,
     help="Engine Dir",
+)
+parser.add_argument(
+    "--controlnet-config",
+    dest="controlnet_config",
+    type=str,
+    default=None,
+    help="Path to ControlNet YAML configuration file (optional)",
 )
 parser.add_argument(
     "--frame-buffer-size",

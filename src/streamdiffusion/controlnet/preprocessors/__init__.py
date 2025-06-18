@@ -3,6 +3,7 @@ from .canny import CannyPreprocessor
 from .depth import DepthPreprocessor
 from .openpose import OpenPosePreprocessor
 from .lineart import LineartPreprocessor
+from .standard_lineart import StandardLineartPreprocessor
 from .passthrough import PassthroughPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
@@ -40,6 +41,7 @@ _preprocessor_registry = {
     "depth": DepthPreprocessor,
     "openpose": OpenPosePreprocessor,
     "lineart": LineartPreprocessor,
+    "standard_lineart": StandardLineartPreprocessor,
     "passthrough": PassthroughPreprocessor,
 }
 
@@ -100,6 +102,7 @@ __all__ = [
     "DepthPreprocessor", 
     "OpenPosePreprocessor",
     "LineartPreprocessor",
+    "StandardLineartPreprocessor",
     "PassthroughPreprocessor",
     "get_preprocessor",
     "register_preprocessor",

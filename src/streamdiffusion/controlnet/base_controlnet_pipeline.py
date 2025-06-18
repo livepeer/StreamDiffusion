@@ -3,6 +3,8 @@ from typing import List, Optional, Union, Dict, Any, Tuple
 from PIL import Image
 import numpy as np
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import logging
 
 from diffusers.models import ControlNetModel
 from diffusers.utils import load_image
@@ -10,6 +12,8 @@ from diffusers.utils import load_image
 from ..pipeline import StreamDiffusion
 from .preprocessors import get_preprocessor
 
+# Setup logger for parallel processing
+logger = logging.getLogger(__name__)
 
 class BaseControlNetPipeline:
     """
@@ -60,6 +64,9 @@ class BaseControlNetPipeline:
         
         # Pre-allocate active indices list to avoid repeated allocations
         self._active_indices_cache = []
+        
+        # Thread pool for parallel preprocessor execution
+        self._preprocessor_executor = ThreadPoolExecutor(max_workers=4)
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -146,6 +153,18 @@ class BaseControlNetPipeline:
         self.preprocessors.clear()
         
         self._unpatch_stream_diffusion()
+        
+    def cleanup(self) -> None:
+        """Cleanup resources including thread pool"""
+        if hasattr(self, '_preprocessor_executor'):
+            self._preprocessor_executor.shutdown(wait=True)
+            
+    def __del__(self):
+        """Cleanup on object destruction"""
+        try:
+            self.cleanup()
+        except:
+            pass  # Ignore errors during cleanup
     
     def update_control_image(self, 
                            index: int, 
@@ -181,7 +200,29 @@ class BaseControlNetPipeline:
                 preprocessor = self.preprocessors[i]
                 processed_image = self._prepare_control_image(control_image, preprocessor)
                 self.controlnet_images[i] = processed_image
-    
+
+    def _process_single_preprocessor_sync(self, preprocessor_key, group, control_image, control_tensor=None):
+        """Process a single preprocessor group synchronously in thread"""
+        try:
+            preprocessor = group['preprocessor']
+            
+            # Use tensor processing if available and we have a tensor
+            if (preprocessor is not None and 
+                hasattr(preprocessor, 'process_tensor') and 
+                control_tensor is not None):
+                try:
+                    processed_image = self._prepare_control_image(control_tensor, preprocessor)
+                except Exception:
+                    # Fallback to PIL processing
+                    processed_image = self._prepare_control_image(control_image, preprocessor)
+            else:
+                processed_image = self._prepare_control_image(control_image, preprocessor)
+            
+            return preprocessor_key, group['indices'], processed_image
+        except Exception as e:
+            logger.error(f"update_control_image_efficient: Preprocessor {preprocessor_key} failed: {e}")
+            return preprocessor_key, group['indices'], None
+
     def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
         """
         Efficiently update all ControlNets with cache-aware preprocessing
@@ -245,29 +286,38 @@ class BaseControlNetPipeline:
         if not self._active_indices_cache:
             return
         
-        # Process once per preprocessor type
-        for preprocessor_key, group in preprocessor_groups.items():
-            preprocessor = group['preprocessor']
+        # PARALLEL EXECUTION: Use ThreadPoolExecutor for preprocessors
+        if len(preprocessor_groups) > 1:
+            # Submit all preprocessor tasks to thread pool
+            futures = [
+                self._preprocessor_executor.submit(
+                    self._process_single_preprocessor_sync, 
+                    prep_key, group, control_image, control_tensor
+                )
+                for prep_key, group in preprocessor_groups.items()
+            ]
             
-            # Use tensor processing if available and we have a tensor
-            if (preprocessor is not None and 
-                hasattr(preprocessor, 'process_tensor') and 
-                control_tensor is not None):
-                try:
-                    processed_image = self._prepare_control_image(control_tensor, preprocessor)
-                except Exception:
-                    # Fallback to PIL processing
-                    processed_image = self._prepare_control_image(control_image, preprocessor)
-            else:
-                processed_image = self._prepare_control_image(control_image, preprocessor)
-            
-            # Cache the result using preprocessor key instead of type name
-            cache_key = f"prep_{preprocessor_key}"
-            self._preprocessed_cache[cache_key] = processed_image
-            
-            # Apply to all ControlNets using this preprocessor
-            for index in group['indices']:
-                self.controlnet_images[index] = processed_image
+            # Wait for all to complete and apply results
+            for future in futures:
+                result = future.result()  # Blocks until completion
+                if result[2] is not None:  # processed_image exists
+                    prep_key, indices, processed_image = result
+                    # Cache the result
+                    cache_key = f"prep_{prep_key}"
+                    self._preprocessed_cache[cache_key] = processed_image
+                    # Apply to all ControlNets using this preprocessor
+                    for index in indices:
+                        self.controlnet_images[index] = processed_image
+        else:
+            # Single preprocessor - no threading overhead needed
+            prep_key, group = next(iter(preprocessor_groups.items()))
+            result = self._process_single_preprocessor_sync(prep_key, group, control_image, control_tensor)
+            if result[2] is not None:
+                prep_key, indices, processed_image = result
+                cache_key = f"prep_{prep_key}"
+                self._preprocessed_cache[cache_key] = processed_image
+                for index in indices:
+                    self.controlnet_images[index] = processed_image
     
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """

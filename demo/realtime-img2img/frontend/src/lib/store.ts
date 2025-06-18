@@ -13,6 +13,7 @@ export const deboucedPipelineValues: Readable<Record<string, any>>
 export const fps = writable<number>(0);
 
 // FPS calculator class
+/* Removed in favor of the new FPS tracking in the ControlNetConfig.svelte file
 class FPSCalculator {
     private frameTimestamps: number[] = [];
     private readonly maxSamples = 10; // Keep last 10 frames for calculation
@@ -50,5 +51,6 @@ class FPSCalculator {
 }
 
 export const fpsCalculator = new FPSCalculator();
+*/
 
 export const getPipelineValues = () => get(pipelineValues);
