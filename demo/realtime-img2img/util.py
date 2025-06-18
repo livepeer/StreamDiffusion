@@ -27,7 +27,15 @@ def bytes_to_pil(image_bytes: bytes) -> Image.Image:
 
 def pil_to_frame(image: Image.Image) -> bytes:
     frame_data = io.BytesIO()
-    image.save(frame_data, format="JPEG")
+
+    # TODO: Sometimes the response is a list of images? Need to investigate why (cn)
+    if isinstance(image, list):
+        for img in image:
+            img.save(frame_data, format="JPEG")
+    else:
+        # For single images
+        image.save(frame_data, format="JPEG")
+
     frame_data = frame_data.getvalue()
     return (
         b"--frame\r\n"
