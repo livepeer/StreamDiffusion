@@ -9,7 +9,7 @@ sys.path.append(
     )
 )
 
-from utils.wrapper import StreamDiffusionWrapper
+from utils.wrapper_batch import StreamDiffusionWrapper
 
 import torch
 import yaml
