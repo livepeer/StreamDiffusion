@@ -9,7 +9,7 @@ sys.path.append(
     )
 )
 
-from utils.wrapper import StreamDiffusionWrapper
+from utils.wrapper_batch import StreamDiffusionWrapper
 
 import torch
 
@@ -25,20 +25,9 @@ default_prompt = "Portrait of The Joker halloween costume, face painting, with ,
 default_negative_prompt = "black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity"
 
 page_content = """<h1 class="text-3xl font-bold">StreamDiffusion</h1>
-<h3 class="text-xl font-bold">Image-to-Image SD-Turbo</h3>
+<h3 class="text-xl font-bold"></h3>
 <p class="text-sm">
-    This demo showcases
-    <a
-    href="https://github.com/cumulo-autumn/StreamDiffusion"
-    target="_blank"
-    class="text-blue-500 underline hover:no-underline">StreamDiffusion
-</a>
-Image to Image pipeline using
-    <a
-    href="https://huggingface.co/stabilityai/sd-turbo"
-    target="_blank"
-    class="text-blue-500 underline hover:no-underline">SD-Turbo</a
-    > with a MJPEG stream server.
+   Frame Buffer Size Demo
 </p>
 """
 
@@ -71,13 +60,14 @@ class Pipeline:
 
     def __init__(self, args: Args, device: torch.device, torch_dtype: torch.dtype):
         params = self.InputParams()
+        self.args = args
         self.stream = StreamDiffusionWrapper(
             model_id_or_path=base_model,
             use_tiny_vae=args.taesd,
             device=device,
             dtype=torch_dtype,
-            t_index_list=[35, 45],
-            frame_buffer_size=1,
+            t_index_list=[25, 35],
+            frame_buffer_size=args.frame_buffer_size,
             width=params.width,
             height=params.height,
             use_lcm_lora=False,
@@ -87,7 +77,7 @@ class Pipeline:
             acceleration=args.acceleration,
             mode="img2img",
             use_denoising_batch=True,
-            cfg_type="none",
+            cfg_type="none", # "self", # "none" ## "initialize" and "full" does not work
             use_safety_checker=args.safety_checker,
             # enable_similar_image_filter=True,
             # similar_image_filter_threshold=0.98,
@@ -102,8 +92,23 @@ class Pipeline:
             guidance_scale=1.2,
         )
 
-    def predict(self, params: "Pipeline.InputParams") -> Image.Image:
-        image_tensor = self.stream.preprocess_image(params.image)
-        output_image = self.stream(image=image_tensor, prompt=params.prompt)
-
-        return output_image
+    def predict(self, params: "Pipeline.InputParams", frame_buffer=None) -> Image.Image:
+        # Simplified processing - the pipeline now handles multi-stream internally
+        if frame_buffer is not None and len(frame_buffer) > 0:
+            # Take the most recent frame from the buffer
+            latest_frame = frame_buffer[-1]
+            
+            # Ensure frame is RGB and correct size
+            latest_frame = latest_frame.convert("RGB").resize((params.width, params.height))
+            
+            # Process single frame through the wrapper
+            # The StreamDiffusion pipeline handles multi-stream processing internally
+            output_image = self.stream(image=latest_frame, prompt=params.prompt)
+            
+            return output_image
+        elif hasattr(params, 'image') and params.image is not None:
+            # Direct image processing
+            output_image = self.stream(image=params.image, prompt=params.prompt)
+            return output_image
+        else:
+            return None

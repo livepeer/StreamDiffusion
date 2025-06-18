@@ -91,6 +91,12 @@ class App:
                                 )
                                 continue
                             params.image = bytes_to_pil(image_data)
+                            
+                            # Add frame to buffer for batching
+                            self.conn_manager.add_frame_to_buffer(
+                                user_id, params.image, self.args.frame_buffer_size
+                            )
+                            
                         await self.conn_manager.update_data(user_id, params)
 
             except Exception as e:
@@ -115,7 +121,16 @@ class App:
                         params = await self.conn_manager.get_latest_data(user_id)
                         if params is None:
                             continue
-                        image = pipeline.predict(params)
+                        
+                        # Get frame buffer for batch processing
+                        frame_buffer = None
+                        if self.args.frame_buffer_size > 1:
+                            frame_buffer = self.conn_manager.get_frame_buffer(user_id)
+                            # Only process if we have enough frames
+                            if not self.conn_manager.is_frame_buffer_ready(user_id, self.args.frame_buffer_size):
+                                continue
+                        
+                        image = pipeline.predict(params, frame_buffer)
                         if image is None:
                             continue
                         frame = pil_to_frame(image)

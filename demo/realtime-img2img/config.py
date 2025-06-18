@@ -17,6 +17,7 @@ class Args(NamedTuple):
     debug: bool
     acceleration: str
     engine_dir: str
+    frame_buffer_size: int
 
     def pretty_print(self):
         print("\n")
@@ -31,6 +32,7 @@ SAFETY_CHECKER = os.environ.get("SAFETY_CHECKER", None) == "True"
 USE_TAESD = os.environ.get("USE_TAESD", "True") == "True"
 ENGINE_DIR = os.environ.get("ENGINE_DIR", "engines")
 ACCELERATION = os.environ.get("ACCELERATION", "tensorrt")
+FRAME_BUFFER_SIZE = int(os.environ.get("FRAME_BUFFER_SIZE", 1))
 
 default_host = os.getenv("HOST", "0.0.0.0")
 default_port = int(os.getenv("PORT", "7860"))
@@ -103,6 +105,13 @@ parser.add_argument(
     type=str,
     default=ENGINE_DIR,
     help="Engine Dir",
+)
+parser.add_argument(
+    "--frame-buffer-size",
+    dest="frame_buffer_size",
+    type=int,
+    default=FRAME_BUFFER_SIZE,
+    help="Frame buffer size for batching",
 )
 parser.set_defaults(taesd=USE_TAESD)
 config = Args(**vars(parser.parse_args()))
