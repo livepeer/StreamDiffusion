@@ -24,6 +24,8 @@ class Args(NamedTuple):
         print("\n")
         for field, value in self._asdict().items():
             print(f"{field}: {value}")
+            if field == "frame_buffer_size" and self.controlnet_config:
+                print(f"Warning: Frame Buffer Size Will Be Overridden By ControlNet Config")
         print("\n")
 
 
