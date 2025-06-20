@@ -5,6 +5,7 @@ from .openpose import OpenPosePreprocessor
 from .lineart import LineartPreprocessor
 from .standard_lineart import StandardLineartPreprocessor
 from .passthrough import PassthroughPreprocessor
+from .browser import BrowserPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -43,6 +44,7 @@ _preprocessor_registry = {
     "lineart": LineartPreprocessor,
     "standard_lineart": StandardLineartPreprocessor,
     "passthrough": PassthroughPreprocessor,
+    "browser": BrowserPreprocessor,
 }
 
 # Add TensorRT preprocessors if available

@@ -218,8 +218,22 @@ class Pipeline:
             )
 
         if self.use_controlnet:
-            # ControlNet mode: update control image and use PIL image
-            self.stream.update_control_image_efficient(params.image)
+            # Update each ControlNet with appropriate image using unified API
+            if 'controlnets' in self.controlnet_config:
+                for i, cn_config in enumerate(self.controlnet_config['controlnets']):
+                    if (cn_config['preprocessor'] == 'browser' and 
+                        'pose' in cn_config['model_id'].lower() and
+                        hasattr(params, 'pose_image') and params.pose_image is not None):
+                        # Send pose image to browser preprocessor
+                        self.stream.update_control_image_efficient(params.pose_image, index=i)
+                        print(f"predict: Sent pose image to ControlNet {i} (browser preprocessor)")
+                    else:
+                        # Send webcam image to other preprocessors
+                        self.stream.update_control_image_efficient(params.image, index=i)
+            else:
+                # Fallback for no ControlNet config - update all
+                self.stream.update_control_image_efficient(params.image)
+                
             output_image = self.stream(params.image)
         else:
             # Standard mode: use original logic with preprocessed tensor
@@ -227,3 +241,5 @@ class Pipeline:
             output_image = self.stream(image=image_tensor, prompt=params.prompt)
 
         return output_image
+
+

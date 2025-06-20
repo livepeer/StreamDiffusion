@@ -118,7 +118,24 @@
 
   function getSreamdata() {
     if (isImageMode) {
-      return [getPipelineValues(), $onFrameChangeStore?.blob];
+      const frameData = $onFrameChangeStore;
+      const pipelineValues = getPipelineValues();
+      
+      // Add pose detection flag to pipeline values
+      const enhancedPipelineValues = {
+        ...pipelineValues,
+        has_pose_image: frameData?.hasPoseImage || false
+      };
+      
+      // Return data array - params, main image, and optionally pose image
+      const data = [enhancedPipelineValues, frameData?.blob];
+      
+      // Add pose image if available
+      if (frameData?.hasPoseImage && frameData?.poseBlob) {
+        data.push(frameData.poseBlob);
+      }
+      
+      return data;
     } else {
       return [$deboucedPipelineValues];
     }
@@ -186,7 +203,8 @@
           <VideoInput
             width={Number(pipelineParams.width.default)}
             height={Number(pipelineParams.height.default)}
-          ></VideoInput>
+            hasPoseControlNet={controlnetInfo?.has_pose_controlnet || false}
+          />
         </div>
       {/if}
       <div class={isImageMode ? 'sm:col-start-2' : 'col-span-2'}>
@@ -212,7 +230,7 @@
           {numInferenceSteps}
           on:controlnetUpdated={handleControlNetUpdate}
           on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
-        ></ControlNetConfig>
+        />
       </div>
     </article>
   {:else}
@@ -226,6 +244,8 @@
 
 <style lang="postcss">
   :global(html) {
-    @apply text-black dark:bg-gray-900 dark:text-white;
+    @apply text-black;
+    @apply dark:bg-gray-900;
+    @apply dark:text-white;
   }
 </style>

@@ -89,9 +89,15 @@ class App:
                     if data["status"] == "next_frame":
                         info = Pipeline.Info()
                         params = await self.conn_manager.receive_json(user_id)
+                        
+                        # Extract control image flags before creating InputParams
+                        has_pose_image = params.get("has_pose_image", False)
+                        
                         params = Pipeline.InputParams(**params)
                         params = SimpleNamespace(**params.dict())
+                        
                         if info.input_mode == "image":
+                            # Receive main image
                             image_data = await self.conn_manager.receive_bytes(user_id)
                             if len(image_data) == 0:
                                 await self.conn_manager.send_json(
@@ -99,6 +105,17 @@ class App:
                                 )
                                 continue
                             params.image = bytes_to_pil(image_data)
+                            
+                            # Receive pose image if present
+                            if has_pose_image:
+                                pose_image_data = await self.conn_manager.receive_bytes(user_id)
+                                if len(pose_image_data) > 0:
+                                    params.pose_image = bytes_to_pil(pose_image_data)
+                                else:
+                                    params.pose_image = None
+                            else:
+                                params.pose_image = None
+                                
                         await self.conn_manager.update_data(user_id, params)
 
             except Exception as e:
@@ -726,7 +743,8 @@ class App:
         controlnet_info = {
             "enabled": False,
             "config_loaded": False,
-            "controlnets": []
+            "controlnets": [],
+            "has_pose_controlnet": False
         }
         
         # Check uploaded config first
@@ -741,6 +759,10 @@ class App:
                         "preprocessor": cn_config['preprocessor'],
                         "strength": cn_config['conditioning_scale']
                     })
+                    # Check for pose ControlNet (browser preprocessor + 'pose' in model ID)
+                    if (cn_config['preprocessor'] == 'browser' and 
+                        'pose' in cn_config['model_id'].lower()):
+                        controlnet_info["has_pose_controlnet"] = True
         # Otherwise check active pipeline
         elif self.pipeline and self.pipeline.use_controlnet and self.pipeline.controlnet_config:
             controlnet_info["enabled"] = True
@@ -753,6 +775,10 @@ class App:
                         "preprocessor": cn_config['preprocessor'],
                         "strength": cn_config['conditioning_scale']
                     })
+                    # Check for pose ControlNet (browser preprocessor + 'pose' in model ID)
+                    if (cn_config['preprocessor'] == 'browser' and 
+                        'pose' in cn_config['model_id'].lower()):
+                        controlnet_info["has_pose_controlnet"] = True
         
         return controlnet_info
 

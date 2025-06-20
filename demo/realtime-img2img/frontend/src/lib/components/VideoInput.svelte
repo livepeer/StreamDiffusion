@@ -10,14 +10,23 @@
     mediaDevices
   } from '$lib/mediaStream';
   import MediaListSwitcher from './MediaListSwitcher.svelte';
+  import PoseDetector from './PoseDetector.svelte';
+  
   export let width = 512;
   export let height = 512;
+  export let hasPoseControlNet = false;
   const size = { width, height };
 
   let videoEl: HTMLVideoElement;
   let canvasEl: HTMLCanvasElement;
   let ctx: CanvasRenderingContext2D;
   let videoFrameCallbackId: number;
+
+  // Pose detection related
+  let poseDetector: PoseDetector;
+  let poseEnabled = false;
+  let showPoseOverlay = true;
+  let currentPoseBlob: Blob | null = null;
 
   // ajust the throttle time to your needs
   const THROTTLE = 1000 / 120;
@@ -28,6 +37,11 @@
     ctx = canvasEl.getContext('2d') as CanvasRenderingContext2D;
     canvasEl.width = size.width;
     canvasEl.height = size.height;
+    
+    // Enable pose detection by default if pose ControlNet is available
+    if (hasPoseControlNet) {
+      poseEnabled = true;
+    }
   });
   $: {
     console.log(selectedDevice);
@@ -40,6 +54,11 @@
     videoEl.srcObject = $mediaStream;
   }
   let lastMillis = 0;
+
+  function onPoseResults(poseBlob: Blob | null, landmarks: any) {
+    currentPoseBlob = poseBlob;
+  }
+
   async function onFrameChange(now: DOMHighResTimeStamp, metadata: VideoFrameCallbackMetadata) {
     if (now - lastMillis < THROTTLE) {
       videoFrameCallbackId = videoEl.requestVideoFrameCallback(onFrameChange);
@@ -68,7 +87,18 @@
         1
       );
     });
-    onFrameChangeStore.set({ blob });
+
+    // Process pose detection if enabled and pose ControlNet exists
+    if (poseEnabled && hasPoseControlNet && poseDetector && poseDetector.processFrame) {
+      await poseDetector.processFrame(videoEl);
+    }
+
+    // Update frame store with image and pose data
+    onFrameChangeStore.set({ 
+      blob,
+      poseBlob: (poseEnabled && hasPoseControlNet) ? currentPoseBlob : null,
+      hasPoseImage: (poseEnabled && hasPoseControlNet && currentPoseBlob !== null)
+    });
     videoFrameCallbackId = videoEl.requestVideoFrameCallback(onFrameChange);
   }
 
@@ -78,6 +108,30 @@
 </script>
 
 <div class="relative mx-auto max-w-lg overflow-hidden rounded-lg border border-slate-300">
+  <!-- Pose detection controls -->
+  {#if hasPoseControlNet}
+    <div class="absolute top-2 left-2 z-20 bg-black bg-opacity-50 p-2 rounded text-white text-sm">
+      <label class="flex items-center gap-2 mb-1 cursor-pointer">
+        <input
+          type="checkbox"
+          bind:checked={poseEnabled}
+          class="cursor-pointer"
+        />
+        Enable Pose Detection
+      </label>
+      {#if poseEnabled}
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            bind:checked={showPoseOverlay}
+            class="cursor-pointer"
+          />
+          Show Pose Overlay
+        </label>
+      {/if}
+    </div>
+  {/if}
+
   <div class="relative z-10 aspect-square w-full object-cover">
     {#if $mediaDevices.length > 0}
       <div class="absolute bottom-0 right-0 z-10">
@@ -97,6 +151,18 @@
     ></video>
     <canvas bind:this={canvasEl} class="absolute left-0 top-0 aspect-square w-full object-cover"
     ></canvas>
+    
+    <!-- Pose detector component -->
+    {#if hasPoseControlNet}
+      <PoseDetector
+        bind:this={poseDetector}
+        {width}
+        {height}
+        enabled={poseEnabled}
+        showOverlay={showPoseOverlay}
+        onPoseResults={onPoseResults}
+      />
+    {/if}
   </div>
   <div class="absolute left-0 top-0 flex aspect-square w-full items-center justify-center">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-40 p-5 opacity-20">

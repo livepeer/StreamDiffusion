@@ -7,6 +7,13 @@ declare global {
     // interface PageData {}
     // interface Platform {}
   }
+
+  // MediaPipe global objects
+  interface Window {
+    Pose: any;
+    POSE_CONNECTIONS: any;
+    POSE_LANDMARKS: any;
+  }
 }
 
 export {};
