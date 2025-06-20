@@ -957,17 +957,12 @@ class StreamDiffusionWrapper:
         else:
             raise RuntimeError("add_controlnet: ControlNet functionality not available on this pipeline")
 
-    def update_control_image(self, 
-                           index: int, 
-                           control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
-        """Forward update_control_image call to the underlying ControlNet pipeline"""
-        if self.use_controlnet and hasattr(self.stream, 'update_control_image'):
-            self.stream.update_control_image(index, control_image)
+    
 
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
+    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
         if self.use_controlnet and hasattr(self.stream, 'update_control_image_efficient'):
-            self.stream.update_control_image_efficient(control_image)
+            self.stream.update_control_image_efficient(control_image, index=index)
 
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""

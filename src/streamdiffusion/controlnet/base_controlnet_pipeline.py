@@ -166,40 +166,6 @@ class BaseControlNetPipeline:
         except:
             pass  # Ignore errors during cleanup
     
-    def update_control_image(self, 
-                           index: int, 
-                           control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
-        """
-        Update the control image for a specific ControlNet (optimized version)
-        
-        Args:
-            index: Index of the ControlNet
-            control_image: New control image
-        """
-        if not (0 <= index < len(self.controlnets)):
-            raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
-        
-        # Skip processing if scale is 0 
-        if self.controlnet_scales[index] == 0:
-            return
-            
-        preprocessor = self.preprocessors[index]
-        processed_image = self._prepare_control_image(control_image, preprocessor)
-        self.controlnet_images[index] = processed_image
-    
-    def update_control_image_batch(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
-        """
-        Update all ControlNets with the same control image (optimized for webcam use)
-        
-        Args:
-            control_image: New control image to apply to all ControlNets
-        """
-        # Process once, reuse for all active ControlNets
-        for i in range(len(self.controlnets)):
-            if self.controlnet_scales[i] > 0:  # Only update active ones
-                preprocessor = self.preprocessors[i]
-                processed_image = self._prepare_control_image(control_image, preprocessor)
-                self.controlnet_images[i] = processed_image
 
     def _process_single_preprocessor_sync(self, preprocessor_key, group, control_image, control_tensor=None):
         """Process a single preprocessor group synchronously in thread"""
@@ -223,13 +189,27 @@ class BaseControlNetPipeline:
             logger.error(f"update_control_image_efficient: Preprocessor {preprocessor_key} failed: {e}")
             return preprocessor_key, group['indices'], None
 
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
+    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """
-        Efficiently update all ControlNets with cache-aware preprocessing
+        Efficiently update ControlNet(s) with cache-aware preprocessing
         
         Args:
-            control_image: New control image to apply to all ControlNets
+            control_image: New control image
+            index: Optional ControlNet index. If None, updates all ControlNets
         """
+        # Handle single ControlNet update
+        if index is not None:
+            if not (0 <= index < len(self.controlnets)):
+                raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
+            
+            # Skip processing if scale is 0 
+            if self.controlnet_scales[index] == 0:
+                return
+                
+            preprocessor = self.preprocessors[index]
+            processed_image = self._prepare_control_image(control_image, preprocessor)
+            self.controlnet_images[index] = processed_image
+            return
         # Early exit: check for active ControlNets first
         if not any(scale > 0 for scale in self.controlnet_scales):
             return
