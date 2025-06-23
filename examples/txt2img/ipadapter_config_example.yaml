@@ -1,0 +1,41 @@
+# StreamDiffusion IPAdapter Configuration Example
+# This demonstrates how to configure IPAdapter through the config system
+
+# Base model configuration
+model_id: "runwayml/stable-diffusion-v1-5"
+device: "cuda"
+dtype: "float16"
+width: 512
+height: 512
+mode: "txt2img"
+
+# StreamDiffusion parameters
+t_index_list: [0, 16, 32, 45]
+frame_buffer_size: 1
+warmup: 10
+acceleration: "xformers"  # Use xformers instead of tensorrt for now
+use_denoising_batch: false
+cfg_type: "none"
+seed: 42
+
+# Text prompts
+prompt: "a beautiful woman with long brown hair, smiling, portrait photography"
+negative_prompt: "blurry, horror, worst quality, low quality"
+num_inference_steps: 50
+guidance_scale: 1.2
+
+# IPAdapter configuration
+ipadapters:
+  # Using HuggingFace model ID (automatic download)
+  - ipadapter_model_path: "h94/IP-Adapter"  # Auto-downloads ip-adapter_sd15.bin
+    image_encoder_path: "h94/IP-Adapter"    # Auto-downloads image_encoder
+    style_image: "C:\\_dev\\comfy\\ComfyUI\\StreamDiffusion\\images\\inputs\\hand_up512.png"
+    scale: 1.0
+    enabled: true
+    
+  # You can add multiple IPAdapters with different models or local paths
+  # - ipadapter_model_path: "C:/path/to/ip-adapter-plus_sd15.bin"  # Local path
+  #   image_encoder_path: "h94/IP-Adapter"                         # HuggingFace ID
+  #   style_image: "../../input/another_style.png"
+  #   scale: 0.8
+  #   enabled: false 
