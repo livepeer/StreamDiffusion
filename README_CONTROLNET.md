@@ -14,20 +14,16 @@ NOTE: SDXL Support is forthcoming
 
 ## Quick Start
 
-### Webcam Demo
-
+### Web demo
 ```bash
-
-# the depth trt examples assume you have a tensorrt engine for depthanything as seen in this repo
-# https://github.com/yuvraj108c/ComfyUI-Depth-Anything-Tensorrt
-# additionally, for all of the demo configs, they must be updated to suite your environment. 
-# the following demo, img2img with 2 steps and a depth controlnet, produced 34FPS on a 5090
-
-# test with simple gui
-python ./examples/controlnet/controlnet_webcam_gui_demo.py --config ./configs/controlnet_examples/sdturbo_depth_trt_example.yaml
-
+cd demo/realtime-img2img
+python main.py
 ```
-Try the other example yaml files at will. 
+Select a YAML configuration file, and click start.  The demo is built upon the existing streamdiffusion demo, but now includes:
+- Real-time parameter adjustment
+- Multi-ControlNet strength sliders
+- Live performance monitoring
+- Side-by-side input/output display
 
 ### Standalone Demo
 
@@ -40,13 +36,37 @@ python examples/controlnet/standalone_controlnet_pipeline.py
 
 ### Configuration-Based (Recommended)
 
+See [Configuration System Documentation](README_CONFIG.md) for detailed configuration instructions.
+
+#### New Simplified Approach
+
 ```python
-from streamdiffusion.controlnet import load_controlnet_config
+from streamdiffusion import load_config, create_wrapper_from_config
+from PIL import Image
+
+# Load configuration and create wrapper in one step
+config = load_config("configs/my_config.yaml")
+wrapper = create_wrapper_from_config(config)
+
+# Process images
+input_image = Image.open("your_image.jpg")
+
+# Update control image for all ControlNets
+wrapper.update_control_image_efficient(input_image)
+
+# Generate output
+output_image = wrapper(input_image)
+```
+
+#### Manual Approach
+
+```python
+from streamdiffusion import load_config
 from utils.wrapper import StreamDiffusionWrapper
 import torch
 
 # Load configuration
-config = load_controlnet_config("configs/controlnet_examples/canny_example.yaml")
+config = load_config("configs/my_config.yaml")
 
 # Create wrapper with ControlNet support
 wrapper = StreamDiffusionWrapper(
@@ -91,6 +111,52 @@ output_image = wrapper(input_image)
 ```
 
 ### Programmatic Setup
+
+#### Recommended: Config Dictionary + create_wrapper_from_config()
+
+```python
+from streamdiffusion import create_wrapper_from_config
+
+# Define configuration programmatically
+config = {
+    'model_id': "stabilityai/sd-turbo",
+    't_index_list': [32, 45],
+    'mode': "img2img",
+    'width': 512,
+    'height': 512,
+    'acceleration': "none",
+    'use_lcm_lora': False,
+    'cfg_type': "none",
+    'seed': 789,
+    'prompt': "a beautiful landscape, highly detailed",
+    'negative_prompt': "blurry, low quality",
+    'guidance_scale': 1.0,
+    'controlnets': [
+        {
+            'model_id': "lllyasviel/control_v11p_sd15_canny",
+            'conditioning_scale': 1.0,
+            'preprocessor': "canny",
+            'preprocessor_params': {
+                'low_threshold': 100,
+                'high_threshold': 200
+            },
+            'enabled': True,
+            'pipeline_type': 'sd1.5',
+            'control_guidance_start': 0.0,
+            'control_guidance_end': 1.0,
+        }
+    ]
+}
+
+# Create wrapper from config
+wrapper = create_wrapper_from_config(config)
+
+# Process image
+wrapper.update_control_image_efficient(input_image)
+output = wrapper(input_image)
+```
+
+#### Manual Approach: Direct StreamDiffusionWrapper
 
 ```python
 from utils.wrapper import StreamDiffusionWrapper
@@ -151,20 +217,18 @@ output = wrapper(input_image)
 
 ## Configuration Format
 
-### Basic YAML Configuration
+**For comprehensive configuration documentation, see [Configuration System Documentation](README_CONFIG.md).**
+
+### ControlNet-Specific Examples
+
+#### Basic ControlNet Configuration
 
 ```yaml
 # Basic SD-Turbo + Canny ControlNet
 model_id: "stabilityai/sd-turbo"
 pipeline_type: "sdturbo"
-t_index_list: [32, 45]
-width: 512
-height: 512
-
+mode: "img2img"
 prompt: "a beautiful landscape, highly detailed"
-negative_prompt: "blurry, low quality"
-guidance_scale: 1.2
-num_inference_steps: 50
 
 controlnets:
   - model_id: "lllyasviel/control_v11p_sd15_canny"
@@ -176,7 +240,7 @@ controlnets:
     enabled: true
 ```
 
-### Multi-ControlNet Configuration
+#### Multi-ControlNet Configuration
 
 ```yaml
 # Multiple ControlNets with different strengths
@@ -202,6 +266,8 @@ controlnets:
       high_threshold: 100
     enabled: true
 ```
+
+See `configs/` directory for more complete configuration examples.
 
 ## Runtime Control
 
@@ -269,13 +335,23 @@ output_image = wrapper(input_image: PIL.Image)
 ### Configuration Functions
 
 ```python
-from streamdiffusion.controlnet import load_controlnet_config, save_controlnet_config
+from streamdiffusion import load_config, save_config, create_wrapper_from_config
 
 # Load configuration from YAML/JSON
-config = load_controlnet_config("path/to/config.yaml")
+config = load_config("path/to/config.yaml")
+
+# Create wrapper directly from config
+wrapper = create_wrapper_from_config(config)
 
 # Save configuration  
-save_controlnet_config(config, "path/to/save.yaml")
+save_config(config, "path/to/save.yaml")
+```
+
+#### Backward Compatibility
+
+```python
+# These still work but are deprecated
+from streamdiffusion.controlnet import load_controlnet_config, save_controlnet_config
 ```
 
 ### ControlNet Configuration Dictionary
@@ -331,4 +407,4 @@ controlnets:
 
 - `examples/controlnet/controlnet_webcam_gui_demo.py` - Interactive GUI demo with real-time parameter adjustment
 - `examples/controlnet/standalone_controlnet_pipeline.py` - Production-ready reference implementation
-- `configs/controlnet_examples/` - Various configuration examples for different use cases
+- `configs/` - Various configuration examples for different use cases

@@ -1,5 +1,5 @@
-model_id: "C:\\_dev\\comfy\\ComfyUI\\models\\checkpoints\\kohaku-v2.1.safetensors"
-t_index_list: [16,32]
+model_id: "stabilityai/sd-turbo"
+t_index_list: [0,16]
 width: 512
 height: 512
 device: "cuda"
@@ -11,21 +11,24 @@ negative_prompt: "blurry, low quality, flat, 2d"
 guidance_scale: 1.1
 num_inference_steps: 50
 
+# Temporal consistency parameters
+frame_buffer_size: 1
+use_denoising_batch: true
+delta: 0.7
+
 # Advanced parameters
-pipeline_type: "sd1.5"
+pipeline_type: "sdturbo"
 use_lcm_lora: true
 use_tiny_vae: true
-acceleration: "xformers"
+acceleration: "tensorrt"
 cfg_type: "self"
 seed: 789
 
 # ControlNet configuration with TensorRT Depth Anything
 controlnets:
-  - model_id: "lllyasviel/control_v11f1p_sd15_depth"
-    conditioning_scale: 0.5
-    preprocessor: "depth_tensorrt"
+  - model_id: "thibaud/controlnet-sd21-color-diffusers"
+    conditioning_scale: 0.2
+    preprocessor: "passthrough"
     preprocessor_params:
-      engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\depth_anything_vits14-fp16.engine"
-      detect_resolution: 518
       image_resolution: 512
     enabled: true 

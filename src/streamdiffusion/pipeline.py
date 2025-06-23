@@ -11,6 +11,7 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 )
 
 from streamdiffusion.image_filter import SimilarImageFilter
+from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
 
 class StreamDiffusion:
@@ -75,6 +76,9 @@ class StreamDiffusion:
         self.vae = pipe.vae
 
         self.inference_time_ema = 0
+        
+        # Initialize parameter updater
+        self._param_updater = StreamParameterUpdater(self)
 
     def load_lcm_lora(
         self,
@@ -262,68 +266,35 @@ class StreamDiffusion:
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
 
     @torch.no_grad()
-    def update_t_index_list(self, t_index_list: List[int]) -> None:
-        self.t_list = t_index_list
+    def update_stream_params(
+        self,
+        num_inference_steps: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
+        delta: Optional[float] = None,
+        t_index_list: Optional[List[int]] = None,
+    ) -> None:
+        """
+        Update streaming parameters efficiently in a single call.
         
-        self.sub_timesteps = []
-        for t in self.t_list:
-            self.sub_timesteps.append(self.timesteps[t])
-
-        sub_timesteps_tensor = torch.tensor(
-            self.sub_timesteps, dtype=torch.long, device=self.device
-        )
-        self.sub_timesteps_tensor = torch.repeat_interleave(
-            sub_timesteps_tensor,
-            repeats=self.frame_bff_size if self.use_denoising_batch else 1,
-            dim=0,
-        )
-
-        c_skip_list = []
-        c_out_list = []
-        for timestep in self.sub_timesteps:
-            c_skip, c_out = self.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
-            c_skip_list.append(c_skip)
-            c_out_list.append(c_out)
-
-        self.c_skip = (
-            torch.stack(c_skip_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        self.c_out = (
-            torch.stack(c_out_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
+        Parameters
+        ----------
+        num_inference_steps : Optional[int]
+            The number of inference steps to perform.
+        guidance_scale : Optional[float]
+            The guidance scale to use for CFG.
+        delta : Optional[float]
+            The delta multiplier of virtual residual noise.
+        t_index_list : Optional[List[int]]
+            The t_index_list to use for inference.
+        """
+        self._param_updater.update_stream_params(
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            delta=delta,
+            t_index_list=t_index_list,
         )
 
-        alpha_prod_t_sqrt_list = []
-        beta_prod_t_sqrt_list = []
-        for timestep in self.sub_timesteps:
-            alpha_prod_t_sqrt = self.scheduler.alphas_cumprod[timestep].sqrt()
-            beta_prod_t_sqrt = (1 - self.scheduler.alphas_cumprod[timestep]).sqrt()
-            alpha_prod_t_sqrt_list.append(alpha_prod_t_sqrt)
-            beta_prod_t_sqrt_list.append(beta_prod_t_sqrt)
-        
-        alpha_prod_t_sqrt = (
-            torch.stack(alpha_prod_t_sqrt_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        beta_prod_t_sqrt = (
-            torch.stack(beta_prod_t_sqrt_list)
-            .view(len(self.t_list), 1, 1, 1)
-            .to(dtype=self.dtype, device=self.device)
-        )
-        self.alpha_prod_t_sqrt = torch.repeat_interleave(
-            alpha_prod_t_sqrt,
-            repeats=self.frame_bff_size if self.use_denoising_batch else 1,
-            dim=0,
-        )
-        self.beta_prod_t_sqrt = torch.repeat_interleave(
-            beta_prod_t_sqrt,
-            repeats=self.frame_bff_size if self.use_denoising_batch else 1,
-            dim=0,
-        )
+
 
     def add_noise(
         self,

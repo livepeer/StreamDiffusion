@@ -17,6 +17,9 @@
   let pipelineInfo: PipelineInfo;
   let controlnetInfo: any = null;
   let tIndexList: number[] = [35, 45];
+  let guidanceScale: number = 1.1;
+  let delta: number = 0.7;
+  let numInferenceSteps: number = 50;
   let pageContent: string;
   let isImageMode: boolean = false;
   let maxQueueSize: number = 0;
@@ -33,6 +36,9 @@
     pipelineInfo = settings.info.properties;
     controlnetInfo = settings.controlnet || null;
     tIndexList = settings.t_index_list || [35, 45];
+    guidanceScale = settings.guidance_scale || 1.1;
+    delta = settings.delta || 0.7;
+    numInferenceSteps = settings.num_inference_steps || 50;
     isImageMode = pipelineInfo.input_mode.default === PipelineMode.IMAGE;
     maxQueueSize = settings.max_queue_size;
     pageContent = settings.page_content;
@@ -62,7 +68,13 @@
       }));
     }
     
+    // Update t_index_list if available
+    if (event.detail.t_index_list) {
+      tIndexList = [...event.detail.t_index_list];
+    }
+    
     console.log('ControlNet updated:', controlnetInfo);
+    console.log('T-Index List updated:', tIndexList);
   }
 
   async function handleTIndexListUpdate(newTIndexList: number[]) {
@@ -195,6 +207,9 @@
         <ControlNetConfig 
           {controlnetInfo} 
           {tIndexList} 
+          {guidanceScale}
+          {delta}
+          {numInferenceSteps}
           on:controlnetUpdated={handleControlNetUpdate}
           on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
         ></ControlNetConfig>

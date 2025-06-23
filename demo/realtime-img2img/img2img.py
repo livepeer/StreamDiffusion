@@ -27,9 +27,15 @@ default_prompt = "Portrait of The Joker halloween costume, face painting, with ,
 default_negative_prompt = "black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity"
 
 page_content = """<h1 class="text-3xl font-bold">StreamDiffusion</h1>
-<h3 class="text-xl font-bold"></h3>
+<h3 class="text-xl font-bold">Image-to-Image</h3>
 <p class="text-sm">
-Demo
+    This demo showcases
+    <a
+    href="https://github.com/cumulo-autumn/StreamDiffusion"
+    target="_blank"
+    class="text-blue-500 underline hover:no-underline">StreamDiffusion
+</a>
+Image to Image pipeline using configuration system.
 </p>
 """
 
@@ -42,10 +48,8 @@ def load_controlnet_config(config_path: str) -> dict:
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        print(f"load_controlnet_config: Loaded config from {config_path}")
         return config
     except Exception as e:
-        print(f"load_controlnet_config: Failed to load config {config_path}: {e}")
         return None
 
 
@@ -75,13 +79,19 @@ class Pipeline:
             512, min=2, max=15, title="Height", disabled=True, hide=True, id="height"
         )
 
+#TODO update naming convention to reflect the controlnet agnostic nature of the config system (pipeline_config instead of controlnet_config for example)
     def __init__(self, args: Args, device: torch.device, torch_dtype: torch.dtype):
         # Load ControlNet config if provided
         self.controlnet_config = load_controlnet_config(args.controlnet_config) if args.controlnet_config else None
         self.use_controlnet = self.controlnet_config is not None
         
         params = self.InputParams()
-
+        
+        # Determine engine_dir: use config value if available, otherwise use args
+        engine_dir = args.engine_dir  # Default to command-line/environment value
+        if self.use_controlnet and 'engine_dir' in self.controlnet_config:
+            engine_dir = self.controlnet_config['engine_dir']
+        
         # Determine model and parameters based on config
         if self.use_controlnet:
             print("__init__: Using ControlNet mode")
@@ -132,7 +142,7 @@ class Pipeline:
                 use_denoising_batch=True,
                 cfg_type=cfg_type,
                 use_safety_checker=args.safety_checker,
-                engine_dir=args.engine_dir,
+                engine_dir=engine_dir,
                 # ControlNet options
                 use_controlnet=True,
                 controlnet_config=controlnet_configs,
@@ -158,7 +168,7 @@ class Pipeline:
                 use_denoising_batch=True,
                 cfg_type="none",
                 use_safety_checker=args.safety_checker,
-                engine_dir=args.engine_dir,
+                engine_dir=engine_dir,
             )
 
         # Prepare pipeline with appropriate prompts

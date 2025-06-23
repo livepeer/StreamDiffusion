@@ -88,14 +88,27 @@ class MultiControlNetStreamDiffusionPipeline:
     Multi-ControlNet StreamDiffusion pipeline.
     """
     
-    def __init__(self, config: Config = None):
+    def __init__(self, config: Config = None, config_file: Optional[str] = None):
         self.config = config or Config()
+        self.config_file = config_file
         self.wrapper = None
         self._setup_pipeline()
     
     def _setup_pipeline(self):
         """Initialize the StreamDiffusion pipeline with multiple ControlNets"""
         print("Initializing Multi-ControlNet StreamDiffusion pipeline...")
+        
+        # If config file is provided, use the built-in config system
+        if self.config_file:
+            print(f"Using config file: {self.config_file}")
+            from streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
+            
+            config_data = load_config(self.config_file)
+            self.wrapper = create_wrapper_from_config(config_data)
+            print("Pipeline ready for inference!")
+            return
+        
+        # Otherwise use hardcoded config (original behavior)
         print(f"Model: {self.config.MODEL_PATH}")
         print(f"Acceleration: {self.config.ACCELERATION}")
         
@@ -215,7 +228,7 @@ def setup_output_directory():
     return output_dir
 
 
-def run_demo(engine_only=False):
+def run_demo(engine_only=False, config_file=None):
     """
     Demonstration of the multi-ControlNet pipeline.
     Shows how depth + canny ControlNets work together.
@@ -224,25 +237,29 @@ def run_demo(engine_only=False):
     output_dir = setup_output_directory()
     print(f"Output directory: {output_dir}")
     
-    # Validate paths
-    config = Config()
-    if not os.path.exists(config.MODEL_PATH):
-        print(f"ERROR: Model not found at {config.MODEL_PATH}")
-        print("Please update MODEL_PATH in the Config class")
-        return False
-    
-    if not os.path.exists(config.INPUT_IMAGE_PATH):
-        print(f"ERROR: Input image not found at {config.INPUT_IMAGE_PATH}")
-        print("Please update INPUT_IMAGE_PATH in the Config class")
-        return False
-    
-    if not os.path.exists(config.TENSORRT_ENGINE_PATH):
-        print(f"WARNING: TensorRT engine not found at {config.TENSORRT_ENGINE_PATH}")
-        print("Will build engine on first run (may take 5-10 minutes)")
+    # Skip validation if using config file
+    if not config_file:
+        # Validate paths
+        config = Config()
+        if not os.path.exists(config.MODEL_PATH):
+            print(f"ERROR: Model not found at {config.MODEL_PATH}")
+            print("Please update MODEL_PATH in the Config class")
+            return False
+        
+        if not os.path.exists(config.INPUT_IMAGE_PATH):
+            print(f"ERROR: Input image not found at {config.INPUT_IMAGE_PATH}")
+            print("Please update INPUT_IMAGE_PATH in the Config class")
+            return False
+        
+        if not os.path.exists(config.TENSORRT_ENGINE_PATH):
+            print(f"WARNING: TensorRT engine not found at {config.TENSORRT_ENGINE_PATH}")
+            print("Will build engine on first run (may take 5-10 minutes)")
+    else:
+        config = Config()  # Still need config for some paths when using config file
     
     try:
         # Initialize pipeline (this will trigger engine building if needed)
-        pipeline = MultiControlNetStreamDiffusionPipeline(config)
+        pipeline = MultiControlNetStreamDiffusionPipeline(config, config_file=config_file)
         
         if engine_only:
             print("Engine-only mode: TensorRT engines have been built (if needed). Exiting.")
@@ -296,6 +313,7 @@ def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="Standalone Multi-ControlNet StreamDiffusion Pipeline")
     parser.add_argument("--engine-only", action="store_true", help="Only build TensorRT engines and exit (no inference)")
+    parser.add_argument("--config", type=str, help="Optional config file path (uses hardcoded config if not provided)")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -313,7 +331,7 @@ def main():
     
     print("=" * 70)
     
-    success = run_demo(engine_only=args.engine_only)
+    success = run_demo(engine_only=args.engine_only, config_file=args.config)
     
     if success:
         print("\n✓ Multi-ControlNet demo completed successfully!")

@@ -1,5 +1,5 @@
-model_id: "C:\\_dev\\comfy\\ComfyUI\\models\\checkpoints\\sd_turbo.safetensors"
-t_index_list: [24,27]
+model_id: "stabilityai/sd-turbo"
+t_index_list: [16,32]
 width: 512
 height: 512
 device: "cuda"
@@ -37,16 +37,16 @@ controlnets:
       model_complexity: 1
       static_image_mode: false
       draw_hands: true
-      draw_face: true
+      draw_face: false
       line_thickness: 2
       circle_radius: 3
     enabled: true 
 
-  # - model_id: "thibaud/controlnet-sd21-depth-diffusers"
-  #   conditioning_scale: 0.15
-  #   preprocessor: "depth_tensorrt"
-  #   preprocessor_params:
-  #     engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\depth_anything_vits14-fp16.engine"
-  #     detect_resolution: 518
-  #     image_resolution: 512
-  #   enabled: true 
+  - model_id: "thibaud/controlnet-sd21-depth-diffusers"
+    conditioning_scale: 0.15
+    preprocessor: "depth_tensorrt"
+    preprocessor_params:
+      engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\v2_depth_anything_v2_vits-fp16.engine"
+      detect_resolution: 518
+      image_resolution: 512
+    enabled: true 

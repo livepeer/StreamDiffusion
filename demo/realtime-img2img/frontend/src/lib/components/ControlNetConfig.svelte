@@ -2,9 +2,13 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import Button from './Button.svelte';
   import InputRange from './InputRange.svelte';
+  import PreprocessorDocs from './PreprocessorDocs.svelte';
 
   export let controlnetInfo: any = null;
   export let tIndexList: number[] = [35, 45];
+  export let guidanceScale: number = 1.1;
+  export let delta: number = 0.7;
+  export let numInferenceSteps: number = 50;
 
   const dispatch = createEventDispatcher();
 
@@ -13,6 +17,7 @@
   let uploadStatus = '';
   let fps = 0;
   let fpsInterval: NodeJS.Timeout | null = null;
+  let showDocs = false;
 
   // Initialize FPS tracking
   onMount(() => {
@@ -70,11 +75,16 @@
         // Update controlnet info from the response
         if (result.controlnet) {
           controlnetInfo = result.controlnet;
+          // Update t_index_list if provided in response
+          if (result.t_index_list) {
+            tIndexList = [...result.t_index_list];
+          }
           // Dispatch event to parent to update its controlnetInfo
-          // Include both controlnet info and config prompt if available
+          // Include both controlnet info, config prompt, and t_index_list if available
           dispatch('controlnetUpdated', {
             controlnet: result.controlnet,
-            config_prompt: result.config_prompt || null
+            config_prompt: result.config_prompt || null,
+            t_index_list: result.t_index_list || null
           });
         }
         
@@ -128,8 +138,6 @@
     updateControlNetStrength(index, strength);
   }
 
-
-
   function selectFile() {
     fileInput.click();
   }
@@ -148,6 +156,77 @@
     // Dispatch the update event
     dispatch('tIndexListUpdated', newTIndexList);
   }
+
+  // Parameter controls - now props from parent
+
+  async function updateGuidanceScale(value: number) {
+    try {
+      guidanceScale = value;
+      const response = await fetch('/api/update-guidance-scale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guidance_scale: value })
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateGuidanceScale: Failed to update guidance_scale:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateGuidanceScale: Update failed:', error);
+    }
+  }
+
+  async function updateDelta(value: number) {
+    try {
+      delta = value;
+      const response = await fetch('/api/update-delta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delta: value })
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateDelta: Failed to update delta:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateDelta: Update failed:', error);
+    }
+  }
+
+  async function updateNumInferenceSteps(value: number) {
+    try {
+      numInferenceSteps = value;
+      const response = await fetch('/api/update-num-inference-steps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ num_inference_steps: value })
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateNumInferenceSteps: Failed to update num_inference_steps:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateNumInferenceSteps: Update failed:', error);
+    }
+  }
+
+  function handleGuidanceScaleChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = parseFloat(target.value);
+    updateGuidanceScale(value);
+  }
+
+  function handleDeltaChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = parseFloat(target.value);
+    updateDelta(value);
+  }
+
+  function handleNumInferenceStepsChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = parseInt(target.value);
+    updateNumInferenceSteps(value);
+  }
 </script>
 
 <div class="controlnet-config space-y-4">
@@ -159,105 +238,183 @@
     </span>
   </div>
 
-  <!-- ControlNet Configuration Section -->
-  <div class="space-y-3">
-    <h3 class="text-lg font-semibold">ControlNet Configuration</h3>
+  <!-- Two Column Layout -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
     
-    <!-- File Upload -->
-    <div class="space-y-2">
-      <div class="flex items-center gap-2">
-        <Button on:click={selectFile} disabled={uploading} classList="text-sm">
-          {uploading ? 'Uploading...' : 'Load YAML Config'}
-        </Button>
-        <span class="text-sm text-gray-600 dark:text-gray-400">
-          {controlnetInfo?.enabled ? 'ControlNet Ready' : 'Standard Mode'}
-        </span>
-      </div>
-      
-      <input
-        bind:this={fileInput}
-        type="file"
-        accept=".yaml,.yml"
-        class="hidden"
-        on:change={uploadConfig}
-      />
-      
-      {#if uploadStatus}
-        <p class="text-sm {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
-          {uploadStatus}
-        </p>
-      {/if}
-    </div>
-
-    <!-- ControlNet Strength Controls -->
-    {#if controlnetInfo?.enabled && controlnetInfo?.controlnets?.length > 0}
+          <!-- Left Column: ControlNet Configuration -->
       <div class="space-y-3">
-        <h4 class="font-medium">ControlNet Strengths <span class="text-sm text-gray-500">(Pipeline loads when you start streaming)</span></h4>
-        {#each controlnetInfo.controlnets as controlnet}
-          <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-2">
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium">
-                {controlnet.name} ({controlnet.preprocessor})
-              </span>
-              <span class="text-sm text-gray-600 dark:text-gray-400">
-                {controlnet.strength.toFixed(3)}
-              </span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="2"
-              step="0.01"
-              value={controlnet.strength}
-              on:input={(e) => handleStrengthChange(controlnet.index, e)}
-              class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
-            />
-          </div>
-        {/each}
+        <div class="flex justify-between items-center">
+          <h3 class="text-lg font-semibold">ControlNet Configuration</h3>
+          <Button on:click={() => showDocs = true} classList="text-sm">
+            📚 Help & Examples
+          </Button>
+        </div>
+      
+      <!-- File Upload -->
+      <div class="space-y-2">
+        <div class="flex items-center gap-2">
+          <Button on:click={selectFile} disabled={uploading} classList="text-sm">
+            {uploading ? 'Uploading...' : 'Load YAML Config'}
+          </Button>
+          <span class="text-sm text-gray-600 dark:text-gray-400">
+            {controlnetInfo?.enabled ? 'ControlNet Ready' : 'Standard Mode'}
+          </span>
+        </div>
+        
+        <input
+          bind:this={fileInput}
+          type="file"
+          accept=".yaml,.yml"
+          class="hidden"
+          on:change={uploadConfig}
+        />
+        
+        {#if uploadStatus}
+          <p class="text-sm {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
+            {uploadStatus}
+          </p>
+        {/if}
       </div>
-    {:else if controlnetInfo?.enabled}
-      <p class="text-sm text-gray-600 dark:text-gray-400">
-        ControlNet enabled but no control networks found in configuration.
-      </p>
-    {:else}
-      <p class="text-sm text-gray-600 dark:text-gray-400">
-        Upload a YAML configuration file to enable ControlNet features. All pipelines load only when you start streaming.
-      </p>
-    {/if}
 
-    <!-- T-Index List Controls -->
-    <div class="space-y-3">
-      <h4 class="font-medium">Timestep Indices (t_index_list) <span class="text-sm text-gray-500">Controls denoising steps - lower = less denoising, higher = more denoising</span></h4>
-      <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-3">
-        <p class="text-xs text-gray-600 dark:text-gray-400">
-          These values control which timesteps are used for denoising. You can adjust the values but not the number of elements.
-        </p>
+      <!-- ControlNet Strength Controls -->
+      {#if controlnetInfo?.enabled && controlnetInfo?.controlnets?.length > 0}
         <div class="space-y-3">
-          {#each tIndexList as tIndex, index}
-            <div class="space-y-2">
+          <h4 class="font-medium">ControlNet Strengths <span class="text-sm text-gray-500">(Pipeline loads when you start streaming)</span></h4>
+          {#each controlnetInfo.controlnets as controlnet}
+            <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-2">
               <div class="flex items-center justify-between">
-                <label class="text-sm font-medium text-gray-600 dark:text-gray-400">Step {index + 1}</label>
-                <span class="text-sm text-gray-600 dark:text-gray-400">{tIndex}</span>
+                <span class="text-sm font-medium">
+                  {controlnet.name} ({controlnet.preprocessor})
+                </span>
+                <span class="text-sm text-gray-600 dark:text-gray-400">
+                  {controlnet.strength.toFixed(3)}
+                </span>
               </div>
               <input
                 type="range"
                 min="0"
-                max="49"
-                step="1"
-                value={tIndex}
-                on:input={(e) => handleTIndexChange(index, e)}
-                class="w-full appearance-none cursor-pointer"
+                max="2"
+                step="0.01"
+                value={controlnet.strength}
+                on:input={(e) => handleStrengthChange(controlnet.index, e)}
+                class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
               />
             </div>
           {/each}
         </div>
-        <p class="text-xs text-gray-500">
-          Current: [{tIndexList.join(', ')}] | Range: 0-49 (50 total inference steps)
+      {:else if controlnetInfo?.enabled}
+        <p class="text-sm text-gray-600 dark:text-gray-400">
+          ControlNet enabled but no control networks found in configuration.
         </p>
+      {:else}
+        <p class="text-sm text-gray-600 dark:text-gray-400">
+          Upload a YAML configuration file to enable ControlNet features. All pipelines load only when you start streaming.
+        </p>
+      {/if}
+    </div>
+
+    <!-- Right Column: T-Index List Controls -->
+    <div class="space-y-3">
+      <h3 class="text-lg font-semibold">Timestep Configuration</h3>
+      
+      <div class="space-y-3">
+        <h4 class="font-medium">Timestep Indices (t_index_list) <span class="text-sm text-gray-500">Controls denoising steps - lower = less denoising, higher = more denoising</span></h4>
+        <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-3">
+          <p class="text-xs text-gray-600 dark:text-gray-400">
+            These values control which timesteps are used for denoising. The number of controls will adjust based on your configuration.
+          </p>
+          <div class="space-y-3">
+            {#each tIndexList as tIndex, index}
+              <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <label class="text-sm font-medium text-gray-600 dark:text-gray-400">Step {index + 1}</label>
+                  <span class="text-sm text-gray-600 dark:text-gray-400">{tIndex}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="49"
+                  step="1"
+                  value={tIndex}
+                  on:input={(e) => handleTIndexChange(index, e)}
+                  class="w-full appearance-none cursor-pointer"
+                />
+              </div>
+            {/each}
+          </div>
+          <p class="text-xs text-gray-500">
+            Current: [{tIndexList.join(', ')}] | Range: 0-49 (50 total inference steps)
+          </p>
+        </div>
+      </div>
+
+      <!-- Streaming Parameters Controls -->
+      <div class="space-y-3">
+        <h4 class="font-medium">Streaming Parameters <span class="text-sm text-gray-500">Real-time adjustments</span></h4>
+        <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-3">
+          <p class="text-xs text-gray-600 dark:text-gray-400">
+            Adjust these parameters in real-time during inference.
+          </p>
+          <div class="space-y-3">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="text-sm font-medium text-gray-600 dark:text-gray-400">Guidance Scale</label>
+                <span class="text-sm text-gray-600 dark:text-gray-400">{guidanceScale.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="3.0"
+                step="0.01"
+                value={guidanceScale}
+                on:input={handleGuidanceScaleChange}
+                class="w-full appearance-none cursor-pointer"
+              />
+              <p class="text-xs text-gray-500">Controls CFG guidance strength</p>
+            </div>
+            
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="text-sm font-medium text-gray-600 dark:text-gray-400">Delta</label>
+                <span class="text-sm text-gray-600 dark:text-gray-400">{delta.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.01"
+                value={delta}
+                on:input={handleDeltaChange}
+                class="w-full appearance-none cursor-pointer"
+              />
+              <p class="text-xs text-gray-500">Virtual residual noise multiplier</p>
+            </div>
+            
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="text-sm font-medium text-gray-600 dark:text-gray-400">Inference Steps</label>
+                <span class="text-sm text-gray-600 dark:text-gray-400">{numInferenceSteps}</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="100"
+                step="1"
+                value={numInferenceSteps}
+                on:input={handleNumInferenceStepsChange}
+                class="w-full appearance-none cursor-pointer"
+              />
+              <p class="text-xs text-gray-500">Number of denoising steps</p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </div>
+
+<!-- Preprocessor Documentation Modal -->
+<PreprocessorDocs bind:visible={showDocs} />
 
 <style>
   .controlnet-config {

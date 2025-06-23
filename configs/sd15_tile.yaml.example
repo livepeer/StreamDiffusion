@@ -1,5 +1,5 @@
-model_id: "C:\\_dev\\comfy\\ComfyUI\\models\\checkpoints\\kohaku-v2.1.safetensors"
-t_index_list: [32, 45]
+model_id: "KBlueLeaf/kohaku-v2.1"
+t_index_list: [0,16]
 width: 512
 height: 512
 device: "cuda"

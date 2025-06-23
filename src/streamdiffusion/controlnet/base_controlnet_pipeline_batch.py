@@ -67,10 +67,6 @@ class BaseControlNetPipeline:
         
         # Thread pool for parallel preprocessor execution
         self._preprocessor_executor = ThreadPoolExecutor(max_workers=4)
-        
-        # Add stream status tracking for debugging
-        self.stream_index = 0
-        self.stream_initialized = [False] * getattr(stream_diffusion, 'frame_bff_size', 1)
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -170,40 +166,6 @@ class BaseControlNetPipeline:
         except:
             pass  # Ignore errors during cleanup
     
-    def update_control_image(self, 
-                           index: int, 
-                           control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
-        """
-        Update the control image for a specific ControlNet (optimized version)
-        
-        Args:
-            index: Index of the ControlNet
-            control_image: New control image
-        """
-        if not (0 <= index < len(self.controlnets)):
-            raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
-        
-        # Skip processing if scale is 0 
-        if self.controlnet_scales[index] == 0:
-            return
-            
-        preprocessor = self.preprocessors[index]
-        processed_image = self._prepare_control_image(control_image, preprocessor)
-        self.controlnet_images[index] = processed_image
-    
-    def update_control_image_batch(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
-        """
-        Update all ControlNets with the same control image (optimized for webcam use)
-        
-        Args:
-            control_image: New control image to apply to all ControlNets
-        """
-        # Process once, reuse for all active ControlNets
-        for i in range(len(self.controlnets)):
-            if self.controlnet_scales[i] > 0:  # Only update active ones
-                preprocessor = self.preprocessors[i]
-                processed_image = self._prepare_control_image(control_image, preprocessor)
-                self.controlnet_images[i] = processed_image
 
     def _process_single_preprocessor_sync(self, preprocessor_key, group, control_image, control_tensor=None):
         """Process a single preprocessor group synchronously in thread"""
@@ -227,13 +189,27 @@ class BaseControlNetPipeline:
             logger.error(f"update_control_image_efficient: Preprocessor {preprocessor_key} failed: {e}")
             return preprocessor_key, group['indices'], None
 
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> None:
+    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """
-        Efficiently update all ControlNets with cache-aware preprocessing
+        Efficiently update ControlNet(s) with cache-aware preprocessing
         
         Args:
-            control_image: New control image to apply to all ControlNets
+            control_image: New control image
+            index: Optional ControlNet index. If None, updates all ControlNets
         """
+        # Handle single ControlNet update
+        if index is not None:
+            if not (0 <= index < len(self.controlnets)):
+                raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
+            
+            # Skip processing if scale is 0 
+            if self.controlnet_scales[index] == 0:
+                return
+                
+            preprocessor = self.preprocessors[index]
+            processed_image = self._prepare_control_image(control_image, preprocessor)
+            self.controlnet_images[index] = processed_image
+            return
         # Early exit: check for active ControlNets first
         if not any(scale > 0 for scale in self.controlnet_scales):
             return
@@ -743,33 +719,19 @@ class BaseControlNetPipeline:
         self._is_patched = True
     
     def _patch_tensorrt_mode(self):
-        """Patch for TensorRT mode with ControlNet support (enhanced for multi-stream)"""
+        """Patch for TensorRT mode with ControlNet support"""
         
         def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):
-            print(f"\n🔍 DEBUG: patched_unet_step_tensorrt called")
-            print(f"  Input x_t_latent shape: {x_t_latent.shape}")
-            print(f"  Input t_list shape: {t_list.shape if hasattr(t_list, 'shape') else len(t_list)}")
-            print(f"  guidance_scale: {self.stream.guidance_scale}")
-            print(f"  cfg_type: {self.stream.cfg_type}")
-            
-            # Handle CFG expansion (matching pipeline_batch.py logic)
+            # Handle CFG expansion (same as original)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
                 t_list_expanded = torch.concat([t_list[0:1], t_list], dim=0)
-                print(f"  CFG Initialize: x_t_latent_plus_uc shape: {x_t_latent_plus_uc.shape}")
-                print(f"  CFG Initialize: t_list_expanded shape: {t_list_expanded.shape}")
             elif self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "full"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent, x_t_latent], dim=0)
                 t_list_expanded = torch.concat([t_list, t_list], dim=0)
-                print(f"  CFG Full: x_t_latent_plus_uc shape: {x_t_latent_plus_uc.shape}")
-                print(f"  CFG Full: t_list_expanded shape: {t_list_expanded.shape}")
             else:
                 x_t_latent_plus_uc = x_t_latent
                 t_list_expanded = t_list
-                print(f"  No CFG: using original shapes")
-            
-            print(f"  prompt_embeds shape: {self.stream.prompt_embeds.shape}")
-            print(f"  stock_noise shape: {self.stream.stock_noise.shape}")
             
             # Get pipeline-specific conditioning context
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
@@ -779,20 +741,18 @@ class BaseControlNetPipeline:
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
             
+            # FIXED: TensorRT engine now expects CORRECT varying spatial dimensions
+            # No upsampling needed - tensors are passed through at their native sizes
             if down_block_res_samples is not None:
-                print(f"  ControlNet down_block_res_samples: {len(down_block_res_samples)} tensors")
-                for i, tensor in enumerate(down_block_res_samples[:3]):  # Show first 3
-                    print(f"    down_block[{i}] shape: {tensor.shape}")
-            else:
-                print(f"  ControlNet down_block_res_samples: None")
-                
-            if mid_block_res_sample is not None:
-                print(f"  ControlNet mid_block_res_sample shape: {mid_block_res_sample.shape}")
-            else:
-                print(f"  ControlNet mid_block_res_sample: None")
+                for i, tensor in enumerate(down_block_res_samples):
+                    pass
             
-            # Call TensorRT engine with ControlNet inputs
-            print(f"  🚀 Calling TensorRT UNet...")
+            if mid_block_res_sample is not None:
+                pass
+            
+            # Call TensorRT engine with ControlNet inputs (using diffusers-style interface)
+            # print(f"🚀 DEBUG: Calling TensorRT UNet with ControlNet conditioning - down_blocks: {len(down_block_res_samples) if down_block_res_samples else 0}, mid_block: {'Yes' if mid_block_res_sample is not None else 'No'}")
+            
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
                 t_list_expanded,
@@ -801,141 +761,37 @@ class BaseControlNetPipeline:
                 mid_block_additional_residual=mid_block_res_sample,
             ).sample
             
-            print(f"  ✅ TensorRT UNet completed, model_pred shape: {model_pred.shape}")
+            # print(f"✅ DEBUG: TensorRT UNet with ControlNet completed successfully")
             
-            # Enhanced CFG logic with proper tensor dimension handling
+            # Continue with original CFG logic
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
-                print(f"  📊 Processing CFG Initialize mode...")
                 noise_pred_text = model_pred[1:]
-                print(f"    noise_pred_text shape (model_pred[1:]): {noise_pred_text.shape}")
-                print(f"    stock_noise shape before update: {self.stream.stock_noise.shape}")
-                
-                # Ensure stock_noise matches the expected dimensions
-                if self.stream.stock_noise.shape[0] > noise_pred_text.shape[0]:
-                    print(f"    🔧 Trimming stock_noise: {self.stream.stock_noise.shape[0]} -> {noise_pred_text.shape[0]}")
-                    # Trim stock_noise to match noise_pred_text
-                    stock_noise_trimmed = self.stream.stock_noise[1:noise_pred_text.shape[0]+1]
-                    self.stream.stock_noise = torch.concat(
-                        [model_pred[0:1], stock_noise_trimmed], dim=0
-                    )
-                else:
-                    print(f"    ➡️ Normal stock_noise update")
-                    self.stream.stock_noise = torch.concat(
-                        [model_pred[0:1], self.stream.stock_noise[1:]], dim=0
-                    )
-                print(f"    stock_noise shape after update: {self.stream.stock_noise.shape}")
-                
+                self.stream.stock_noise = torch.concat(
+                    [model_pred[0:1], self.stream.stock_noise[1:]], dim=0
+                )
             elif self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "full"):
-                print(f"  📊 Processing CFG Full mode...")
                 noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
-                print(f"    noise_pred_uncond shape: {noise_pred_uncond.shape}")
-                print(f"    noise_pred_text shape: {noise_pred_text.shape}")
             else:
-                print(f"  📊 No CFG processing")
                 noise_pred_text = model_pred
-                print(f"    noise_pred_text shape: {noise_pred_text.shape}")
-                
+            
             if self.stream.guidance_scale > 1.0 and (
                 self.stream.cfg_type == "self" or self.stream.cfg_type == "initialize"
             ):
-                print(f"  🎯 Computing noise_pred_uncond for CFG...")
-                print(f"    Current stock_noise shape: {self.stream.stock_noise.shape}")
-                print(f"    Target noise_pred_text shape: {noise_pred_text.shape}")
-                
-                # Ensure stock_noise dimensions match noise_pred_text for delta calculation
-                if self.stream.stock_noise.shape[0] != noise_pred_text.shape[0]:
-                    print(f"    ⚠️ Dimension mismatch detected!")
-                    if self.stream.cfg_type == "initialize":
-                        print(f"    🔧 Initialize mode: adjusting stock_noise")
-                        # For initialize mode, stock_noise should match noise_pred_text size
-                        if self.stream.stock_noise.shape[0] > noise_pred_text.shape[0] + 1:
-                            stock_noise_for_delta = self.stream.stock_noise[1:noise_pred_text.shape[0]+1]
-                        else:
-                            stock_noise_for_delta = self.stream.stock_noise[1:]
-                        print(f"      stock_noise_for_delta shape: {stock_noise_for_delta.shape}")
-                    else:
-                        print(f"    🔧 Self mode: adjusting stock_noise")
-                        # For self mode, adjust stock_noise to match
-                        if self.stream.stock_noise.shape[0] > noise_pred_text.shape[0]:
-                            stock_noise_for_delta = self.stream.stock_noise[:noise_pred_text.shape[0]]
-                        else:
-                            # Expand stock_noise if needed
-                            repeat_count = (noise_pred_text.shape[0] + self.stream.stock_noise.shape[0] - 1) // self.stream.stock_noise.shape[0]
-                            stock_noise_expanded = self.stream.stock_noise.repeat(repeat_count, 1, 1, 1)
-                            stock_noise_for_delta = stock_noise_expanded[:noise_pred_text.shape[0]]
-                        print(f"      stock_noise_for_delta shape: {stock_noise_for_delta.shape}")
-                    
-                    noise_pred_uncond = stock_noise_for_delta * self.stream.delta
-                else:
-                    print(f"    ✅ Dimensions match, using direct multiplication")
-                    noise_pred_uncond = self.stream.stock_noise * self.stream.delta
-                
-                print(f"    noise_pred_uncond shape after calculation: {noise_pred_uncond.shape}")
-                
+                noise_pred_uncond = self.stream.stock_noise * self.stream.delta
+            
             if self.stream.guidance_scale > 1.0 and self.stream.cfg_type != "none":
-                print(f"  🎯 Final CFG calculation...")
-                print(f"    noise_pred_text shape: {noise_pred_text.shape}")
-                print(f"    noise_pred_uncond shape: {noise_pred_uncond.shape}")
-                
-                # Final safety check for tensor dimensions before CFG
-                if noise_pred_uncond.shape[0] != noise_pred_text.shape[0]:
-                    print(f"    ⚠️ FINAL DIMENSION MISMATCH! Fixing...")
-                    print(f"      noise_pred_uncond: {noise_pred_uncond.shape}")
-                    print(f"      noise_pred_text: {noise_pred_text.shape}")
-                    
-                    # Force alignment by trimming the larger tensor
-                    min_size = min(noise_pred_uncond.shape[0], noise_pred_text.shape[0])
-                    print(f"      Trimming both to size: {min_size}")
-                    noise_pred_uncond = noise_pred_uncond[:min_size]
-                    noise_pred_text = noise_pred_text[:min_size]
-                    
-                    print(f"      After trim - noise_pred_uncond: {noise_pred_uncond.shape}")
-                    print(f"      After trim - noise_pred_text: {noise_pred_text.shape}")
-                
-                print(f"    🧮 Performing CFG: uncond + {self.stream.guidance_scale} * (text - uncond)")
                 model_pred = noise_pred_uncond + self.stream.guidance_scale * (
                     noise_pred_text - noise_pred_uncond
                 )
-                print(f"    ✅ CFG result shape: {model_pred.shape}")
             else:
                 model_pred = noise_pred_text
-                print(f"  📋 Using noise_pred_text directly, shape: {model_pred.shape}")
-
-            print(f"  🎯 Final model_pred shape: {model_pred.shape}")
             
-            # Compute the previous noisy sample x_t -> x_t-1 (matching pipeline_batch.py)
+            # Compute the previous noisy sample x_t -> x_t-1
             if self.stream.use_denoising_batch:
-                print(f"  🔄 Using denoising batch processing...")
                 denoised_batch = self.stream.scheduler_step_batch(model_pred, x_t_latent, idx)
-                print(f"    denoised_batch shape: {denoised_batch.shape}")
-                
                 if self.stream.cfg_type == "self" or self.stream.cfg_type == "initialize":
-                    print(f"    📊 Updating stock noise...")
-                    # Ensure all tensors have compatible dimensions for stock noise update
-                    current_batch_size = model_pred.shape[0]
-                    print(f"      current_batch_size: {current_batch_size}")
-                    
-                    # Adjust beta_prod_t_sqrt and stock_noise to match current batch size
-                    if self.stream.beta_prod_t_sqrt.shape[0] > current_batch_size:
-                        beta_prod_t_sqrt_batch = self.stream.beta_prod_t_sqrt[:current_batch_size]
-                        print(f"      Trimmed beta_prod_t_sqrt: {self.stream.beta_prod_t_sqrt.shape[0]} -> {current_batch_size}")
-                    else:
-                        beta_prod_t_sqrt_batch = self.stream.beta_prod_t_sqrt
-                        print(f"      Using full beta_prod_t_sqrt: {beta_prod_t_sqrt_batch.shape[0]}")
-                    
-                    if self.stream.stock_noise.shape[0] > current_batch_size:
-                        stock_noise_batch = self.stream.stock_noise[:current_batch_size]
-                        print(f"      Trimmed stock_noise: {self.stream.stock_noise.shape[0]} -> {current_batch_size}")
-                    else:
-                        stock_noise_batch = self.stream.stock_noise
-                        print(f"      Using full stock_noise: {stock_noise_batch.shape[0]}")
-                    
-                    scaled_noise = beta_prod_t_sqrt_batch * stock_noise_batch
-                    print(f"      scaled_noise shape: {scaled_noise.shape}")
-                    
+                    scaled_noise = self.stream.beta_prod_t_sqrt * self.stream.stock_noise
                     delta_x = self.stream.scheduler_step_batch(model_pred, scaled_noise, idx)
-                    print(f"      delta_x shape: {delta_x.shape}")
-                    
                     alpha_next = torch.concat(
                         [
                             self.stream.alpha_prod_t_sqrt[1:],
@@ -943,7 +799,7 @@ class BaseControlNetPipeline:
                         ],
                         dim=0,
                     )
-                    delta_x = alpha_next[:current_batch_size] * delta_x
+                    delta_x = alpha_next * delta_x
                     beta_next = torch.concat(
                         [
                             self.stream.beta_prod_t_sqrt[1:],
@@ -951,32 +807,24 @@ class BaseControlNetPipeline:
                         ],
                         dim=0,
                     )
-                    delta_x = delta_x / beta_next[:current_batch_size]
+                    delta_x = delta_x / beta_next
                     init_noise = torch.concat(
                         [self.stream.init_noise[1:], self.stream.init_noise[0:1]], dim=0
                     )
-                    self.stream.stock_noise = init_noise[:current_batch_size] + delta_x
-                    print(f"      Updated stock_noise shape: {self.stream.stock_noise.shape}")
+                    self.stream.stock_noise = init_noise + delta_x
             else:
-                print(f"  🔄 Using non-batch processing...")
                 denoised_batch = self.stream.scheduler_step_batch(model_pred, x_t_latent, idx)
-                print(f"    denoised_batch shape: {denoised_batch.shape}")
             
-            print(f"✅ patched_unet_step_tensorrt completed successfully\n")
             return denoised_batch, model_pred
         
         # Replace the method
         self.stream.unet_step = patched_unet_step_tensorrt
 
     def _patch_pytorch_mode(self):
-        """Patch for PyTorch mode with ControlNet support (enhanced for multi-stream)"""
+        """Patch for PyTorch mode with ControlNet support (original implementation)"""
         
         def patched_unet_step_pytorch(x_t_latent, t_list, idx=None):
-            print(f"\n🔍 DEBUG: patched_unet_step_pytorch called")
-            print(f"  Input x_t_latent shape: {x_t_latent.shape}")
-            print(f"  guidance_scale: {self.stream.guidance_scale}, cfg_type: {self.stream.cfg_type}")
-            
-            # Handle CFG expansion (matching pipeline_batch.py logic)
+            # Handle CFG expansion
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
                 t_list_expanded = torch.concat([t_list[0:1], t_list], dim=0)
@@ -1009,17 +857,15 @@ class BaseControlNetPipeline:
             if mid_block_res_sample is not None:
                 unet_kwargs['mid_block_additional_residual'] = mid_block_res_sample
             
-            # Allow subclasses to add additional UNet kwargs
+            # Allow subclasses to add additional UNet kwargs (e.g., SDXL added_cond_kwargs)
             unet_kwargs.update(self._get_additional_unet_kwargs(**conditioning_context))
             
             # Call UNet with ControlNet conditioning
             model_pred = self.stream.unet(**unet_kwargs)[0]
-            print(f"  PyTorch UNet completed, model_pred shape: {model_pred.shape}")
             
-            # Enhanced CFG logic (matching pipeline_batch.py exactly)
+            # Continue with original CFG logic (same as TensorRT version)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 noise_pred_text = model_pred[1:]
-                print(f"  noise_pred_text shape: {noise_pred_text.shape}")
                 self.stream.stock_noise = torch.concat(
                     [model_pred[0:1], self.stream.stock_noise[1:]], dim=0
                 )
@@ -1027,22 +873,20 @@ class BaseControlNetPipeline:
                 noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
             else:
                 noise_pred_text = model_pred
-                
+            
             if self.stream.guidance_scale > 1.0 and (
                 self.stream.cfg_type == "self" or self.stream.cfg_type == "initialize"
             ):
                 noise_pred_uncond = self.stream.stock_noise * self.stream.delta
-                print(f"  noise_pred_uncond shape: {noise_pred_uncond.shape}")
-                
+            
             if self.stream.guidance_scale > 1.0 and self.stream.cfg_type != "none":
-                print(f"  CFG: {noise_pred_text.shape} - {noise_pred_uncond.shape}")
                 model_pred = noise_pred_uncond + self.stream.guidance_scale * (
                     noise_pred_text - noise_pred_uncond
                 )
             else:
                 model_pred = noise_pred_text
-
-            # Compute the previous noisy sample x_t -> x_t-1 (matching pipeline_batch.py)
+            
+            # Compute the previous noisy sample x_t -> x_t-1
             if self.stream.use_denoising_batch:
                 denoised_batch = self.stream.scheduler_step_batch(model_pred, x_t_latent, idx)
                 if self.stream.cfg_type == "self" or self.stream.cfg_type == "initialize":
@@ -1071,7 +915,6 @@ class BaseControlNetPipeline:
             else:
                 denoised_batch = self.stream.scheduler_step_batch(model_pred, x_t_latent, idx)
             
-            print(f"✅ patched_unet_step_pytorch completed\n")
             return denoised_batch, model_pred
         
         # Replace the method  
@@ -1247,13 +1090,4 @@ class BaseControlNetPipeline:
         Returns:
             Dictionary of additional kwargs
         """
-        return {}
-
-    def get_stream_status(self):
-        """Debug method to get current stream processing status"""
-        return {
-            'current_stream': getattr(self, 'stream_index', 0),
-            'initialized_streams': sum(getattr(self, 'stream_initialized', [False])),
-            'total_streams': self.stream.frame_bff_size,
-            'denoising_steps': self.stream.denoising_steps_num
-        } 
+        return {} 

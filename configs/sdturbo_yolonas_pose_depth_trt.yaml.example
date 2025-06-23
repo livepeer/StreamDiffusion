@@ -1,5 +1,5 @@
-model_id: "C:\\_dev\\comfy\\ComfyUI\\models\\checkpoints\\sd_turbo.safetensors"
-t_index_list: [0,16]
+model_id: "stabilityai/sd-turbo"
+t_index_list: [16,32]
 width: 512
 height: 512
 device: "cuda"
@@ -26,11 +26,20 @@ seed: 789
 
 # ControlNet configuration with TensorRT Depth Anything
 controlnets:
+  - model_id: "thibaud/controlnet-sd21-openpose-diffusers"
+    conditioning_scale: 0.5
+    preprocessor: "pose_tensorrt"
+    preprocessor_params:
+      engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\yolo-nas-pose\\yolo_nas_pose_l_0.8-fp16.engine"
+      detect_resolution: 640
+      image_resolution: 512
+    enabled: true 
+
   - model_id: "thibaud/controlnet-sd21-depth-diffusers"
     conditioning_scale: 0.5
     preprocessor: "depth_tensorrt"
     preprocessor_params:
-      engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\depth_anything_vits14-fp16.engine"
+      engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\v2_depth_anything_v2_vits-fp16.engine"
       detect_resolution: 518
       image_resolution: 512
     enabled: true 

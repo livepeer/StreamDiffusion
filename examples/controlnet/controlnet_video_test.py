@@ -21,118 +21,16 @@ import json
 from collections import deque
 
 
-def create_wrapper_from_config(config, resolution):
-    """Create StreamDiffusionWrapper from config"""
-    print("create_wrapper_from_config: Starting pipeline creation...")
-    
-    # Import here to avoid loading at module level
-    sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-    from utils.wrapper import StreamDiffusionWrapper
-    import torch
-    
-    # Determine parameters based on pipeline type
-    pipeline_type = config.get('pipeline_type', 'sd1.5')
-    t_index_list = config.get('t_index_list', [0,16])
-    
-    print(f"create_wrapper_from_config: Pipeline type: {pipeline_type}")
-    print(f"create_wrapper_from_config: Model: {config['model_id']}")
-    
-    if pipeline_type == 'sdturbo':
-        cfg_type = config.get('cfg_type', "none")
-        use_lcm_lora = config.get('use_lcm_lora', False)
-        use_tiny_vae = config.get('use_tiny_vae', True)
-    elif pipeline_type == 'sdxlturbo':
-        cfg_type = config.get('cfg_type', "none")
-        use_lcm_lora = config.get('use_lcm_lora', False)
-        use_tiny_vae = config.get('use_tiny_vae', False)
-    else:  # sd1.5
-        cfg_type = config.get('cfg_type', 'self')
-        use_lcm_lora = config.get('use_lcm_lora', True)
-        use_tiny_vae = config.get('use_tiny_vae', True)
-    
-    # Create ControlNet configurations for wrapper
-    controlnet_configs = []
-    if 'controlnets' in config and config['controlnets']:
-        print(f"create_wrapper_from_config: Loading {len(config['controlnets'])} ControlNet(s)...")
-        for cn_config in config['controlnets']:
-            controlnet_config = {
-                'model_id': cn_config['model_id'],
-                'preprocessor': cn_config['preprocessor'],
-                'conditioning_scale': cn_config['conditioning_scale'],
-                'enabled': cn_config.get('enabled', True),
-                'preprocessor_params': cn_config.get('preprocessor_params', None),
-                'pipeline_type': pipeline_type,
-                'control_guidance_start': cn_config.get('control_guidance_start', 0.0),
-                'control_guidance_end': cn_config.get('control_guidance_end', 1.0),
-            }
-            controlnet_configs.append(controlnet_config)
-            print(f"create_wrapper_from_config: - {cn_config['model_id']} ({cn_config['preprocessor']})")
-    else:
-        # Fallback single ControlNet for compatibility
-        print("create_wrapper_from_config: Using fallback depth ControlNet...")
-        controlnet_configs = [{
-            'model_id': 'lllyasviel/sd-controlnet-depth',
-            'preprocessor': 'depth_midas',
-            'conditioning_scale': 1.0,
-            'enabled': True,
-            'preprocessor_params': None,
-            'pipeline_type': pipeline_type,
-            'control_guidance_start': 0.0,
-            'control_guidance_end': 1.0,
-        }]
-    
-    print("create_wrapper_from_config: Creating StreamDiffusionWrapper...")
-    
-    # Create StreamDiffusionWrapper
-    wrapper = StreamDiffusionWrapper(
-        model_id_or_path=config['model_id'],
-        t_index_list=t_index_list,
-        mode="img2img",
-        output_type="pil",
-        device="cuda",
-        dtype=torch.float16,
-        frame_buffer_size=config.get('frame_buffer_size', 1),
-        width=resolution,
-        height=resolution,
-        warmup=10,
-        acceleration=config.get('acceleration', 'none'),
-        do_add_noise=True,
-        use_lcm_lora=use_lcm_lora,
-        use_tiny_vae=use_tiny_vae,
-        use_denoising_batch=True,
-        cfg_type=cfg_type,
-        seed=config.get('seed', 2),
-        use_safety_checker=False,
-        # ControlNet options
-        use_controlnet=True,
-        controlnet_config=controlnet_configs,
-    )
-    
-    print("create_wrapper_from_config: Preparing pipeline...")
-    
-    # Prepare pipeline
-    wrapper.prepare(
-        prompt=config.get('prompt', ''),
-        negative_prompt=config.get('negative_prompt', ''),
-        num_inference_steps=config.get('num_inference_steps', 50),
-        guidance_scale=config.get('guidance_scale', 1.1 if cfg_type != "none" else 1.0),
-        delta=config.get('delta', 1.0),
-    )
-    
-    print("create_wrapper_from_config: Pipeline creation completed!")
-    return wrapper
-
-
 def process_video(config_path, input_video, output_dir, resolution=None, engine_only=False):
     """Process video through ControlNet pipeline"""
     print(f"process_video: Loading config from {config_path}")
     
     # Import here to avoid loading at module level
     sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-    from streamdiffusion.controlnet import load_controlnet_config
+    from streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
     
     # Load configuration
-    config = load_controlnet_config(config_path)
+    config = load_config(config_path)
     
     # Set default resolution based on pipeline type if not specified
     if resolution is None:
@@ -157,8 +55,8 @@ def process_video(config_path, input_video, output_dir, resolution=None, engine_
     shutil.copy2(input_video, input_copy_path)
     print(f"process_video: Copied input video to {input_copy_path}")
     
-    # Create wrapper
-    wrapper = create_wrapper_from_config(config, resolution)
+    # Create wrapper using the built-in function
+    wrapper = create_wrapper_from_config(config, width=resolution, height=resolution)
     
     if engine_only:
         print("Engine-only mode: TensorRT engines have been built (if needed). Exiting.")
