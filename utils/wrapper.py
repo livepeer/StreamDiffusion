@@ -1,5 +1,3 @@
-# Copied from StreamDiffusion/utils/wrapper.py
-
 import gc
 import os
 import traceback
