@@ -15,7 +15,7 @@ import tkinter as tk
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from utils.viewer import receive_images
-from utils.wrapper import StreamDiffusionWrapper
+from streamdiffusion import StreamDiffusionWrapper
 
 inputs = []
 top = 0
@@ -141,7 +141,7 @@ def image_generation_process(
     similar_image_filter_max_skip_frame : int, optional
         The max skip frame for similar image filter, by default 10.
     """
-    
+
     global inputs
     stream = StreamDiffusionWrapper(
         model_id_or_path=model_id_or_path,

@@ -1,5 +1,5 @@
 from .pipeline import StreamDiffusion
-from utils.wrapper import StreamDiffusionWrapper
+from .wrapper import StreamDiffusionWrapper
 
 # ControlNet support
 try:
