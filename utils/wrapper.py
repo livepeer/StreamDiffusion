@@ -4,7 +4,7 @@ import gc
 import os
 import traceback
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Union
+from typing import List, Literal, Optional, Union, Dict, Any
 
 import numpy as np
 import torch
@@ -48,6 +48,9 @@ class StreamDiffusionWrapper:
         use_safety_checker: bool = False,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
+        # ControlNet options
+        use_controlnet: bool = False,
+        controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -114,8 +117,15 @@ class StreamDiffusionWrapper:
             The seed, by default 2.
         use_safety_checker : bool, optional
             Whether to use safety checker or not, by default False.
+        use_controlnet : bool, optional
+            Whether to enable ControlNet support, by default False.
+        controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
+            ControlNet configuration(s), by default None.
+            Can be a single config dict or list of config dicts for multiple ControlNets.
+            Each config should contain: model_id, preprocessor (optional), conditioning_scale, etc.
         """
         self.sd_turbo = "turbo" in model_id_or_path
+        self.use_controlnet = use_controlnet
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -167,7 +177,13 @@ class StreamDiffusionWrapper:
             seed=seed,
             engine_dir=engine_dir,
             build_engines_if_missing=build_engines_if_missing,
+            use_controlnet=use_controlnet,
+            controlnet_config=controlnet_config,
         )
+
+        # Store acceleration settings for ControlNet integration
+        self._acceleration = acceleration
+        self._engine_dir = engine_dir
 
         if device_ids is not None:
             self.stream.unet = torch.nn.DataParallel(
@@ -189,7 +205,7 @@ class StreamDiffusionWrapper:
     ) -> None:
         """
         Prepares the model for inference.
-
+        
         Parameters
         ----------
         prompt : str
@@ -202,12 +218,46 @@ class StreamDiffusionWrapper:
             The delta multiplier of virtual residual noise,
             by default 1.0.
         """
+        
+        # Apply ControlNet if configured
+        if self.use_controlnet and hasattr(self, 'controlnet_configs') and self.controlnet_configs:
+            # Apply ControlNet integration
+            self._apply_controlnet_integration()
+        
         self.stream.prepare(
             prompt,
             negative_prompt,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             delta=delta,
+        )
+
+    def update_stream_params(
+        self,
+        num_inference_steps: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
+        delta: Optional[float] = None,
+        t_index_list: Optional[List[int]] = None,
+    ) -> None:
+        """
+        Update streaming parameters efficiently in a single call.
+        
+        Parameters
+        ----------
+        num_inference_steps : Optional[int]
+            The number of inference steps to perform.
+        guidance_scale : Optional[float]
+            The guidance scale to use for CFG.
+        delta : Optional[float]
+            The delta multiplier of virtual residual noise.
+        t_index_list : Optional[List[int]]
+            The t_index_list to use for inference.
+        """
+        self.stream.update_stream_params(
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            delta=delta,
+            t_index_list=t_index_list,
         )
 
     def __call__(
@@ -336,7 +386,7 @@ class StreamDiffusionWrapper:
         self, image_tensor: torch.Tensor, output_type: str = "pil"
     ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
         """
-        Postprocesses the image.
+        Postprocesses the image (OPTIMIZED VERSION)
 
         Parameters
         ----------
@@ -348,10 +398,79 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The postprocessed image.
         """
+        # Fast paths for non-PIL outputs (avoid unnecessary conversions)
+        if output_type == "latent":
+            return image_tensor
+        elif output_type == "pt":
+            # Denormalize on GPU, return tensor
+            return self._denormalize_on_gpu(image_tensor)
+        elif output_type == "np":
+            # Denormalize on GPU, then single efficient CPU transfer
+            denormalized = self._denormalize_on_gpu(image_tensor)
+            return denormalized.cpu().permute(0, 2, 3, 1).float().numpy()
+        
+        # PIL output path (optimized)
+        if output_type == "pil":
+            if self.frame_buffer_size > 1:
+                return self._tensor_to_pil_optimized(image_tensor)
+            else:
+                return self._tensor_to_pil_optimized(image_tensor)[0]
+        
+        # Fallback to original method for any unexpected output types
         if self.frame_buffer_size > 1:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)
         else:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
+    
+    def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Denormalize image tensor on GPU for efficiency
+        
+        Args:
+            image_tensor: Input tensor on GPU
+            
+        Returns:
+            Denormalized tensor on GPU, clamped to [0,1]
+        """
+        return (image_tensor / 2 + 0.5).clamp(0, 1)
+    
+    def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
+        """
+        Optimized tensor to PIL conversion with minimal CPU transfers
+        
+        Args:
+            image_tensor: Input tensor on GPU
+            
+        Returns:
+            List of PIL Images
+        """
+        # Denormalize on GPU first
+        denormalized = self._denormalize_on_gpu(image_tensor)
+        
+        # Convert to uint8 on GPU to reduce transfer size
+        # Scale to [0, 255] and convert to uint8 
+        uint8_tensor = (denormalized * 255).clamp(0, 255).to(torch.uint8)
+        
+        # Single efficient CPU transfer
+        cpu_tensor = uint8_tensor.cpu()
+        
+        # Convert to HWC format for PIL
+        # From BCHW to BHWC
+        cpu_tensor = cpu_tensor.permute(0, 2, 3, 1)
+        
+        # Convert to PIL images efficiently
+        pil_images = []
+        for i in range(cpu_tensor.shape[0]):
+            img_array = cpu_tensor[i].numpy()
+            
+            if img_array.shape[-1] == 1:
+                # Grayscale
+                pil_images.append(Image.fromarray(img_array.squeeze(-1), mode="L"))
+            else:
+                # RGB
+                pil_images.append(Image.fromarray(img_array))
+        
+        return pil_images
 
     def _load_model(
         self,
@@ -371,6 +490,8 @@ class StreamDiffusionWrapper:
         seed: int = 2,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
+        use_controlnet: bool = False,
+        controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -383,6 +504,7 @@ class StreamDiffusionWrapper:
         4. Enables acceleration if needed.
         5. Prepares the model for inference.
         6. Load the safety checker if needed.
+        7. Apply ControlNet patch if needed.
 
         Parameters
         ----------
@@ -415,22 +537,42 @@ class StreamDiffusionWrapper:
             You cannot use anything other than "none" for txt2img mode.
         seed : int, optional
             The seed, by default 2.
+        use_controlnet : bool, optional
+            Whether to apply ControlNet patch, by default False.
+        controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
+            ControlNet configuration(s), by default None.
 
         Returns
         -------
         StreamDiffusion
-            The loaded model.
+            The loaded model (potentially wrapped with ControlNet pipeline).
         """
 
+        # Determine if this should be an SDXL pipeline from controlnet config
+        pipeline_type = self._get_pipeline_type_from_config(controlnet_config)
+        is_sdxl = pipeline_type == "sdxlturbo"
+        
         try:  # Load from local directory
-            pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
-                model_id_or_path,
-            ).to(device=self.device, dtype=self.dtype)
+            if is_sdxl:
+                from diffusers import StableDiffusionXLPipeline
+                pipe = StableDiffusionXLPipeline.from_pretrained(
+                    model_id_or_path,
+                ).to(device=self.device, dtype=self.dtype)
+            else:
+                pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_pretrained(
+                    model_id_or_path,
+                ).to(device=self.device, dtype=self.dtype)
 
         except ValueError:  # Load from huggingface
-            pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_single_file(
-                model_id_or_path,
-            ).to(device=self.device, dtype=self.dtype)
+            if is_sdxl:
+                from diffusers import StableDiffusionXLPipeline
+                pipe = StableDiffusionXLPipeline.from_single_file(
+                    model_id_or_path,
+                ).to(device=self.device, dtype=self.dtype)
+            else:
+                pipe: StableDiffusionPipeline = StableDiffusionPipeline.from_single_file(
+                    model_id_or_path,
+                ).to(device=self.device, dtype=self.dtype)
         except Exception:  # No model found
             traceback.print_exc()
             print("Model load has failed. Doesn't exist.")
@@ -461,7 +603,6 @@ class StreamDiffusionWrapper:
                 for lora_name, lora_scale in lora_dict.items():
                     stream.load_lora(lora_name)
                     stream.fuse_lora(lora_scale=lora_scale)
-                    print(f"Use LoRA: {lora_name} in weights {lora_scale}")
 
         if use_tiny_vae:
             if vae_id is not None:
@@ -469,7 +610,9 @@ class StreamDiffusionWrapper:
                     device=pipe.device, dtype=pipe.dtype
                 )
             else:
-                stream.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(
+                # Use TAESD XL for SDXL models, regular TAESD for SD 1.5
+                taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
+                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(
                     device=pipe.device, dtype=pipe.dtype
                 )
 
@@ -493,10 +636,17 @@ class StreamDiffusionWrapper:
                     UNet,
                     VAEEncoder,
                 )
+                # Add ControlNet detection and support
+                from streamdiffusion.acceleration.tensorrt.model_detection import (
+                    detect_model_from_diffusers_unet, 
+                    extract_unet_architecture, 
+                    validate_architecture
+                )
+                from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_wrapper
 
                 def create_prefix(
                     model_id_or_path: str,
-                    max_batch_size: int,
+                    max_batch: int,
                     min_batch_size: int,
                     width: int,
                     height: int,
@@ -507,12 +657,25 @@ class StreamDiffusionWrapper:
                     else:
                         return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
 
-                engine_dir = Path(engine_dir)
+                # Detect ControlNet support needed based on UNet architecture
+                use_controlnet_trt = (acceleration == "tensorrt")
+                unet_arch = {}
+                try:
+                    model_type = detect_model_from_diffusers_unet(stream.unet)
+                    unet_arch = extract_unet_architecture(stream.unet)
+                    unet_arch = validate_architecture(unet_arch, model_type)
+                    use_controlnet_trt = True  # Always enable ControlNet support in TRT engines
+                    print(f"Enabling TensorRT ControlNet support for {model_type}")
+                except Exception as e:
+                    print(f"ControlNet architecture detection failed: {e}, compiling without ControlNet support")
+
+                # Use the engine_dir parameter passed to this function, with fallback to instance variable
+                engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
                 unet_path = os.path.join(
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch_size=stream.trt_unet_batch_size,
+                        max_batch=stream.trt_unet_batch_size,
                         min_batch_size=stream.trt_unet_batch_size,
                         width=self.width,
                         height=self.height,
@@ -523,7 +686,7 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch_size=self.batch_size
+                        max_batch=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -538,7 +701,7 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch_size=self.batch_size
+                        max_batch=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -578,31 +741,51 @@ class StreamDiffusionWrapper:
 
                     unet_model = UNet(
                         fp16=True,
-                        device=str(stream.device),
-                        max_batch_size=stream.trt_unet_batch_size,
+                        device=stream.device,
+                        max_batch=stream.trt_unet_batch_size,
                         min_batch_size=stream.trt_unet_batch_size,
                         embedding_dim=stream.text_encoder.config.hidden_size,
                         unet_dim=stream.unet.config.in_channels,
+                        use_control=use_controlnet_trt,
+                        unet_arch=unet_arch if use_controlnet_trt else None,
                     )
-                    compile_unet(
-                        stream.unet,
-                        unet_model,
-                        unet_path + ".onnx",
-                        unet_path + ".opt.onnx",
-                        unet_path,
-                        opt_batch_size=stream.trt_unet_batch_size,
-                        engine_build_options={
-                            'opt_image_height': self.height,
-                            'opt_image_width': self.width,
-                        },
-                    )
+                    
+                    # Use ControlNet wrapper if ControlNet support is enabled
+                    if use_controlnet_trt:
+                        control_input_names = unet_model.get_input_names()
+                        wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
+                        compile_unet(
+                            wrapped_unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
+                            engine_build_options={
+                                'opt_image_height': self.height,
+                                'opt_image_width': self.width,
+                            },
+                        )
+                    else:
+                        compile_unet(
+                            stream.unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
+                            engine_build_options={
+                                'opt_image_height': self.height,
+                                'opt_image_width': self.width,
+                            },
+                        )
 
                 if not os.path.exists(vae_decoder_path):
                     os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
                     stream.vae.forward = stream.vae.decode
                     vae_decoder_model = VAE(
-                        device=str(stream.device),
-                        max_batch_size=self.batch_size
+                        device=stream.device,
+                        max_batch=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -629,8 +812,8 @@ class StreamDiffusionWrapper:
                     os.makedirs(os.path.dirname(vae_encoder_path), exist_ok=True)
                     vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
                     vae_encoder_model = VAEEncoder(
-                        device=str(stream.device),
-                        max_batch_size=self.batch_size
+                        device=stream.device,
+                        max_batch=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -660,6 +843,14 @@ class StreamDiffusionWrapper:
                 stream.unet = UNet2DConditionModelEngine(
                     unet_path, cuda_stream, use_cuda_graph=False
                 )
+                
+                # Store ControlNet metadata on the engine for runtime use
+                if use_controlnet_trt:
+                    setattr(stream.unet, 'use_control', True)
+                    setattr(stream.unet, 'unet_arch', unet_arch)
+                else:
+                    setattr(stream.unet, 'use_control', False)
+                    
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,
@@ -673,17 +864,17 @@ class StreamDiffusionWrapper:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                print("TensorRT acceleration enabled.")
             if acceleration == "sfast":
                 from streamdiffusion.acceleration.sfast import (
                     accelerate_with_stable_fast,
                 )
 
                 stream = accelerate_with_stable_fast(stream)
-                print("StableFast acceleration enabled.")
         except Exception:
             traceback.print_exc()
             print("Acceleration has failed. Falling back to normal mode.")
+            # TODO: Remove this temporary error once the fix is ready
+            raise NotImplementedError("Temporarily disabled for maintenance")
 
         if seed < 0:  # Random seed
             seed = np.random.randint(0, 1000000)
@@ -713,4 +904,150 @@ class StreamDiffusionWrapper:
             )
             self.nsfw_fallback_img = Image.new("RGB", (self.height, self.width), (0, 0, 0))
 
+        # Apply ControlNet patch if needed
+        if use_controlnet and controlnet_config:
+            stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir)
+
         return stream
+
+    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines") -> Any:
+        """
+        Apply ControlNet patch to StreamDiffusion based on pipeline_type
+        
+        Args:
+            stream: Base StreamDiffusion instance
+            controlnet_config: ControlNet configuration(s)
+            
+        Returns:
+            ControlNet-enabled pipeline (ControlNetPipeline or SDXLTurboControlNetPipeline)
+        """
+        # Extract pipeline_type from controlnet_config if it's in there
+        if isinstance(controlnet_config, list):
+            config_dict = controlnet_config[0] if controlnet_config else {}
+        else:
+            config_dict = controlnet_config
+            
+        pipeline_type = config_dict.get('pipeline_type', 'sd1.5')
+        
+        # Check if we should use TensorRT ControlNet acceleration
+        use_controlnet_tensorrt = (acceleration == "tensorrt")
+        
+        if pipeline_type == "sdxlturbo":
+            from streamdiffusion.controlnet.controlnet_sdxlturbo_pipeline import SDXLTurboControlNetPipeline
+            controlnet_pipeline = SDXLTurboControlNetPipeline(stream, self.device, self.dtype)
+        elif pipeline_type in ["sd1.5", "sdturbo"]:
+            from streamdiffusion.controlnet.controlnet_pipeline import ControlNetPipeline
+            controlnet_pipeline = ControlNetPipeline(stream, self.device, self.dtype)
+        else:
+            raise ValueError(f"Unsupported pipeline_type: {pipeline_type}")
+        
+        # Initialize ControlNet engine pool if using TensorRT acceleration
+        if use_controlnet_tensorrt:
+            from streamdiffusion.acceleration.tensorrt.engine_pool import ControlNetEnginePool
+            from polygraphy import cuda
+            
+            # Create engine pool with same engine directory structure as UNet
+            stream_cuda = cuda.Stream()
+            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda)
+            
+            # Store pool on the pipeline for later use
+            setattr(controlnet_pipeline, '_controlnet_pool', controlnet_pool)
+            setattr(controlnet_pipeline, '_use_tensorrt', True)
+            # Also set on stream where ControlNet pipeline expects to find it
+            setattr(stream, 'controlnet_engine_pool', controlnet_pool)
+            print("Initialized ControlNet TensorRT engine pool")
+        else:
+            setattr(controlnet_pipeline, '_use_tensorrt', False)
+            print("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
+        
+        # Setup ControlNets from config
+        if not isinstance(controlnet_config, list):
+            controlnet_config = [controlnet_config]
+        
+        for config in controlnet_config:
+            model_id = config.get('model_id')
+            if not model_id:
+                continue
+                
+            preprocessor = config.get('preprocessor', None)
+            conditioning_scale = config.get('conditioning_scale', 1.0)
+            enabled = config.get('enabled', True)
+            preprocessor_params = config.get('preprocessor_params', None)
+            
+            try:
+                # Pass config dictionary directly
+                cn_config = {
+                    'model_id': model_id,
+                    'preprocessor': preprocessor,
+                    'conditioning_scale': conditioning_scale,
+                    'enabled': enabled,
+                    'preprocessor_params': preprocessor_params or {}
+                }
+                
+                controlnet_pipeline.add_controlnet(cn_config)
+            except Exception as e:
+                pass
+        
+        return controlnet_pipeline
+
+    # ControlNet convenience methods
+    def add_controlnet(self, 
+                      model_id: str,
+                      preprocessor: Optional[str] = None,
+                      conditioning_scale: float = 1.0,
+                      control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
+                      enabled: bool = True,
+                      preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
+        """Forward add_controlnet call to the underlying ControlNet pipeline"""
+        if not self.use_controlnet:
+            raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
+        
+        if hasattr(self.stream, 'add_controlnet'):
+            cn_config = {
+                'model_id': model_id,
+                'preprocessor': preprocessor,
+                'conditioning_scale': conditioning_scale,
+                'enabled': enabled,
+                'preprocessor_params': preprocessor_params or {}
+            }
+            return self.stream.add_controlnet(cn_config, control_image)
+        else:
+            raise RuntimeError("add_controlnet: ControlNet functionality not available on this pipeline")
+
+    
+
+    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
+        """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
+        if self.use_controlnet and hasattr(self.stream, 'update_control_image_efficient'):
+            self.stream.update_control_image_efficient(control_image, index=index)
+
+    def update_controlnet_scale(self, index: int, scale: float) -> None:
+        """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""
+        if self.use_controlnet and hasattr(self.stream, 'update_controlnet_scale'):
+            self.stream.update_controlnet_scale(index, scale)
+
+    def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
+        """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
+        if self.use_controlnet and hasattr(self.stream, 'get_last_processed_image'):
+            return self.stream.get_last_processed_image(index)
+        return None
+
+    def _get_pipeline_type_from_config(self, controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]) -> str:
+        """
+        Extracts the pipeline_type from controlnet_config if it exists.
+        
+        Args:
+            controlnet_config: ControlNet configuration(s)
+            
+        Returns:
+            pipeline_type: Extracted pipeline_type or 'sd1.5' as default
+        """
+        if controlnet_config is None:
+            return 'sd1.5'  # Default to SD 1.5
+            
+        if isinstance(controlnet_config, list):
+            config_dict = controlnet_config[0] if controlnet_config else {}
+        else:
+            config_dict = controlnet_config
+            
+        return config_dict.get('pipeline_type', 'sd1.5')  # Default to SD 1.5 if not specified

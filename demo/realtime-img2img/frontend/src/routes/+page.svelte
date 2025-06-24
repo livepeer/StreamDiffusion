@@ -6,14 +6,20 @@
   import VideoInput from '$lib/components/VideoInput.svelte';
   import Button from '$lib/components/Button.svelte';
   import PipelineOptions from '$lib/components/PipelineOptions.svelte';
+  import ControlNetConfig from '$lib/components/ControlNetConfig.svelte';
   import Spinner from '$lib/icons/spinner.svelte';
   import Warning from '$lib/components/Warning.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
-  import { getPipelineValues, deboucedPipelineValues } from '$lib/store';
+  import { getPipelineValues, deboucedPipelineValues, pipelineValues } from '$lib/store';
 
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
+  let controlnetInfo: any = null;
+  let tIndexList: number[] = [35, 45];
+  let guidanceScale: number = 1.1;
+  let delta: number = 0.7;
+  let numInferenceSteps: number = 50;
   let pageContent: string;
   let isImageMode: boolean = false;
   let maxQueueSize: number = 0;
@@ -28,12 +34,73 @@
     const settings = await fetch('/api/settings').then((r) => r.json());
     pipelineParams = settings.input_params.properties;
     pipelineInfo = settings.info.properties;
+    controlnetInfo = settings.controlnet || null;
+    tIndexList = settings.t_index_list || [35, 45];
+    guidanceScale = settings.guidance_scale || 1.1;
+    delta = settings.delta || 0.7;
+    numInferenceSteps = settings.num_inference_steps || 50;
     isImageMode = pipelineInfo.input_mode.default === PipelineMode.IMAGE;
     maxQueueSize = settings.max_queue_size;
     pageContent = settings.page_content;
+    
+    // Update prompt in store if config prompt is available
+    if (settings.config_prompt) {
+      pipelineValues.update(values => ({
+        ...values,
+        prompt: settings.config_prompt
+      }));
+    }
+    
     console.log(pipelineParams);
+    console.log('ControlNet Info:', controlnetInfo);
+    console.log('T-Index List:', tIndexList);
     toggleQueueChecker(true);
   }
+
+  function handleControlNetUpdate(event: CustomEvent) {
+    controlnetInfo = event.detail.controlnet;
+    
+    // Update prompt if config prompt is available
+    if (event.detail.config_prompt) {
+      pipelineValues.update(values => ({
+        ...values,
+        prompt: event.detail.config_prompt
+      }));
+    }
+    
+    // Update t_index_list if available
+    if (event.detail.t_index_list) {
+      tIndexList = [...event.detail.t_index_list];
+    }
+    
+    console.log('ControlNet updated:', controlnetInfo);
+    console.log('T-Index List updated:', tIndexList);
+  }
+
+  async function handleTIndexListUpdate(newTIndexList: number[]) {
+    try {
+      const response = await fetch('/api/update-t-index-list', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          t_index_list: newTIndexList
+        }),
+      });
+
+      if (response.ok) {
+        tIndexList = [...newTIndexList]; // Update local state
+        console.log('T-Index List updated:', tIndexList);
+      } else {
+        const result = await response.json();
+        console.error('Failed to update t_index_list:', result.detail);
+      }
+    } catch (error) {
+      console.error('Failed to update t_index_list:', error);
+    }
+  }
+
   function toggleQueueChecker(start: boolean) {
     queueCheckerRunning = start && maxQueueSize > 0;
     if (start) {
@@ -134,6 +201,18 @@
           {/if}
         </Button>
         <PipelineOptions {pipelineParams}></PipelineOptions>
+      </div>
+      <!-- ControlNet Configuration Section -->
+      <div class="sm:col-span-2">
+        <ControlNetConfig 
+          {controlnetInfo} 
+          {tIndexList} 
+          {guidanceScale}
+          {delta}
+          {numInferenceSteps}
+          on:controlnetUpdated={handleControlNetUpdate}
+          on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
+        ></ControlNetConfig>
       </div>
     </article>
   {:else}

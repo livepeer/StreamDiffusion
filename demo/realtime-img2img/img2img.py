@@ -10,8 +10,12 @@ sys.path.append(
 )
 
 from utils.wrapper import StreamDiffusionWrapper
+# Import the config system functions
+from src.streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
 
 import torch
+import yaml
+from pathlib import Path
 
 from config import Args
 from pydantic import BaseModel, Field
@@ -25,7 +29,7 @@ default_prompt = "Portrait of The Joker halloween costume, face painting, with ,
 default_negative_prompt = "black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity"
 
 page_content = """<h1 class="text-3xl font-bold">StreamDiffusion</h1>
-<h3 class="text-xl font-bold">Image-to-Image SD-Turbo</h3>
+<h3 class="text-xl font-bold">Image-to-Image</h3>
 <p class="text-sm">
     This demo showcases
     <a
@@ -33,12 +37,7 @@ page_content = """<h1 class="text-3xl font-bold">StreamDiffusion</h1>
     target="_blank"
     class="text-blue-500 underline hover:no-underline">StreamDiffusion
 </a>
-Image to Image pipeline using
-    <a
-    href="https://huggingface.co/stabilityai/sd-turbo"
-    target="_blank"
-    class="text-blue-500 underline hover:no-underline">SD-Turbo</a
-    > with a MJPEG stream server.
+Image to Image pipeline using configuration system.
 </p>
 """
 
@@ -69,41 +68,117 @@ class Pipeline:
             512, min=2, max=15, title="Height", disabled=True, hide=True, id="height"
         )
 
+#TODO update naming convention to reflect the controlnet agnostic nature of the config system (pipeline_config instead of controlnet_config for example)
     def __init__(self, args: Args, device: torch.device, torch_dtype: torch.dtype):
+        # Load configuration if provided
+        self.config = None
+        self.use_config = False
+        
+        if args.controlnet_config:
+            try:
+                self.config = load_config(args.controlnet_config)
+                self.use_config = True
+                print("__init__: Using configuration file mode")
+            except Exception as e:
+                print(f"__init__: Failed to load config file {args.controlnet_config}: {e}")
+                print("__init__: Falling back to standard mode")
+                self.use_config = False
+        
         params = self.InputParams()
-        self.stream = StreamDiffusionWrapper(
-            model_id_or_path=base_model,
-            use_tiny_vae=args.taesd,
-            device=device,
-            dtype=torch_dtype,
-            t_index_list=[35, 45],
-            frame_buffer_size=1,
-            width=params.width,
-            height=params.height,
-            use_lcm_lora=False,
-            output_type="pil",
-            warmup=10,
-            vae_id=None,
-            acceleration=args.acceleration,
-            mode="img2img",
-            use_denoising_batch=True,
-            cfg_type="none",
-            use_safety_checker=args.safety_checker,
-            # enable_similar_image_filter=True,
-            # similar_image_filter_threshold=0.98,
-            engine_dir=args.engine_dir,
-        )
+        
+        if self.use_config:
+            # Use config-based pipeline creation
+            # Set up runtime overrides for args that might differ from config
+            overrides = {
+                'device': device,
+                'dtype': torch_dtype,
+                'acceleration': args.acceleration,
+                'use_safety_checker': args.safety_checker,
+            }
+            
+            # Determine engine_dir: use config value if available, otherwise use args
+            engine_dir = args.engine_dir  # Default to command-line/environment value
+            if 'engine_dir' in self.config:
+                engine_dir = self.config['engine_dir']
+            if engine_dir:
+                overrides['engine_dir'] = engine_dir
+            
+            # Override taesd if provided via args and not in config
+            if args.taesd and 'use_tiny_vae' not in self.config:
+                overrides['use_tiny_vae'] = args.taesd
+            
+            # Update params with config values
+            params.width = self.config.get('width', 512)
+            params.height = self.config.get('height', 512)
+            
+            # Create wrapper using config system
+            self.stream = create_wrapper_from_config(self.config, **overrides)
+            
+            # Store config values for later use
+            self.prompt = self.config.get('prompt', default_prompt)
+            self.negative_prompt = self.config.get('negative_prompt', default_negative_prompt)
+            self.guidance_scale = self.config.get('guidance_scale', 1.2)
+            self.num_inference_steps = self.config.get('num_inference_steps', 50)
+            
+        else:
+            # Create StreamDiffusionWrapper without config (original behavior)
+            print("__init__: Using standard mode (no config)")
+            self.stream = StreamDiffusionWrapper(
+                model_id_or_path=base_model,
+                use_tiny_vae=args.taesd,
+                device=device,
+                dtype=torch_dtype,
+                t_index_list=[35, 45],
+                frame_buffer_size=1,
+                width=params.width,
+                height=params.height,
+                use_lcm_lora=False,
+                output_type="pil",
+                warmup=10,
+                vae_id=None,
+                acceleration=args.acceleration,
+                mode="img2img",
+                use_denoising_batch=True,
+                cfg_type="none",
+                use_safety_checker=args.safety_checker,
+                engine_dir=args.engine_dir,
+            )
+            
+            # Store default values for later use
+            self.prompt = default_prompt
+            self.negative_prompt = default_negative_prompt
+            self.guidance_scale = 1.2
+            self.num_inference_steps = 50
+            
+            # Prepare pipeline with default prompts
+            self.stream.prepare(
+                prompt=self.prompt,
+                negative_prompt=self.negative_prompt,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+            )
 
-        self.last_prompt = default_prompt
-        self.stream.prepare(
-            prompt=default_prompt,
-            negative_prompt=default_negative_prompt,
-            num_inference_steps=50,
-            guidance_scale=1.2,
-        )
+        self.last_prompt = self.prompt
 
     def predict(self, params: "Pipeline.InputParams") -> Image.Image:
-        image_tensor = self.stream.preprocess_image(params.image)
-        output_image = self.stream(image=image_tensor, prompt=params.prompt)
+        # Update prompt if it has changed
+        if hasattr(params, 'prompt') and params.prompt != self.last_prompt:
+            self.last_prompt = params.prompt
+            # Update the pipeline with new prompt
+            self.stream.prepare(
+                prompt=params.prompt,
+                negative_prompt=self.negative_prompt,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+            )
+
+        if self.use_config and self.config and 'controlnets' in self.config:
+            # ControlNet mode: update control image and use PIL image
+            self.stream.update_control_image_efficient(params.image)
+            output_image = self.stream(params.image)
+        else:
+            # Standard mode: use original logic with preprocessed tensor
+            image_tensor = self.stream.preprocess_image(params.image)
+            output_image = self.stream(image=image_tensor, prompt=params.prompt)
 
         return output_image

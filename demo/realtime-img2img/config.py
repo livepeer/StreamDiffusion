@@ -17,6 +17,7 @@ class Args(NamedTuple):
     debug: bool
     acceleration: str
     engine_dir: str
+    controlnet_config: str
 
     def pretty_print(self):
         print("\n")
@@ -103,6 +104,13 @@ parser.add_argument(
     type=str,
     default=ENGINE_DIR,
     help="Engine Dir",
+)
+parser.add_argument(
+    "--controlnet-config",
+    dest="controlnet_config",
+    type=str,
+    default=None,
+    help="Path to ControlNet YAML configuration file (optional)",
 )
 parser.set_defaults(taesd=USE_TAESD)
 config = Args(**vars(parser.parse_args()))

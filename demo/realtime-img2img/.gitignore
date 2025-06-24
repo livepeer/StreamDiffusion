@@ -4,3 +4,7 @@ public/
 *.pem
 !lib/
 !static/
+
+# Test files
+test_integration.py
+test_controlnet_config.yaml

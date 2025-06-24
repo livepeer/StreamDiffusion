@@ -69,7 +69,7 @@ class BaseModel:
         fp16=False,
         device="cuda",
         verbose=True,
-        max_batch_size=16,
+        max_batch=16,
         min_batch_size=1,
         embedding_dim=768,
         text_maxlen=77,
@@ -80,7 +80,7 @@ class BaseModel:
         self.verbose = verbose
 
         self.min_batch = min_batch_size
-        self.max_batch = max_batch_size
+        self.max_batch = max_batch
         self.min_image_shape = 256  # min image resolution: 256x256
         self.max_image_shape = 1024  # max image resolution: 1024x1024
         self.min_latent_shape = self.min_image_shape // 8
@@ -160,10 +160,10 @@ class BaseModel:
 
 
 class CLIP(BaseModel):
-    def __init__(self, device, max_batch_size, embedding_dim, min_batch_size=1):
+    def __init__(self, device, max_batch, embedding_dim, min_batch_size=1):
         super(CLIP, self).__init__(
             device=device,
-            max_batch_size=max_batch_size,
+            max_batch=max_batch,
             min_batch_size=min_batch_size,
             embedding_dim=embedding_dim,
         )
@@ -205,14 +205,14 @@ class CLIP(BaseModel):
     def optimize(self, onnx_graph):
         opt = Optimizer(onnx_graph)
         opt.info(self.name + ": original")
-        opt.select_outputs([0])  # delete graph output#1
+        opt.select_outputs([0])
         opt.cleanup()
         opt.info(self.name + ": remove output[1]")
         opt.fold_constants()
         opt.info(self.name + ": fold constants")
         opt.infer_shapes()
         opt.info(self.name + ": shape inference")
-        opt.select_outputs([0], names=["text_embeddings"])  # rename network output
+        opt.select_outputs([0], names=["text_embeddings"])
         opt.info(self.name + ": remove output[0]")
         opt_onnx_graph = opt.cleanup(return_onnx=True)
         opt.info(self.name + ": finished")
@@ -224,36 +224,109 @@ class UNet(BaseModel):
         self,
         fp16=False,
         device="cuda",
-        max_batch_size=16,
+        max_batch=16,
         min_batch_size=1,
         embedding_dim=768,
         text_maxlen=77,
         unet_dim=4,
+        use_control=False,
+        unet_arch=None,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
             device=device,
-            max_batch_size=max_batch_size,
+            max_batch=max_batch,
             min_batch_size=min_batch_size,
             embedding_dim=embedding_dim,
             text_maxlen=text_maxlen,
         )
         self.unet_dim = unet_dim
         self.name = "UNet"
+        
+        self.use_control = use_control
+        self.unet_arch = unet_arch or {}
+        
+        if self.use_control and self.unet_arch:
+            self.control_inputs = self.get_control()
+            self._add_control_inputs()
+        else:
+            self.control_inputs = {}
+
+    def get_control(self) -> dict:
+        """Generate ControlNet input configurations with multi-resolution spatial dimensions."""
+        block_out_channels = self.unet_arch.get('block_out_channels', (320, 640, 1280, 1280))
+        
+        control_inputs = {}
+        
+        control_configs = [
+            (320, 64), (320, 64), (320, 64),     # Down block 0
+            (320, 32), (640, 32), (640, 32),     # Down block 1
+            (640, 16), (1280, 16), (1280, 16),   # Down block 2
+            (1280, 8), (1280, 8), (1280, 8),     # Down block 3
+        ]
+        
+        for i, (channels, spatial_size) in enumerate(control_configs):
+            input_name = f"input_control_{i:02d}"
+            control_inputs[input_name] = {
+                'batch': self.min_batch,
+                'channels': channels,
+                'height': spatial_size,
+                'width': spatial_size,
+                'downsampling_factor': 1
+            }
+        
+        control_inputs["input_control_middle"] = {
+            'batch': self.min_batch,
+            'channels': 1280,
+            'height': 8,
+            'width': 8,
+            'downsampling_factor': 1
+        }
+        
+        return control_inputs
+
+    def _add_control_inputs(self):
+        """Add ControlNet inputs to the model's input/output specifications"""
+        if not self.control_inputs:
+            return
+        
+        self._original_get_input_names = self.get_input_names
+        self._original_get_dynamic_axes = self.get_dynamic_axes
+        self._original_get_input_profile = self.get_input_profile
+        self._original_get_shape_dict = self.get_shape_dict
+        self._original_get_sample_input = self.get_sample_input
 
     def get_input_names(self):
-        return ["sample", "timestep", "encoder_hidden_states"]
+        """Get input names including ControlNet inputs"""
+        base_names = ["sample", "timestep", "encoder_hidden_states"]
+        if self.use_control and self.control_inputs:
+            control_names = sorted(self.control_inputs.keys())
+            return base_names + control_names
+        return base_names
 
     def get_output_names(self):
         return ["latent"]
 
     def get_dynamic_axes(self):
-        return {
+        base_axes = {
             "sample": {0: "2B", 2: "H", 3: "W"},
             "timestep": {0: "2B"},
             "encoder_hidden_states": {0: "2B"},
             "latent": {0: "2B", 2: "H", 3: "W"},
         }
+        
+        if self.use_control and self.control_inputs:
+            for name, shape_spec in self.control_inputs.items():
+                height = shape_spec["height"]
+                width = shape_spec["width"]
+                spatial_suffix = f"{height}x{width}"
+                base_axes[name] = {
+                    0: "2B", 
+                    2: f"H_{spatial_suffix}", 
+                    3: f"W_{spatial_suffix}"
+                }
+        
+        return base_axes
 
     def get_input_profile(self, batch_size, image_height, image_width, static_batch, static_shape):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
@@ -269,7 +342,8 @@ class UNet(BaseModel):
             min_latent_width,
             max_latent_width,
         ) = self.get_minmax_dims(batch_size, image_height, image_width, static_batch, static_shape)
-        return {
+        
+        profile = {
             "sample": [
                 (min_batch, self.unet_dim, min_latent_height, min_latent_width),
                 (batch_size, self.unet_dim, latent_height, latent_width),
@@ -282,33 +356,76 @@ class UNet(BaseModel):
                 (max_batch, self.text_maxlen, self.embedding_dim),
             ],
         }
+        
+        if self.use_control and self.control_inputs:
+            for name, shape_spec in self.control_inputs.items():
+                channels = shape_spec["channels"]
+                height = shape_spec["height"]
+                width = shape_spec["width"]
+                
+                profile[name] = [
+                    (min_batch, channels, height, width),
+                    (batch_size, channels, height, width),
+                    (max_batch, channels, height, width),
+                ]
+        
+        return profile
 
     def get_shape_dict(self, batch_size, image_height, image_width):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
-        return {
+        shape_dict = {
             "sample": (2 * batch_size, self.unet_dim, latent_height, latent_width),
             "timestep": (2 * batch_size,),
             "encoder_hidden_states": (2 * batch_size, self.text_maxlen, self.embedding_dim),
             "latent": (2 * batch_size, 4, latent_height, latent_width),
         }
+        
+        if self.use_control and self.control_inputs:
+            for name, shape_spec in self.control_inputs.items():
+                channels = shape_spec["channels"]
+                height = shape_spec["height"]
+                width = shape_spec["width"]
+                
+                shape_dict[name] = (2 * batch_size, channels, height, width)
+        
+        return shape_dict
 
     def get_sample_input(self, batch_size, image_height, image_width):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
         dtype = torch.float16 if self.fp16 else torch.float32
-        return (
+        
+        base_inputs = [
             torch.randn(
                 2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
             ),
             torch.ones((2 * batch_size,), dtype=torch.float32, device=self.device),
             torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
-        )
+        ]
+        
+        if self.use_control and self.control_inputs:
+            control_inputs = []
+            for name in sorted(self.control_inputs.keys()):
+                shape_spec = self.control_inputs[name]
+                channels = shape_spec["channels"]
+                height = shape_spec["height"]
+                width = shape_spec["width"]
+                
+                control_input = torch.randn(
+                    2 * batch_size, channels, height, width, 
+                    dtype=dtype, device=self.device
+                )
+                control_inputs.append(control_input)
+            
+            return tuple(base_inputs + control_inputs)
+        
+        return tuple(base_inputs)
 
 
 class VAE(BaseModel):
-    def __init__(self, device, max_batch_size, min_batch_size=1):
+    def __init__(self, device, max_batch, min_batch_size=1):
         super(VAE, self).__init__(
             device=device,
-            max_batch_size=max_batch_size,
+            max_batch=max_batch,
             min_batch_size=min_batch_size,
             embedding_dim=None,
         )
@@ -368,10 +485,10 @@ class VAE(BaseModel):
 
 
 class VAEEncoder(BaseModel):
-    def __init__(self, device, max_batch_size, min_batch_size=1):
+    def __init__(self, device, max_batch, min_batch_size=1):
         super(VAEEncoder, self).__init__(
             device=device,
-            max_batch_size=max_batch_size,
+            max_batch=max_batch,
             min_batch_size=min_batch_size,
             embedding_dim=None,
         )

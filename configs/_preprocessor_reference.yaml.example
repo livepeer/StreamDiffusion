@@ -1,0 +1,120 @@
+# StreamDiffusion Preprocessor Reference
+# Copy and modify the sections you need for your configuration
+
+# =============================================================================
+# PREPROCESSOR INTERFACES  
+# =============================================================================
+
+# Basic Preprocessors  
+# ---------------------------------------------------
+
+# Canny Edge Detection
+preprocessor: "canny"
+preprocessor_params:
+  low_threshold: 100    # int, 0-255, lower values detect more edges
+  high_threshold: 200   # int, 0-255, should be 2-3x higher than low_threshold
+
+# Passthrough (no processing - for tile/reference ControlNets)
+preprocessor: "passthrough"
+preprocessor_params:
+  image_resolution: 512  # int, 256-1024, output resolution
+
+# CPU Depth Estimation (requires transformers)
+preprocessor: "depth"
+preprocessor_params:
+  model_name: "Intel/dpt-large"    # str, HuggingFace model name
+  detect_resolution: 512           # int, resolution for detection
+  image_resolution: 512            # int, final output resolution
+
+# CPU Pose Detection (requires controlnet_aux or fallback)
+preprocessor: "openpose"
+preprocessor_params:
+  detect_resolution: 512     # int, resolution for detection  
+  image_resolution: 512      # int, final output resolution
+  include_hands: false       # bool, include hand keypoints
+  include_face: false        # bool, include face keypoints
+
+# Line Art Detection (requires controlnet_aux)
+preprocessor: "lineart"
+preprocessor_params:
+  detect_resolution: 512     # int, resolution for detection
+  image_resolution: 512      # int, final output resolution
+  coarse: true              # bool, use coarse line art detection
+  anime_style: false        # bool, use anime-style line art
+
+# Standard Line Art (traditional computer vision)
+preprocessor: "standard_lineart"
+preprocessor_params:
+  detect_resolution: 512        # int, resolution for detection
+  image_resolution: 512         # int, final output resolution  
+  gaussian_sigma: 6.0          # float, Gaussian blur sigma
+  intensity_threshold: 8       # int, intensity calculation threshold
+
+# Advanced Preprocessors (Require additional setup)
+# --------------------------------------------------
+
+# TensorRT Depth Estimation (requires TensorRT engine)
+preprocessor: "depth_tensorrt"
+preprocessor_params:
+  engine_path: "C:\\path\\to\\depth_anything_v2_vits-fp16.engine"  # str, REQUIRED: absolute path to .engine file
+  detect_resolution: 518     # int, 256-1024, must match engine input size
+  image_resolution: 512      # int, 256-1024, final output resolution
+
+# TensorRT Pose Detection (requires TensorRT engine)
+preprocessor: "pose_tensorrt"
+preprocessor_params:
+  engine_path: "C:\\path\\to\\yolo_nas_pose_l_0.8-fp16.engine"  # str, REQUIRED: absolute path to .engine file
+  detect_resolution: 640     # int, 320-1024, must match engine input size  
+  image_resolution: 512      # int, 256-1024, final output resolution
+
+# MediaPipe Pose Detection (requires mediapipe)
+preprocessor: "mediapipe_pose"
+preprocessor_params:
+  detect_resolution: 512              # int, resolution for detection
+  image_resolution: 512               # int, final output resolution
+  min_detection_confidence: 0.5       # float, 0.0-1.0, minimum detection confidence
+  min_tracking_confidence: 0.5        # float, 0.0-1.0, minimum tracking confidence
+  model_complexity: 1                 # int, 0-2, MediaPipe model complexity
+  static_image_mode: true             # bool, treat each image independently
+  draw_hands: true                    # bool, draw hand poses
+  draw_face: false                    # bool, draw face landmarks
+  line_thickness: 2                   # int, thickness of skeleton lines
+  circle_radius: 4                    # int, radius of joint circles
+  confidence_threshold: 0.3           # float, 0.0-1.0, minimum confidence for rendering
+  enable_smoothing: true              # bool, enable temporal smoothing
+  smoothing_factor: 0.7               # float, 0.0-1.0, smoothing strength
+
+# =============================================================================
+# AVAILABLE CONTROLNET MODELS (include but are not limited to)
+# =============================================================================
+
+# Stable Diffusion 1.5 Models
+sd15_models_include_but_not_limited_to:
+  canny: "lllyasviel/control_v11p_sd15_canny"
+  depth: "lllyasviel/control_v11f1p_sd15_depth"
+  openpose: "lllyasviel/control_v11p_sd15_openpose"
+  lineart: "lllyasviel/control_v11p_sd15_lineart"
+  tile: "lllyasviel/control_v11f1e_sd15_tile"
+  scribble: "lllyasviel/control_v11p_sd15_scribble"
+  seg: "lllyasviel/control_v11p_sd15_seg"
+  normal: "lllyasviel/control_v11p_sd15_normalbae"
+  mlsd: "lllyasviel/control_v11p_sd15_mlsd"
+
+# Stable Diffusion 2.1 Models  
+sd21_models_include_but_not_limited_to:
+  canny: "thibaud/controlnet-sd21-canny-diffusers"
+  depth: "thibaud/controlnet-sd21-depth-diffusers"
+  openpose: "thibaud/controlnet-sd21-openpose-diffusers"
+  lineart: "thibaud/controlnet-sd21-lineart-diffusers"
+  scribble: "thibaud/controlnet-sd21-scribble-diffusers"
+  hed: "thibaud/controlnet-sd21-hed-diffusers"
+  zoedepth: "thibaud/controlnet-sd21-zoedepth-diffusers"
+
+# SDXL Models
+sdxl_models_include_but_not_limited_to:
+  canny: "diffusers/controlnet-canny-sdxl-1.0"
+  depth: "diffusers/controlnet-depth-sdxl-1.0"
+  openpose: "thibaud/controlnet-openpose-sdxl-1.0"
+
+# Note: Many more ControlNet models exist on HuggingFace Hub.
+# Search for "controlnet" to find additional models for your specific needs. 

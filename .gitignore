@@ -1,4 +1,5 @@
 # https://github.com/github/gitignore/blob/main/Python.gitignore
+notes/
 
 .vscode/
 engines/
@@ -206,3 +207,8 @@ __pycache__/
 
 models/RealESR*
 *.safetensors
+*.onnx
+
+# Ignore user config files
+configs/*.yaml
+configs/*.yml

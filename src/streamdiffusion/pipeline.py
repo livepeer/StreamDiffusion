@@ -11,6 +11,7 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 )
 
 from streamdiffusion.image_filter import SimilarImageFilter
+from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
 
 class StreamDiffusion:
@@ -75,6 +76,9 @@ class StreamDiffusion:
         self.vae = pipe.vae
 
         self.inference_time_ema = 0
+        
+        # Initialize parameter updater
+        self._param_updater = StreamParameterUpdater(self)
 
     def load_lcm_lora(
         self,
@@ -260,6 +264,37 @@ class StreamDiffusion:
             do_classifier_free_guidance=False,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+
+    @torch.no_grad()
+    def update_stream_params(
+        self,
+        num_inference_steps: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
+        delta: Optional[float] = None,
+        t_index_list: Optional[List[int]] = None,
+    ) -> None:
+        """
+        Update streaming parameters efficiently in a single call.
+        
+        Parameters
+        ----------
+        num_inference_steps : Optional[int]
+            The number of inference steps to perform.
+        guidance_scale : Optional[float]
+            The guidance scale to use for CFG.
+        delta : Optional[float]
+            The delta multiplier of virtual residual noise.
+        t_index_list : Optional[List[int]]
+            The t_index_list to use for inference.
+        """
+        self._param_updater.update_stream_params(
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            delta=delta,
+            t_index_list=t_index_list,
+        )
+
+
 
     def add_noise(
         self,

@@ -1,0 +1,46 @@
+model_id: "stabilityai/sd-turbo"
+t_index_list: [0,16]
+width: 512
+height: 512
+device: "cuda"
+dtype: "float16"
+
+# Generation parameters
+prompt: "an anime render of a girl with purple hair, masterpiece"
+negative_prompt: "blurry, low quality, flat, 2d"
+guidance_scale: 1.1
+num_inference_steps: 50
+
+# Temporal consistency parameters
+frame_buffer_size: 1
+delta: 0.7
+
+# Advanced parameters
+pipeline_type: "sdturbo"
+use_lcm_lora: false
+use_tiny_vae: true
+acceleration: "tensorrt"
+cfg_type: "self"
+seed: 789
+
+# ControlNet configuration with TensorRT Depth Anything
+controlnets:
+  - model_id: "thibaud/controlnet-sd21-depth-diffusers"
+    conditioning_scale: 0.5
+    preprocessor: "depth_tensorrt"
+    preprocessor_params:
+      engine_path: "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\depth_anything_vits14-fp16.engine"
+      detect_resolution: 518
+      image_resolution: 512
+    enabled: true 
+
+  - model_id: "thibaud/controlnet-sd21-canny-diffusers"
+    conditioning_scale: 0.5
+    preprocessor: "canny"
+    preprocessor_params:
+      low_threshold: 50
+      high_threshold: 100
+    control_image_path: null
+    enabled: true
+    control_guidance_start: 0.0
+    control_guidance_end: 1.0 
