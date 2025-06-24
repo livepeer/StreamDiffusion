@@ -1,4 +1,5 @@
 from .pipeline import StreamDiffusion
+from utils.wrapper import StreamDiffusionWrapper
 
 # ControlNet support
 try:
@@ -18,12 +19,13 @@ try:
         LineartPreprocessor,
         get_preprocessor,
     )
-    
+
     __all__ = [
         "StreamDiffusion",
+        "StreamDiffusionWrapper",
         "ControlNetPipeline",
         "create_controlnet_pipeline",
-        "ControlNetConfig", 
+        "ControlNetConfig",
         "StreamDiffusionControlNetConfig",
         "load_config",
         "save_config",
@@ -31,11 +33,11 @@ try:
         "load_config",
         "BasePreprocessor",
         "CannyPreprocessor",
-        "DepthPreprocessor", 
+        "DepthPreprocessor",
         "OpenPosePreprocessor",
         "LineartPreprocessor",
         "get_preprocessor",
     ]
 except ImportError as e:
     print(f"Warning: ControlNet support not available: {e}")
-    __all__ = ["StreamDiffusion"]
+    __all__ = ["StreamDiffusion", "StreamDiffusionWrapper"]
