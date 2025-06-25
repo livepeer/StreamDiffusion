@@ -21,7 +21,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import torch
 from PIL import Image
-from streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
+from streamdiffusion import load_config, create_wrapper_from_config
 # ============================================================================
 # PIPELINE IMPLEMENTATION
 # ============================================================================
@@ -146,7 +146,7 @@ def run_demo(config_file: str, input_image_path: str, engine_only: bool = False)
     
     try:
         # Load configuration to get actual dimensions
-        from streamdiffusion.controlnet.config import load_config
+        
         config_data = load_config(config_file)
         target_width = config_data.get('width', 512)
         target_height = config_data.get('height', 512)

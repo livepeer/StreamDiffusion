@@ -23,7 +23,6 @@ def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
 
     return config_data
 
-
 def save_config(config: Dict[str, Any], config_path: Union[str, Path]) -> None:
     """Save StreamDiffusion configuration to YAML or JSON file"""
     config_path = Path(config_path)
@@ -53,7 +52,6 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
         wrapper.prepare(**prepare_params)
 
     return wrapper
-
 
 def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for StreamDiffusionWrapper.__init__() from config"""
@@ -97,7 +95,6 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {k: v for k, v in param_map.items() if v is not None}
 
-
 def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for wrapper.prepare() from config"""
     return {
@@ -107,7 +104,6 @@ def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'guidance_scale': config.get('guidance_scale', 1.2),
         'delta': config.get('delta', 1.0),
     }
-
 
 def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Prepare ControlNet configurations for wrapper"""
@@ -129,7 +125,6 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     return controlnet_configs
 
-
 def _parse_dtype(dtype_str: str) -> Any:
     """Parse dtype string to torch dtype"""
     import torch
@@ -144,7 +139,6 @@ def _parse_dtype(dtype_str: str) -> Any:
     if isinstance(dtype_str, str):
         return dtype_map.get(dtype_str.lower(), torch.float16)
     return dtype_str  # Assume it's already a torch dtype
-
 
 def _validate_config(config: Dict[str, Any]) -> None:
     """Basic validation of configuration dictionary"""
