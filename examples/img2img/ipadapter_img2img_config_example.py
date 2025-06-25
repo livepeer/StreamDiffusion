@@ -31,8 +31,9 @@ def main():
         print("main: Creating StreamDiffusion wrapper with IPAdapter for img2img...")
         wrapper = create_wrapper_from_config(config, device=device)
         
-        # Load input image for img2img transformation
-        input_image_path = os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "input.png")
+        # Load input image for img2img transformation (hand_up512.png)
+        # Style conditioning comes from input.png via config (different images for clear demo)
+        input_image_path = os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "hand_up512.png")
         
         # Check if input image exists, if not use a default path
         if not os.path.exists(input_image_path):
@@ -40,8 +41,8 @@ def main():
             print("main: Please place an input image at the specified path or update the path")
             # For demonstration, try alternative paths
             alt_paths = [
-                os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "hand_up512.png"),
-                config['ipadapters'][0]['style_image'],  # Use style image as input for demo
+                os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "input.png"),
+                os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "style.webp"),
             ]
             
             for alt_path in alt_paths:
