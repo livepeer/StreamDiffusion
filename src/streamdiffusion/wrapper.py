@@ -652,9 +652,9 @@ class StreamDiffusionWrapper:
                 ):
                     maybe_path = Path(model_id_or_path)
                     if maybe_path.exists():
-                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
+                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
                     else:
-                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
+                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
 
                 # Detect ControlNet support needed based on UNet architecture
                 use_controlnet_trt = (acceleration == "tensorrt")
