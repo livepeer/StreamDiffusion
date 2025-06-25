@@ -88,7 +88,8 @@ class BaseIPAdapterPipeline:
         self.style_images.append(processed_image)
         self.scales.append(scale)
         
-        # No patching needed - we'll update embeddings directly like the working script
+        # Set the initial scale for this IPAdapter
+        ipadapter.set_scale(scale)
         
         return len(self.ipadapters) - 1
     
@@ -210,7 +211,10 @@ class BaseIPAdapterPipeline:
 
     def _update_stream_embeddings(self, prompt: str = "", negative_prompt: str = "") -> None:
         """
-        Update StreamDiffusion embeddings directly (replicating working script approach)
+        Update StreamDiffusion embeddings by integrating IPAdapter conditioning
+        
+        This method properly combines IPAdapter image conditioning with StreamDiffusion's
+        existing text embeddings, maintaining compatibility with both txt2img and img2img modes.
         
         Args:
             prompt: Text prompt  
@@ -219,7 +223,7 @@ class BaseIPAdapterPipeline:
         if not self.ipadapters or not any(img is not None for img in self.style_images):
             return  # No IPAdapters or style images
         
-        # Use the first IPAdapter to generate embeddings (they share the same UNet)
+        # Use the first IPAdapter to generate image embeddings
         first_ipadapter = self.ipadapters[0] 
         
         # Collect all style images
@@ -227,29 +231,73 @@ class BaseIPAdapterPipeline:
         if not active_images:
             return
         
-        # Generate embeddings using the existing IPAdapter implementation (exactly like working script)
-        prompt_embeds, negative_prompt_embeds = first_ipadapter.get_prompt_embeds(
-            images=active_images,
-            prompt=prompt if prompt else None,
-            negative_prompt=negative_prompt if negative_prompt else None,
+        # Get IPAdapter image embeddings only (without text)
+        image_prompt_embeds, negative_image_prompt_embeds = first_ipadapter.get_image_embeds(
+            images=active_images
         )
         
-        # Directly assign embeddings to stream (exactly like working script)
-        self.stream.prompt_embeds = prompt_embeds
-        self.stream.negative_prompt_embeds = negative_prompt_embeds
+        # Get the original text embeddings from StreamDiffusion
+        # These were set up by the prepare() method with proper batch dimensions
+        original_prompt_embeds = self.stream.prompt_embeds
+        original_negative_prompt_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
+        
+        if original_prompt_embeds is None:
+            print("_update_stream_embeddings: Warning - No original prompt embeddings found")
+            return
+        
+        print(f"_update_stream_embeddings: Original prompt embeds shape: {original_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Image prompt embeds shape: {image_prompt_embeds.shape}")
+        if original_negative_prompt_embeds is not None:
+            print(f"_update_stream_embeddings: Original negative embeds shape: {original_negative_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Negative image embeds shape: {negative_image_prompt_embeds.shape}")
+        
+        # Ensure image embeddings have the same batch size as original embeddings
+        batch_size = original_prompt_embeds.shape[0]
+        
+        # Repeat image embeddings to match batch size if needed
+        if image_prompt_embeds.shape[0] == 1 and batch_size > 1:
+            image_prompt_embeds = image_prompt_embeds.repeat(batch_size, 1, 1)
+            negative_image_prompt_embeds = negative_image_prompt_embeds.repeat(batch_size, 1, 1)
+        
+        # Concatenate text and image embeddings along the sequence dimension (dim=1)
+        # This is how IPAdapter is designed to work - text tokens + image tokens
+        combined_prompt_embeds = torch.cat([original_prompt_embeds, image_prompt_embeds], dim=1)
+        
+        if original_negative_prompt_embeds is not None:
+            combined_negative_prompt_embeds = torch.cat([original_negative_prompt_embeds, negative_image_prompt_embeds], dim=1)
+        else:
+            # If no negative embeddings, create them from positive embeddings with image conditioning
+            combined_negative_prompt_embeds = torch.cat([original_prompt_embeds, negative_image_prompt_embeds], dim=1)
+        
+        # Update StreamDiffusion embeddings with the combined embeddings
+        print(f"_update_stream_embeddings: Combined prompt embeds shape: {combined_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Combined negative embeds shape: {combined_negative_prompt_embeds.shape}")
+        
+        self.stream.prompt_embeds = combined_prompt_embeds
+        self.stream.negative_prompt_embeds = combined_negative_prompt_embeds
+        
+        # Update token count for attention processors
+        total_tokens = combined_prompt_embeds.shape[1]
+        first_ipadapter.set_tokens(image_prompt_embeds.shape[0] * first_ipadapter.num_tokens)
+        print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * first_ipadapter.num_tokens}")
     
     def prepare(self, *args, **kwargs):
         """Forward prepare calls to the underlying StreamDiffusion"""
         return self.stream.prepare(*args, **kwargs)
     
     def __call__(self, *args, **kwargs):
-        """Forward calls to the original wrapper, updating IPAdapter embeddings first (like working script)"""
-        # Extract prompt from call arguments (replicating working script approach)
+        """Forward calls to the original wrapper, updating IPAdapter embeddings first"""
+        # Extract prompt from call arguments
         prompt = kwargs.get('prompt', '')
         negative_prompt = kwargs.get('negative_prompt', getattr(self.stream, 'negative_prompt', ''))
         
-        # Update stream embeddings directly (exactly like working script does)
-        self._update_stream_embeddings(prompt, negative_prompt)
+        # Update stream embeddings with IPAdapter conditioning
+        try:
+            self._update_stream_embeddings(prompt, negative_prompt)
+        except Exception as e:
+            print(f"__call__: Error updating IPAdapter embeddings: {e}")
+            import traceback
+            traceback.print_exc()
         
         # If we have the original wrapper, use its __call__ method (handles image= parameter correctly)
         if hasattr(self, '_original_wrapper'):
