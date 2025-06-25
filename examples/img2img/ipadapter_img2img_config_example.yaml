@@ -30,7 +30,7 @@ ipadapters:
   # Using HuggingFace model ID (automatic download)
   - ipadapter_model_path: "h94/IP-Adapter"  # Auto-downloads ip-adapter_sd15.bin
     image_encoder_path: "h94/IP-Adapter"    # Auto-downloads image_encoder
-    style_image: "../../images/inputs/hand_up512.png"  # Style reference image
+    style_image: "../../images/inputs/input.png"  # Style reference image (IPAdapter conditioning)
     scale: 0.7  # Slightly lower scale for img2img to balance with input image
     enabled: true
     
