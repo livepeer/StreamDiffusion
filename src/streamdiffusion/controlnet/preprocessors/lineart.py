@@ -72,60 +72,38 @@ class LineartPreprocessor(BasePreprocessor):
             
         return self._detector
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
-        Apply line art detection to the input image - real-time optimized
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with detected line art (black lines on white background)
+        Apply line art detection to the input image
         """
         start_time = time.time()
         print("LineartPreprocessor.process: Starting line art detection")
         
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        validation_time = time.time()
-        print(f"LineartPreprocessor.process: Input validation completed in {validation_time - start_time:.3f}s")
-        
-        # Get parameters
         detect_resolution = self.params.get('detect_resolution', 512)
-        image_resolution = self.params.get('image_resolution', 512)
         coarse = self.params.get('coarse', False)
         
-        print(f"LineartPreprocessor.process: Using detect_resolution={detect_resolution}, image_resolution={image_resolution}, coarse={coarse}")
+        print(f"LineartPreprocessor.process: Using detect_resolution={detect_resolution}, coarse={coarse}")
         
-        # Resize for detection if needed
         if image.size != (detect_resolution, detect_resolution):
             image_resized = image.resize((detect_resolution, detect_resolution), Image.LANCZOS)
             resize_time = time.time()
-            print(f"LineartPreprocessor.process: Image resized from {image.size} to {image_resized.size} in {resize_time - validation_time:.3f}s")
+            print(f"LineartPreprocessor.process: Image resized from {image.size} to {image_resized.size} in {resize_time - start_time:.3f}s")
         else:
             image_resized = image
             print("LineartPreprocessor.process: No resizing needed")
         
-        # Detect line art using controlnet_aux
         detection_start = time.time()
         print("LineartPreprocessor.process: Starting controlnet_aux line art detection")
         
         lineart_image = self.detector(
             image_resized,
             detect_resolution=detect_resolution,
-            image_resolution=image_resolution,
+            image_resolution=detect_resolution,
             coarse=coarse
         )
         
         detection_time = time.time() - detection_start
         print(f"LineartPreprocessor.process: Line art detection completed in {detection_time:.3f}s")
-        
-        # Resize to target resolution if needed
-        if lineart_image.size != (image_resolution, image_resolution):
-            final_resize_start = time.time()
-            lineart_image = lineart_image.resize((image_resolution, image_resolution), Image.LANCZOS)
-            final_resize_time = time.time() - final_resize_start
-            print(f"LineartPreprocessor.process: Final resize completed in {final_resize_time:.3f}s")
         
         total_time = time.time() - start_time
         print(f"LineartPreprocessor.process: Total processing time: {total_time:.3f}s")

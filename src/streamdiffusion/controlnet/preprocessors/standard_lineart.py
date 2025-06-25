@@ -154,55 +154,32 @@ class StandardLineartPreprocessor(BasePreprocessor):
 
         return img_padded, remove_pad
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
-        Apply standard line art detection to the input image - PyTorch GPU accelerated
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with detected line art (black lines on white background)
+        Apply standard line art detection to the input image
         """
         start_time = time.time()
         
-        # Convert to PIL Image if needed, then to numpy, then immediately to GPU tensor
-        image = self.validate_input(image)
         if isinstance(image, Image.Image):
             input_image_cpu = np.array(image, dtype=np.uint8)
         else:
             input_image_cpu = image.astype(np.uint8)
             
-        # Move to GPU immediately to minimize CPU-GPU transfers
         input_image = torch.from_numpy(input_image_cpu).float().to(self.device)
             
-        validation_time = time.time()
-        
-        # Get parameters
         detect_resolution = self.params.get('detect_resolution', 512)
-        image_resolution = self.params.get('image_resolution', 512)
         gaussian_sigma = self.params.get('gaussian_sigma', 6.0)
         intensity_threshold = self.params.get('intensity_threshold', 8)
         
-        # Resize for detection with padding - all on GPU
-        resize_start = time.time()
         input_image, remove_pad = self._resize_image_with_pad_torch(input_image, detect_resolution)
-        resize_time = time.time() - resize_start
         
-        # Apply standard lineart algorithm - all operations on GPU
-        detection_start = time.time()
-        
-        # Input is already float32, ensure it's the right range
         x = input_image
         
-        # Apply GPU-accelerated Gaussian blur
         g = self._gaussian_blur_torch(x, gaussian_sigma)
         
-        # Calculate intensity differences - all GPU operations
-        intensity = torch.min(g - x, dim=2)[0]  # min along channel dimension
+        intensity = torch.min(g - x, dim=2)[0]
         intensity = torch.clamp(intensity, 0, 255)
         
-        # Normalize intensity - GPU operations  
         threshold_mask = intensity > intensity_threshold
         if torch.any(threshold_mask):
             median_val = torch.median(intensity[threshold_mask])
@@ -213,36 +190,13 @@ class StandardLineartPreprocessor(BasePreprocessor):
         intensity = intensity / normalization_factor
         intensity = intensity * 127
         
-        # Convert back to uint8 and ensure 3 channels
         detected_map = torch.clamp(intensity, 0, 255).byte()
-        detected_map = detected_map.unsqueeze(-1)  # Add channel dimension
+        detected_map = detected_map.unsqueeze(-1)
         detected_map = self._ensure_hwc3_torch(detected_map.float())
         
-        detection_time = time.time() - detection_start
-        
-        # Remove padding - stay on GPU
-        postprocess_start = time.time()
         detected_map = remove_pad(detected_map)
         
-        # Resize to target resolution if needed - GPU accelerated
-        current_H, current_W = detected_map.shape[:2]
-        if (current_H, current_W) != (image_resolution, image_resolution):
-            # Convert to BCHW for interpolation
-            detected_bchw = detected_map.permute(2, 0, 1).unsqueeze(0)
-            resized_bchw = F.interpolate(
-                detected_bchw, 
-                size=(image_resolution, image_resolution), 
-                mode='bicubic', 
-                align_corners=False
-            )
-            detected_map = resized_bchw.squeeze(0).permute(1, 2, 0)
-        
-        # Only transfer to CPU at the very end for PIL conversion
         detected_map_cpu = detected_map.byte().cpu().numpy()
         lineart_image = Image.fromarray(detected_map_cpu)
-        
-        postprocess_time = time.time() - postprocess_start
-        
-        total_time = time.time() - start_time
         
         return lineart_image 
