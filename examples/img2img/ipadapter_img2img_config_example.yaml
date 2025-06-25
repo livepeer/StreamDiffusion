@@ -1,0 +1,42 @@
+# StreamDiffusion IPAdapter img2img Configuration Example
+# This demonstrates how to configure IPAdapter for image-to-image mode
+
+# Base model configuration
+model_id: "runwayml/stable-diffusion-v1-5"
+device: "cuda"
+dtype: "float16"
+width: 512
+height: 512
+mode: "img2img"  # Changed from txt2img to img2img
+
+# StreamDiffusion parameters
+t_index_list: [22, 32, 45]  # Different t_index_list for img2img (closer to img2img examples)
+frame_buffer_size: 1
+warmup: 10
+acceleration: "xformers"
+use_denoising_batch: true    # img2img typically uses denoising batch
+cfg_type: "self"             # img2img uses "self" instead of "none"
+seed: 42
+
+# Text prompts (these will be combined with IPAdapter style conditioning)
+prompt: "a beautiful woman with long brown hair, smiling, portrait photography"
+negative_prompt: "blurry, horror, worst quality, low quality"
+num_inference_steps: 50
+guidance_scale: 1.2
+delta: 0.5  # Delta parameter for img2img
+
+# IPAdapter configuration
+ipadapters:
+  # Using HuggingFace model ID (automatic download)
+  - ipadapter_model_path: "h94/IP-Adapter"  # Auto-downloads ip-adapter_sd15.bin
+    image_encoder_path: "h94/IP-Adapter"    # Auto-downloads image_encoder
+    style_image: "../../images/inputs/hand_up512.png"  # Style reference image
+    scale: 0.7  # Slightly lower scale for img2img to balance with input image
+    enabled: true
+    
+  # You can add multiple IPAdapters for multi-style conditioning
+  # - ipadapter_model_path: "h94/IP-Adapter"
+  #   image_encoder_path: "h94/IP-Adapter" 
+  #   style_image: "../../images/inputs/another_style.png"
+  #   scale: 0.5
+  #   enabled: false 
