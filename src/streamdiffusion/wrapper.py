@@ -747,6 +747,8 @@ class StreamDiffusionWrapper:
                         unet_dim=stream.unet.config.in_channels,
                         use_control=use_controlnet_trt,
                         unet_arch=unet_arch if use_controlnet_trt else None,
+                        image_height=self.height,
+                        image_width=self.width,
                     )
 
                     # Use ControlNet wrapper if ControlNet support is enabled
@@ -872,8 +874,8 @@ class StreamDiffusionWrapper:
         except Exception:
             traceback.print_exc()
             print("Acceleration has failed. Falling back to normal mode.")
-            # TODO: Remove this temporary error once the fix is ready
-            raise NotImplementedError("Temporarily disabled for maintenance")
+            # TODO: Make pytorch fallback configurable
+            raise NotImplementedError("Acceleration has failed. Automatic pytorch inference fallback temporarily disabled.")
 
         if seed < 0:  # Random seed
             seed = np.random.randint(0, 1000000)
