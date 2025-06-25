@@ -949,7 +949,7 @@ class StreamDiffusionWrapper:
 
             # Create engine pool with same engine directory structure as UNet
             stream_cuda = cuda.Stream()
-            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda)
+            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height)
 
             # Store pool on the pipeline for later use
             setattr(controlnet_pipeline, '_controlnet_pool', controlnet_pool)
