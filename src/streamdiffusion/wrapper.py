@@ -660,17 +660,20 @@ class StreamDiffusionWrapper:
                     else:
                         return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
 
-                # Detect ControlNet support needed based on UNet architecture
-                use_controlnet_trt = (acceleration == "tensorrt")
+                # Always enable ControlNet TensorRT support to create universal engines
+                use_controlnet_trt = False
                 unet_arch = {}
-                try:
-                    model_type = detect_model_from_diffusers_unet(stream.unet)
-                    unet_arch = extract_unet_architecture(stream.unet)
-                    unet_arch = validate_architecture(unet_arch, model_type)
-                    use_controlnet_trt = True  # Always enable ControlNet support in TRT engines
-                    print(f"Enabling TensorRT ControlNet support for {model_type}")
-                except Exception as e:
-                    print(f"ControlNet architecture detection failed: {e}, compiling without ControlNet support")
+                
+                if acceleration == "tensorrt":
+                    try:
+                        model_type = detect_model_from_diffusers_unet(stream.unet)
+                        unet_arch = extract_unet_architecture(stream.unet)
+                        unet_arch = validate_architecture(unet_arch, model_type)
+                        use_controlnet_trt = True
+                        print(f"Building universal TensorRT engines with ControlNet support for {model_type}")
+                    except Exception as e:
+                        print(f"ControlNet architecture detection failed: {e}, building engines without ControlNet support")
+                        use_controlnet_trt = False
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
@@ -849,12 +852,11 @@ class StreamDiffusionWrapper:
                     unet_path, cuda_stream, use_cuda_graph=False
                 )
 
-                # Store ControlNet metadata on the engine for runtime use
-                if use_controlnet_trt:
-                    setattr(stream.unet, 'use_control', True)
+                # Always set ControlNet support to True for universal TensorRT engines
+                # This allows the engine to accept dummy inputs when no ControlNets are used
+                setattr(stream.unet, 'use_control', True)
+                if use_controlnet_trt and unet_arch:
                     setattr(stream.unet, 'unet_arch', unet_arch)
-                else:
-                    setattr(stream.unet, 'use_control', False)
 
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
