@@ -20,7 +20,6 @@
   let guidanceScale: number = 1.1;
   let delta: number = 0.7;
   let numInferenceSteps: number = 50;
-  let seed: number = 2;
   let pageContent: string;
   let isImageMode: boolean = false;
   let maxQueueSize: number = 0;
@@ -40,7 +39,6 @@
     guidanceScale = settings.guidance_scale || 1.1;
     delta = settings.delta || 0.7;
     numInferenceSteps = settings.num_inference_steps || 50;
-    seed = settings.seed || 2;
     isImageMode = pipelineInfo.input_mode.default === PipelineMode.IMAGE;
     maxQueueSize = settings.max_queue_size;
     pageContent = settings.page_content;
@@ -212,7 +210,6 @@
           {guidanceScale}
           {delta}
           {numInferenceSteps}
-          {seed}
           on:controlnetUpdated={handleControlNetUpdate}
           on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
         ></ControlNetConfig>

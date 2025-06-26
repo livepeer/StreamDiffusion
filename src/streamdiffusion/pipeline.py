@@ -137,7 +137,6 @@ class StreamDiffusion:
     ) -> None:
         self.generator = generator
         self.generator.manual_seed(seed)
-        self.current_seed = seed
         # initialize x_t_latent (it can be any random tensor)
         if self.denoising_steps_num > 1:
             self.x_t_latent_buffer = torch.zeros(
@@ -273,7 +272,6 @@ class StreamDiffusion:
         guidance_scale: Optional[float] = None,
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
-        seed: Optional[int] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -288,15 +286,12 @@ class StreamDiffusion:
             The delta multiplier of virtual residual noise.
         t_index_list : Optional[List[int]]
             The t_index_list to use for inference.
-        seed : Optional[int]
-            The random seed to use for noise generation.
         """
         self._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             delta=delta,
             t_index_list=t_index_list,
-            seed=seed,
         )
 
 

@@ -14,7 +14,7 @@ from streamdiffusion.image_utils import postprocess_image
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from streamdiffusion import StreamDiffusionWrapper
+from utils.wrapper import StreamDiffusionWrapper
 
 
 image_update_counter = 0

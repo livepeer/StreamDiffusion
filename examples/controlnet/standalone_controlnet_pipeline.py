@@ -21,7 +21,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import torch
 from PIL import Image
-from streamdiffusion import load_config, create_wrapper_from_config
+from streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
 # ============================================================================
 # PIPELINE IMPLEMENTATION
 # ============================================================================
@@ -32,8 +32,9 @@ class MultiControlNetStreamDiffusionPipeline:
     Multi-ControlNet StreamDiffusion pipeline.
     """
     
-    def __init__(self, config_file: str):
+    def __init__(self, config_file: str, resolution: int = 512):
         self.config_file = config_file
+        self.resolution = resolution
         self.wrapper = None
         self._setup_pipeline()
     
@@ -43,7 +44,7 @@ class MultiControlNetStreamDiffusionPipeline:
         print(f"Using config file: {self.config_file}")
         # Load configuration and create wrapper
         config_data = load_config(self.config_file)
-        self.wrapper = create_wrapper_from_config(config_data)
+        self.wrapper = create_wrapper_from_config(config_data, width=self.resolution, height=self.resolution)
         self.warmup_steps = config_data.get('warmup', 10)
         self._warmed_up = False
         
@@ -101,7 +102,7 @@ class MultiControlNetStreamDiffusionPipeline:
             print("update_stream_params: Not supported for this pipeline")
 
 
-def load_input_image(image_path: str, target_width: int, target_height: int) -> Image.Image:
+def load_input_image(image_path: str, target_resolution: int) -> Image.Image:
     """Load and prepare input image"""
     print(f"Loading input image: {image_path}")
     image = Image.open(image_path).convert("RGB")
@@ -110,9 +111,8 @@ def load_input_image(image_path: str, target_width: int, target_height: int) -> 
     original_size = image.size
     print(f"Original size: {original_size}")
     
-    # Resize to target width and height
-    # TODO: This is a hack to get the image to the correct size for tensorrt development. The resolution of the input image must match the resolution specified for the pipeline for tenosrrt acceleration to work.
-    image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+    # Resize to target resolution
+    image = image.resize((target_resolution, target_resolution), Image.Resampling.LANCZOS)
     print(f"Resized to: {image.size}")
     
     return image
@@ -126,7 +126,7 @@ def setup_output_directory():
     return output_dir
 
 
-def run_demo(config_file: str, input_image_path: str, engine_only: bool = False):
+def run_demo(config_file: str, input_image_path: str, resolution: int = 512, engine_only: bool = False):
     """
     Demonstration of the multi-ControlNet pipeline.
     Shows how depth + canny ControlNets work together.
@@ -145,21 +145,15 @@ def run_demo(config_file: str, input_image_path: str, engine_only: bool = False)
         return False
     
     try:
-        # Load configuration to get actual dimensions
-        
-        config_data = load_config(config_file)
-        target_width = config_data.get('width', 512)
-        target_height = config_data.get('height', 512)
-        
         # Initialize pipeline (this will trigger engine building if needed)
-        pipeline = MultiControlNetStreamDiffusionPipeline(config_file)
+        pipeline = MultiControlNetStreamDiffusionPipeline(config_file, resolution)
         
         if engine_only:
             print("Engine-only mode: TensorRT engines have been built (if needed). Exiting.")
             return True
         
         # Load input image
-        input_image = load_input_image(input_image_path, target_width, target_height)
+        input_image = load_input_image(input_image_path, resolution)
         
         
         print("Running multi-ControlNet inference...")
@@ -205,6 +199,7 @@ def main():
     parser = argparse.ArgumentParser(description="Standalone Multi-ControlNet StreamDiffusion Pipeline")
     parser.add_argument("--config", type=str, required=True, help="Path to ControlNet configuration file")
     parser.add_argument("--input-image", type=str, required=True, help="Path to input image file")
+    parser.add_argument("--resolution", type=int, default=512, help="Image resolution (default: 512)")
     parser.add_argument("--engine-only", action="store_true", help="Only build TensorRT engines and exit (no inference)")
     args = parser.parse_args()
 
@@ -213,11 +208,13 @@ def main():
     print("=" * 70)
     print(f"Config: {args.config}")
     print(f"Input Image: {args.input_image}")
+    print(f"Resolution: {args.resolution}x{args.resolution}")
     print("=" * 70)
     
     success = run_demo(
         config_file=args.config,
         input_image_path=args.input_image,
+        resolution=args.resolution,
         engine_only=args.engine_only
     )
     

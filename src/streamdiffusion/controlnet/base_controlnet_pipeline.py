@@ -63,8 +63,7 @@ class BaseControlNetPipeline:
             preprocessor_params = {
                 'device': self.device,
                 'dtype': self.dtype,
-                'image_width': self.stream.width,    # Pass actual width
-                'image_height': self.stream.height,  # Pass actual height
+                'image_resolution': max(self.stream.width, self.stream.height)  # Use pipeline resolution
             }
             if controlnet_config.get('preprocessor_params'):
                 preprocessor_params.update(controlnet_config['preprocessor_params'])
