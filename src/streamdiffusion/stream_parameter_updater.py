@@ -13,6 +13,7 @@ class StreamParameterUpdater:
         guidance_scale: Optional[float] = None,
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
+        seed: Optional[int] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
         
@@ -31,9 +32,33 @@ class StreamParameterUpdater:
             
         if delta is not None:
             self.stream.delta = delta
+            
+        if seed is not None:
+            self._update_seed(seed)
         
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
+    
+    def _update_seed(self, seed: int) -> None:
+        """Update the generator seed and regenerate seed-dependent tensors."""
+        if self.stream.generator is None:
+            print("update_stream_params: Warning: generator is None, cannot update seed")
+            return
+            
+        # Store the current seed value
+        self.stream.current_seed = seed
+        
+        # Update generator seed
+        self.stream.generator.manual_seed(seed)
+        
+        # Regenerate init_noise tensor with new seed
+        self.stream.init_noise = torch.randn(
+            (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
+            generator=self.stream.generator,
+        ).to(device=self.stream.device, dtype=self.stream.dtype)
+        
+        # Reset stock_noise to match the new init_noise
+        self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
     
     def _recalculate_timestep_dependent_params(self, t_index_list: List[int]) -> None:
         """Recalculate all parameters that depend on t_index_list."""

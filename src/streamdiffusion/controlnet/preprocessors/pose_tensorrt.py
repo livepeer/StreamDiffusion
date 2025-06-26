@@ -294,27 +294,15 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             
         return self._engine
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
         Apply TensorRT pose estimation to the input image
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with pose skeleton (RGB)
         """
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        
-        # Convert PIL to tensor and resize for detection
         detect_resolution = self.params.get('detect_resolution', 640)
         
-        # Convert to tensor format (BCHW)
         image_tensor = torch.from_numpy(np.array(image)).float() / 255.0
-        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
         
-        # Resize to detection resolution  
         image_resized = F.interpolate(
             image_tensor, 
             size=(detect_resolution, detect_resolution), 
@@ -322,18 +310,14 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             align_corners=False
         )
         
-        # Convert to uint8 for pose model
         image_resized_uint8 = (image_resized * 255.0).type(torch.uint8)
         
-        # Move to CUDA if available
         if torch.cuda.is_available():
             image_resized_uint8 = image_resized_uint8.cuda()
         
-        # Run TensorRT inference
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized_uint8}, cuda_stream)
         
-        # Extract predictions from multiple outputs (exactly like ComfyUI reference)
         print(f"pose_tensorrt.process: All result keys: {list(result.keys())}")
         
         predictions = []
@@ -349,7 +333,6 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         
         try:
             print("pose_tensorrt.process: Starting pose visualization...")
-            # Generate pose visualization
             pose_image = show_predictions_from_batch_format(predictions)
             print(f"pose_tensorrt.process: Pose visualization successful, output shape: {pose_image.shape}")
         except Exception as e:
@@ -357,56 +340,36 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             print(f"pose_tensorrt.process: Error type: {type(e)}")
             import traceback
             traceback.print_exc()
-            # Fallback to black image
             pose_image = np.zeros((detect_resolution, detect_resolution, 3))
         
-        # Convert to RGB and ensure proper format
         pose_image = (pose_image.clip(0, 255)).astype(np.uint8)
         pose_image = cv2.cvtColor(pose_image, cv2.COLOR_BGR2RGB)
         
-        # Convert to PIL Image
         result = Image.fromarray(pose_image)
         
-        # Resize to target resolution
-        image_resolution = self.params.get('image_resolution', 512)
-        result = result.resize((image_resolution, image_resolution), Image.LANCZOS)
-        
-        return result 
+        return result
     
-    def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
         Process tensor directly on GPU to avoid CPU transfers
-        
-        Args:
-            image_tensor: Input image tensor on GPU
-            
-        Returns:
-            Processed pose tensor on GPU
         """
-        # Validate input and move to GPU
         if image_tensor.dim() == 3:
             image_tensor = image_tensor.unsqueeze(0)
         if not image_tensor.is_cuda:
             image_tensor = image_tensor.cuda()
         
-        # Get parameters
         detect_resolution = self.params.get('detect_resolution', 640)
-        image_resolution = self.params.get('image_resolution', 512)
         
-        # Resize for pose detection
         image_resized = torch.nn.functional.interpolate(
             image_tensor, size=(detect_resolution, detect_resolution), 
             mode='bilinear', align_corners=False
         )
         
-        # Convert to uint8 for pose model
         image_resized_uint8 = (image_resized * 255.0).type(torch.uint8)
         
-        # Run TensorRT inference
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized_uint8}, cuda_stream)
         
-        # Extract predictions from multiple outputs (exactly like ComfyUI reference)
         print(f"pose_tensorrt.process_tensor: All result keys: {list(result.keys())}")
         
         predictions = []
@@ -422,14 +385,12 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         
         try:
             print("pose_tensorrt.process_tensor: Starting pose visualization...")
-            # Generate pose visualization (CPU-based due to OpenCV)
             pose_image = show_predictions_from_batch_format(predictions)
             pose_image = (pose_image.clip(0, 255)).astype(np.uint8)
             pose_image = cv2.cvtColor(pose_image, cv2.COLOR_BGR2RGB)
             
-            # Convert back to tensor and move to GPU
             pose_tensor = torch.from_numpy(pose_image).float() / 255.0
-            pose_tensor = pose_tensor.permute(2, 0, 1).unsqueeze(0).cuda()  # HWC -> BCHW
+            pose_tensor = pose_tensor.permute(2, 0, 1).unsqueeze(0).cuda()
             print(f"pose_tensorrt.process_tensor: Pose visualization successful, tensor shape: {pose_tensor.shape}")
             
         except Exception as e:
@@ -437,14 +398,6 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             print(f"pose_tensorrt.process_tensor: Error type: {type(e)}")
             import traceback
             traceback.print_exc()
-            # Fallback to black tensor
             pose_tensor = torch.zeros(1, 3, detect_resolution, detect_resolution).cuda()
         
-        # Resize to target resolution
-        pose_resized = torch.nn.functional.interpolate(
-            pose_tensor,
-            size=(image_resolution, image_resolution),
-            mode='bilinear', align_corners=False
-        )
-        
-        return pose_resized 
+        return pose_tensor 

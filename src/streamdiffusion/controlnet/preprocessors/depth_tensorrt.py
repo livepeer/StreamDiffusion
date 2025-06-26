@@ -155,27 +155,15 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
             
         return self._engine
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
         Apply TensorRT depth estimation to the input image
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with depth map (grayscale)
         """
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        
-        # Convert PIL to tensor and resize for detection
         detect_resolution = self.params.get('detect_resolution', 518)
         
-        # Convert to tensor format (BCHW)
         image_tensor = torch.from_numpy(np.array(image)).float() / 255.0
-        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0)
         
-        # Resize to detection resolution
         image_resized = F.interpolate(
             image_tensor, 
             size=(detect_resolution, detect_resolution), 
@@ -183,76 +171,47 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
             align_corners=False
         )
         
-        # Move to CUDA if available
         if torch.cuda.is_available():
             image_resized = image_resized.cuda()
         
-        # Run TensorRT inference
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized}, cuda_stream)
         depth = result['output']
         
-        # Process the depth output (same as original implementation)
         depth = np.reshape(depth.cpu().numpy(), (detect_resolution, detect_resolution))
         depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
         depth = depth.astype(np.uint8)
         
-        # Resize to match original image dimensions, then to target resolution
         original_size = image.size
         depth = cv2.resize(depth, original_size)
         
-        # Convert to RGB for ControlNet compatibility
         depth_rgb = cv2.cvtColor(depth, cv2.COLOR_GRAY2RGB)
         result = Image.fromarray(depth_rgb)
         
-        # Resize to target resolution
-        image_resolution = self.params.get('image_resolution', 512)
-        result = result.resize((image_resolution, image_resolution), Image.LANCZOS)
-        
-        return result 
+        return result
     
-    def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
         Process tensor directly on GPU to avoid CPU transfers
-        
-        Args:
-            image_tensor: Input image tensor on GPU
-            
-        Returns:
-            Processed depth tensor on GPU
         """
-        # Validate input and move to GPU
         if image_tensor.dim() == 3:
             image_tensor = image_tensor.unsqueeze(0)
         if not image_tensor.is_cuda:
             image_tensor = image_tensor.cuda()
         
-        # Get parameters
         detect_resolution = self.params.get('detect_resolution', 518)
-        image_resolution = self.params.get('image_resolution', 512)
         
-        # Resize for depth detection
         image_resized = torch.nn.functional.interpolate(
             image_tensor, size=(detect_resolution, detect_resolution), 
             mode='bilinear', align_corners=False
         )
         
-        # Run TensorRT inference
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized}, cuda_stream)
         depth_tensor = result['output']
         
-        # Normalize depth on GPU
         depth_tensor = depth_tensor.squeeze() if depth_tensor.dim() > 2 else depth_tensor
         depth_min, depth_max = depth_tensor.min(), depth_tensor.max()
         depth_normalized = (depth_tensor - depth_min) / (depth_max - depth_min)
         
-        # Resize to target resolution and convert to RGB
-        depth_resized = torch.nn.functional.interpolate(
-            depth_normalized.unsqueeze(0).unsqueeze(0),
-            size=(image_resolution, image_resolution),
-            mode='bilinear', align_corners=False
-        )
-        
-        # Convert to RGB (3 channels) and return
-        return depth_resized.repeat(1, 3, 1, 1) 
+        return depth_normalized.repeat(3, 1, 1).unsqueeze(0) 

@@ -9,9 +9,9 @@ sys.path.append(
     )
 )
 
-from utils.wrapper import StreamDiffusionWrapper
+from streamdiffusion import StreamDiffusionWrapper
 # Import the config system functions
-from src.streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
+from streamdiffusion import load_config, create_wrapper_from_config
 
 import torch
 import yaml
@@ -73,7 +73,7 @@ class Pipeline:
         # Load configuration if provided
         self.config = None
         self.use_config = False
-        
+
         if args.controlnet_config:
             try:
                 self.config = load_config(args.controlnet_config)
@@ -83,9 +83,9 @@ class Pipeline:
                 print(f"__init__: Failed to load config file {args.controlnet_config}: {e}")
                 print("__init__: Falling back to standard mode")
                 self.use_config = False
-        
+
         params = self.InputParams()
-        
+
         if self.use_config:
             # Use config-based pipeline creation
             # Set up runtime overrides for args that might differ from config
@@ -95,31 +95,31 @@ class Pipeline:
                 'acceleration': args.acceleration,
                 'use_safety_checker': args.safety_checker,
             }
-            
+
             # Determine engine_dir: use config value if available, otherwise use args
             engine_dir = args.engine_dir  # Default to command-line/environment value
             if 'engine_dir' in self.config:
                 engine_dir = self.config['engine_dir']
             if engine_dir:
                 overrides['engine_dir'] = engine_dir
-            
+
             # Override taesd if provided via args and not in config
             if args.taesd and 'use_tiny_vae' not in self.config:
                 overrides['use_tiny_vae'] = args.taesd
-            
+
             # Update params with config values
             params.width = self.config.get('width', 512)
             params.height = self.config.get('height', 512)
-            
+
             # Create wrapper using config system
             self.stream = create_wrapper_from_config(self.config, **overrides)
-            
+
             # Store config values for later use
             self.prompt = self.config.get('prompt', default_prompt)
             self.negative_prompt = self.config.get('negative_prompt', default_negative_prompt)
             self.guidance_scale = self.config.get('guidance_scale', 1.2)
             self.num_inference_steps = self.config.get('num_inference_steps', 50)
-            
+
         else:
             # Create StreamDiffusionWrapper without config (original behavior)
             print("__init__: Using standard mode (no config)")
@@ -143,13 +143,13 @@ class Pipeline:
                 use_safety_checker=args.safety_checker,
                 engine_dir=args.engine_dir,
             )
-            
+
             # Store default values for later use
             self.prompt = default_prompt
             self.negative_prompt = default_negative_prompt
             self.guidance_scale = 1.2
             self.num_inference_steps = 50
-            
+
             # Prepare pipeline with default prompts
             self.stream.prepare(
                 prompt=self.prompt,

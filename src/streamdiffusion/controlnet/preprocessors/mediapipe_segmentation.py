@@ -167,72 +167,43 @@ class MediaPipeSegmentationPreprocessor(BasePreprocessor):
         
         return output
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
         Apply MediaPipe segmentation to the input image
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with segmentation applied
         """
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        
-        # Resize for detection
         detect_resolution = self.params.get('detect_resolution', 512)
         image_resized = image.resize((detect_resolution, detect_resolution), Image.LANCZOS)
         
-        # Convert to RGB numpy array for MediaPipe
         rgb_image = cv2.cvtColor(np.array(image_resized), cv2.COLOR_BGR2RGB)
         
-        # Run MediaPipe segmentation
         results = self.segmentor.process(rgb_image)
         
         if results.segmentation_mask is not None:
-            # Get segmentation mask
             mask = results.segmentation_mask
             
-            # Apply smoothing
             mask = self._apply_mask_smoothing(mask)
             
-            # Create output based on mode
             output_image = self._create_output_image(rgb_image, mask)
         else:
-            # No segmentation detected, return original or black image
             output_mode = self.params.get('output_mode', 'binary')
             if output_mode == 'binary':
                 output_image = np.zeros((detect_resolution, detect_resolution, 3), dtype=np.uint8)
             else:
                 output_image = rgb_image
         
-        # Convert back to PIL
-        if output_image.shape[-1] == 4:  # RGBA
+        if output_image.shape[-1] == 4:
             result_pil = Image.fromarray(output_image, 'RGBA')
-        else:  # RGB
+        else:
             result_pil = Image.fromarray(output_image, 'RGB')
-        
-        # Resize to target resolution
-        image_resolution = self.params.get('image_resolution', 512)
-        if result_pil.size != (image_resolution, image_resolution):
-            result_pil = result_pil.resize((image_resolution, image_resolution), Image.LANCZOS)
         
         return result_pil
     
-    def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
         Process tensor directly on GPU to avoid unnecessary CPU transfers
-        
-        Args:
-            image_tensor: Input image tensor on GPU
-            
-        Returns:
-            Processed segmentation tensor on GPU
         """
-        # For MediaPipe, we need to go through CPU anyway, so use standard process
         pil_image = self.tensor_to_pil(image_tensor)
-        processed_pil = self.process(pil_image)
+        processed_pil = self._process_core(pil_image)
         return self.pil_to_tensor(processed_pil)
     
     def __del__(self):

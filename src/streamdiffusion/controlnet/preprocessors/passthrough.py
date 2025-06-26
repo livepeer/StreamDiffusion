@@ -31,59 +31,14 @@ class PassthroughPreprocessor(BasePreprocessor):
             **kwargs
         )
     
-    def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
-        Process tensor directly on GPU for passthrough (no CPU transfers needed)
-        
-        Args:
-            image_tensor: Input image tensor
-            
-        Returns:
-            Resized tensor suitable for ControlNet conditioning
+        Pass through the input image with no processing
         """
-        # Validate and normalize input tensor
-        image_tensor = self.validate_tensor_input(image_tensor)
-        
-        # Resize if needed using torch operations
-        image_resolution = self.params.get('image_resolution', 512)
-        current_size = image_tensor.shape[-2:]  # Get H, W
-        
-        if current_size != (image_resolution, image_resolution):
-            # Use torch resize (stay on GPU)
-            import torch.nn.functional as F
-            # Add batch dim if not present
-            if image_tensor.dim() == 3:
-                image_tensor = image_tensor.unsqueeze(0)
-            
-            image_tensor = F.interpolate(
-                image_tensor, 
-                size=(image_resolution, image_resolution),
-                mode='bilinear',
-                align_corners=False
-            )
-            
-            # Remove batch dim if we added it
-            if image_tensor.shape[0] == 1:
-                image_tensor = image_tensor.squeeze(0)
-        
-        return image_tensor
+        return image
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_tensor_core(self, tensor: torch.Tensor) -> torch.Tensor:
         """
-        Pass through the input image with minimal processing
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image (resized to target resolution if needed)
+        Pass through tensor with no processing
         """
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        
-        # Resize to target resolution if specified
-        image_resolution = self.params.get('image_resolution', 512)
-        if image.size != (image_resolution, image_resolution):
-            image = image.resize((image_resolution, image_resolution), Image.LANCZOS)
-        
-        return image 
+        return tensor 

@@ -7,10 +7,10 @@ from pathlib import Path
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
     config_path = Path(config_path)
-    
+
     if not config_path.exists():
         raise FileNotFoundError(f"load_config: Configuration file not found: {config_path}")
-    
+
     with open(config_path, 'r', encoding='utf-8') as f:
         if config_path.suffix.lower() in ['.yaml', '.yml']:
             config_data = yaml.safe_load(f)
@@ -18,19 +18,18 @@ def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
             config_data = json.load(f)
         else:
             raise ValueError(f"load_config: Unsupported configuration file format: {config_path.suffix}")
-    
-    _validate_config(config_data)
-    
-    return config_data
 
+    _validate_config(config_data)
+
+    return config_data
 
 def save_config(config: Dict[str, Any], config_path: Union[str, Path]) -> None:
     """Save StreamDiffusion configuration to YAML or JSON file"""
     config_path = Path(config_path)
-    
+
     _validate_config(config)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     with open(config_path, 'w', encoding='utf-8') as f:
         if config_path.suffix.lower() in ['.yaml', '.yml']:
             yaml.dump(config, f, default_flow_style=False, indent=2)
@@ -41,24 +40,23 @@ def save_config(config: Dict[str, Any], config_path: Union[str, Path]) -> None:
 
 def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
     """Create StreamDiffusionWrapper from configuration dictionary"""
-    from utils.wrapper import StreamDiffusionWrapper
+    from streamdiffusion import StreamDiffusionWrapper
     import torch
-    
+
     final_config = {**config, **overrides}
     wrapper_params = _extract_wrapper_params(final_config)
     wrapper = StreamDiffusionWrapper(**wrapper_params)
     prepare_params = _extract_prepare_params(final_config)
-    
+
     if prepare_params.get('prompt'):
         wrapper.prepare(**prepare_params)
-    
-    return wrapper
 
+    return wrapper
 
 def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for StreamDiffusionWrapper.__init__() from config"""
     import torch
-    
+
     param_map = {
         'model_id_or_path': config.get('model_id', 'stabilityai/sd-turbo'),
         't_index_list': config.get('t_index_list', [0, 16, 32, 45]),
@@ -87,16 +85,15 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'use_safety_checker': config.get('use_safety_checker', False),
         'engine_dir': config.get('engine_dir', 'engines'),
     }
-    
+
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
         param_map['controlnet_config'] = _prepare_controlnet_configs(config)
     else:
         param_map['use_controlnet'] = config.get('use_controlnet', False)
         param_map['controlnet_config'] = config.get('controlnet_config')
-    
-    return {k: v for k, v in param_map.items() if v is not None}
 
+    return {k: v for k, v in param_map.items() if v is not None}
 
 def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for wrapper.prepare() from config"""
@@ -108,12 +105,11 @@ def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'delta': config.get('delta', 1.0),
     }
 
-
 def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Prepare ControlNet configurations for wrapper"""
     controlnet_configs = []
     pipeline_type = config.get('pipeline_type', 'sd1.5')
-    
+
     for cn_config in config['controlnets']:
         controlnet_config = {
             'model_id': cn_config['model_id'],
@@ -126,41 +122,39 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             'control_guidance_end': cn_config.get('control_guidance_end', 1.0),
         }
         controlnet_configs.append(controlnet_config)
-    
-    return controlnet_configs
 
+    return controlnet_configs
 
 def _parse_dtype(dtype_str: str) -> Any:
     """Parse dtype string to torch dtype"""
     import torch
-    
+
     dtype_map = {
         'float16': torch.float16,
         'float32': torch.float32,
         'half': torch.float16,
         'float': torch.float32,
     }
-    
+
     if isinstance(dtype_str, str):
         return dtype_map.get(dtype_str.lower(), torch.float16)
     return dtype_str  # Assume it's already a torch dtype
-
 
 def _validate_config(config: Dict[str, Any]) -> None:
     """Basic validation of configuration dictionary"""
     if not isinstance(config, dict):
         raise ValueError("_validate_config: Configuration must be a dictionary")
-    
+
     if 'model_id' not in config:
         raise ValueError("_validate_config: Missing required field: model_id")
-    
+
     if 'controlnets' in config:
         if not isinstance(config['controlnets'], list):
             raise ValueError("_validate_config: 'controlnets' must be a list")
-        
+
         for i, controlnet in enumerate(config['controlnets']):
             if not isinstance(controlnet, dict):
                 raise ValueError(f"_validate_config: ControlNet {i} must be a dictionary")
-            
+
             if 'model_id' not in controlnet:
                 raise ValueError(f"_validate_config: ControlNet {i} missing required 'model_id'")

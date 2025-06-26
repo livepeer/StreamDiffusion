@@ -1,15 +1,14 @@
 from abc import ABC, abstractmethod
-from typing import Union, Dict, Any
+from typing import Union, Dict, Any, Tuple
 import torch
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 
 
 class BasePreprocessor(ABC):
     """
-    Base class for ControlNet preprocessors
-    
-    All preprocessors should inherit from this class and implement the process method.
+    Base class for ControlNet preprocessors with template method pattern
     """
     
     def __init__(self, **kwargs):
@@ -23,33 +22,61 @@ class BasePreprocessor(ABC):
         self.device = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         self.dtype = kwargs.get('dtype', torch.float16)
     
-    @abstractmethod
     def process(self, image: Union[Image.Image, np.ndarray, torch.Tensor]) -> Image.Image:
         """
-        Process an image for ControlNet input
-        
-        Args:
-            image: Input image in PIL, numpy array, or torch tensor format
-            
-        Returns:
-            Processed PIL Image suitable for ControlNet conditioning
+        Template method - handles all common operations
         """
-        pass
+        image = self.validate_input(image)
+        processed = self._process_core(image)
+        return self._ensure_target_size(processed)
     
     def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Process a tensor image directly on GPU (when supported by preprocessor)
-        
-        Args:
-            image_tensor: Input image tensor on GPU
-            
-        Returns:
-            Processed image tensor suitable for ControlNet conditioning
+        Template method for GPU tensor processing
         """
-        # Default implementation: convert to PIL and back (subclasses should override)
-        pil_image = self.tensor_to_pil(image_tensor)
-        processed_pil = self.process(pil_image)
+        tensor = self.validate_tensor_input(image_tensor)
+        processed = self._process_tensor_core(tensor)
+        return self._ensure_target_size_tensor(processed)
+    
+    @abstractmethod
+    def _process_core(self, image: Image.Image) -> Image.Image:
+        """
+        Subclasses implement ONLY their specific algorithm
+        """
+        pass
+    
+    def _process_tensor_core(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Optional GPU processing (fallback to PIL if not overridden)
+        """
+        pil_image = self.tensor_to_pil(tensor)
+        processed_pil = self._process_core(pil_image)
         return self.pil_to_tensor(processed_pil)
+    
+    def _ensure_target_size(self, image: Image.Image) -> Image.Image:
+        """
+        Centralized PIL resize logic
+        """
+        target_width, target_height = self.get_target_dimensions()
+        if image.size != (target_width, target_height):
+            return image.resize((target_width, target_height), Image.LANCZOS)
+        return image
+    
+    def _ensure_target_size_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Centralized tensor resize logic
+        """
+        target_width, target_height = self.get_target_dimensions()
+        current_size = tensor.shape[-2:]
+        target_size = (target_height, target_width)
+        
+        if current_size != target_size:
+            if tensor.dim() == 3:
+                tensor = tensor.unsqueeze(0)
+            tensor = F.interpolate(tensor, size=target_size, mode='bilinear', align_corners=False)
+            if tensor.shape[0] == 1:
+                tensor = tensor.squeeze(0)
+        return tensor
     
     def validate_tensor_input(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -172,19 +199,20 @@ class BasePreprocessor(ABC):
             
         return image
     
-    def resize_image(self, image: Image.Image, target_width: int = 512, target_height: int = 512) -> Image.Image:
+    def get_target_dimensions(self) -> Tuple[int, int]:
         """
-        Resize image to target dimensions
+        Get target output dimensions (width, height)
+        """
+        # Check for explicit width/height parameters first
+        width = self.params.get('image_width')
+        height = self.params.get('image_height')
         
-        Args:
-            image: PIL Image to resize
-            target_width: Target width
-            target_height: Target height
-            
-        Returns:
-            Resized PIL Image
-        """
-        return image.resize((target_width, target_height), Image.LANCZOS)
+        if width is not None and height is not None:
+            return (width, height)
+        
+        # Fallback to square resolution for backwards compatibility
+        resolution = self.params.get('image_resolution', 512)
+        return (resolution, resolution)
     
     def __call__(self, image: Union[Image.Image, np.ndarray, torch.Tensor], **kwargs) -> Image.Image:
         """

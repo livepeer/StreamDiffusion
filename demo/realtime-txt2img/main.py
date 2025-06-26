@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils.wrapper import StreamDiffusionWrapper
+from streamdiffusion import StreamDiffusionWrapper
 
 
 logger = logging.getLogger("uvicorn")

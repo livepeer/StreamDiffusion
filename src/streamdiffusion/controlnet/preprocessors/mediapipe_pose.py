@@ -356,48 +356,30 @@ class MediaPipePosePreprocessor(BasePreprocessor):
         
         return image
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
         Apply MediaPipe pose detection and create OpenPose-style annotation
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with OpenPose-style pose skeleton on black background
         """
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        
-        # Resize for detection
         detect_resolution = self.params.get('detect_resolution', 512)
         image_resized = image.resize((detect_resolution, detect_resolution), Image.LANCZOS)
         
-        # Convert to RGB numpy array for MediaPipe
         rgb_image = cv2.cvtColor(np.array(image_resized), cv2.COLOR_BGR2RGB)
         
-        # Run MediaPipe detection
         results = self.detector.process(rgb_image)
         
-        # Create black background for pose annotation
         pose_image = np.zeros((detect_resolution, detect_resolution, 3), dtype=np.uint8)
         
-        # Draw pose skeleton if detected
         if results.pose_landmarks:
-            # Convert MediaPipe to OpenPose format
             openpose_keypoints = self._mediapipe_to_openpose(
                 results.pose_landmarks.landmark, 
                 detect_resolution, 
                 detect_resolution
             )
             
-            # Apply TouchDesigner-style smoothing
             openpose_keypoints = self._apply_smoothing(openpose_keypoints, "main_pose")
             
-            # Draw OpenPose-style skeleton
             pose_image = self._draw_openpose_skeleton(pose_image, openpose_keypoints)
         
-        # Draw hands if enabled
         draw_hands = self.params.get('draw_hands', True)
         if draw_hands:
             if results.left_hand_landmarks:
@@ -410,29 +392,16 @@ class MediaPipePosePreprocessor(BasePreprocessor):
                     pose_image, results.right_hand_landmarks.landmark, is_left_hand=False
                 )
         
-        # Convert back to PIL
         pose_pil = Image.fromarray(cv2.cvtColor(pose_image, cv2.COLOR_BGR2RGB))
-        
-        # Resize to target resolution
-        image_resolution = self.params.get('image_resolution', 512)
-        if pose_pil.size != (image_resolution, image_resolution):
-            pose_pil = pose_pil.resize((image_resolution, image_resolution), Image.LANCZOS)
         
         return pose_pil
     
-    def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _process_tensor_core(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
         Process tensor directly on GPU to avoid unnecessary CPU transfers
-        
-        Args:
-            image_tensor: Input image tensor on GPU
-            
-        Returns:
-            Processed pose tensor on GPU
         """
-        # For MediaPipe, we need to go through CPU anyway, so use standard process
         pil_image = self.tensor_to_pil(image_tensor)
-        processed_pil = self.process(pil_image)
+        processed_pil = self._process_core(pil_image)
         return self.pil_to_tensor(processed_pil)
     
     def reset_smoothing_buffers(self):

@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils.wrapper import StreamDiffusionWrapper
+from streamdiffusion import StreamDiffusionWrapper
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -108,7 +108,7 @@ def main(
 
 demo = gr.Interface(
     main,
-    gr.Video(sources=['upload', 'webcam']), 
+    gr.Video(sources=['upload', 'webcam']),
     "playable_video"
 )
 demo.launch()

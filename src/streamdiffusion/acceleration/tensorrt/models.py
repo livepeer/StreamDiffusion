@@ -231,6 +231,8 @@ class UNet(BaseModel):
         unet_dim=4,
         use_control=False,
         unet_arch=None,
+        image_height=512,
+        image_width=512,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
@@ -242,45 +244,63 @@ class UNet(BaseModel):
         )
         self.unet_dim = unet_dim
         self.name = "UNet"
+        self.image_height = image_height
+        self.image_width = image_width
         
         self.use_control = use_control
         self.unet_arch = unet_arch or {}
         
         if self.use_control and self.unet_arch:
-            self.control_inputs = self.get_control()
+            self.control_inputs = self.get_control(image_height, image_width)
             self._add_control_inputs()
         else:
             self.control_inputs = {}
 
-    def get_control(self) -> dict:
-        """Generate ControlNet input configurations with multi-resolution spatial dimensions."""
+    def get_control(self, image_height: int = 512, image_width: int = 512) -> dict:
+        """Generate ControlNet input configurations with dynamic spatial dimensions based on input resolution."""
         block_out_channels = self.unet_arch.get('block_out_channels', (320, 640, 1280, 1280))
+        
+        # Calculate latent space dimensions
+        latent_height = image_height // 8
+        latent_width = image_width // 8
         
         control_inputs = {}
         
-        control_configs = [
-            (320, 64), (320, 64), (320, 64),     # Down block 0
-            (320, 32), (640, 32), (640, 32),     # Down block 1
-            (640, 16), (1280, 16), (1280, 16),   # Down block 2
-            (1280, 8), (1280, 8), (1280, 8),     # Down block 3
+        # Define downsampling factors for each block level
+        # SD 1.5 UNet has 4 down blocks with increasing downsampling
+        down_block_configs = [
+            [(320, 1), (320, 1), (320, 1)],# Block 0: No downsampling from latent space (factor = 1)
+            [(320, 2), (640, 2), (640, 2)], # Block 1: 2x downsampling from latent space (factor = 2) 
+            [(640, 4), (1280, 4), (1280, 4)], # Block 2: 4x downsampling from latent space (factor = 4)
+            [(1280, 8), (1280, 8), (1280, 8)] # Block 3: 8x downsampling from latent space (factor = 8)
         ]
         
-        for i, (channels, spatial_size) in enumerate(control_configs):
-            input_name = f"input_control_{i:02d}"
-            control_inputs[input_name] = {
-                'batch': self.min_batch,
-                'channels': channels,
-                'height': spatial_size,
-                'width': spatial_size,
-                'downsampling_factor': 1
-            }
+        # Generate control inputs with proper spatial dimensions
+        control_idx = 0
+        for block_idx, block_configs in enumerate(down_block_configs):
+            for layer_idx, (channels, downsample_factor) in enumerate(block_configs):
+                input_name = f"input_control_{control_idx:02d}"
+                
+                # Calculate spatial dimensions for this level
+                control_height = max(1, latent_height // downsample_factor)
+                control_width = max(1, latent_width // downsample_factor)
+                
+                control_inputs[input_name] = {
+                    'batch': self.min_batch,
+                    'channels': channels,
+                    'height': control_height,
+                    'width': control_width,
+                    'downsampling_factor': downsample_factor
+                }
+                control_idx += 1
         
+        # Middle block always uses the most downsampled resolution (8x)
         control_inputs["input_control_middle"] = {
             'batch': self.min_batch,
             'channels': 1280,
-            'height': 8,
-            'width': 8,
-            'downsampling_factor': 1
+            'height': max(1, latent_height // 8),
+            'width': max(1, latent_width // 8),
+            'downsampling_factor': 8
         }
         
         return control_inputs

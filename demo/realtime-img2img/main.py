@@ -205,15 +205,21 @@ class App:
             current_guidance_scale = 1.1
             current_delta = 0.7
             current_num_inference_steps = 50
+            current_seed = 2
             
             if self.pipeline:
                 current_guidance_scale = getattr(self.pipeline.stream, 'guidance_scale', 1.1)
                 current_delta = getattr(self.pipeline.stream, 'delta', 0.7)
                 current_num_inference_steps = getattr(self.pipeline.stream, 'num_inference_steps', 50)
+                # Get seed from generator if available
+                if hasattr(self.pipeline.stream, 'generator') and self.pipeline.stream.generator is not None:
+                    # We can't directly get seed from generator, but we'll use the configured value
+                    current_seed = getattr(self.pipeline.stream, 'current_seed', 2)
             elif self.uploaded_controlnet_config:
                 current_guidance_scale = self.uploaded_controlnet_config.get('guidance_scale', 1.1)
                 current_delta = self.uploaded_controlnet_config.get('delta', 0.7)
                 current_num_inference_steps = self.uploaded_controlnet_config.get('num_inference_steps', 50)
+                current_seed = self.uploaded_controlnet_config.get('seed', 2)
             
             return JSONResponse(
                 {
@@ -228,6 +234,7 @@ class App:
                     "guidance_scale": current_guidance_scale,
                     "delta": current_delta,
                     "num_inference_steps": current_num_inference_steps,
+                    "seed": current_seed,
                 }
             )
 
@@ -417,6 +424,31 @@ class App:
             except Exception as e:
                 logging.error(f"update_num_inference_steps: Failed to update num_inference_steps: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update num_inference_steps: {str(e)}")
+
+        @self.app.post("/api/update-seed")
+        async def update_seed(request: Request):
+            """Update seed value in real-time"""
+            try:
+                data = await request.json()
+                seed = data.get("seed")
+                
+                if seed is None:
+                    raise HTTPException(status_code=400, detail="Missing seed parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update seed in the pipeline
+                self.pipeline.stream.update_stream_params(seed=int(seed))
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated seed to {seed}"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_seed: Failed to update seed: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update seed: {str(e)}")
 
         @self.app.get("/api/fps")
         async def get_fps():

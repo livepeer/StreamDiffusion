@@ -15,7 +15,7 @@ from streamdiffusion.image_utils import postprocess_image
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from utils.wrapper import StreamDiffusionWrapper
+from streamdiffusion import StreamDiffusionWrapper
 
 
 def _postprocess_image(queue: Queue) -> None:
@@ -85,7 +85,7 @@ def run(
         Whether to use denoising batch or not, by default True.
     seed : int, optional
         The seed, by default 2. if -1, use random seed.
-    """        
+    """
     stream = StreamDiffusionWrapper(
         model_id_or_path=model_id_or_path,
         t_index_list=[32, 45],

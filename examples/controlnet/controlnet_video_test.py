@@ -27,7 +27,7 @@ def process_video(config_path, input_video, output_dir, resolution=None, engine_
     
     # Import here to avoid loading at module level
     sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-    from streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
+    from streamdiffusion import load_config, create_wrapper_from_config
     
     # Load configuration
     config = load_config(config_path)

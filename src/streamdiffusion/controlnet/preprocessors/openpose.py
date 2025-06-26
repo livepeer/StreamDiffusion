@@ -99,24 +99,13 @@ class OpenPosePreprocessor(BasePreprocessor):
         
         return FallbackDetector()
     
-    def process(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
+    def _process_core(self, image: Image.Image) -> Image.Image:
         """
         Apply OpenPose detection to the input image
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            PIL Image with detected pose (stick figure on black background)
         """
-        # Convert to PIL Image if needed
-        image = self.validate_input(image)
-        
-        # Resize for detection
         detect_resolution = self.params.get('detect_resolution', 512)
         image_resized = image.resize((detect_resolution, detect_resolution), Image.LANCZOS)
         
-        # Detect pose
         include_hands = self.params.get('include_hands', False)
         include_face = self.params.get('include_face', False)
         
@@ -131,10 +120,5 @@ class OpenPosePreprocessor(BasePreprocessor):
                 pose_image = self._create_fallback_detector()(image_resized, include_hands, include_face)
         else:
             pose_image = self.detector(image_resized, include_hands, include_face)
-        
-        # Resize to target resolution
-        image_resolution = self.params.get('image_resolution', 512)
-        if pose_image.size != (image_resolution, image_resolution):
-            pose_image = pose_image.resize((image_resolution, image_resolution), Image.LANCZOS)
         
         return pose_image 
