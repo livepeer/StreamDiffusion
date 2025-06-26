@@ -11,7 +11,7 @@ sys.path.append(
 
 from streamdiffusion import StreamDiffusionWrapper
 # Import the config system functions
-from src.streamdiffusion.controlnet.config import load_config, create_wrapper_from_config
+from streamdiffusion import load_config, create_wrapper_from_config
 
 import torch
 import yaml
