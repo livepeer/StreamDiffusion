@@ -158,6 +158,7 @@ class StreamDiffusionWrapper:
 
         self.use_denoising_batch = use_denoising_batch
         self.use_safety_checker = use_safety_checker
+        self._stream_has_controlnet_methods = False  # Track if stream has ControlNet methods (for performance)
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
@@ -852,11 +853,10 @@ class StreamDiffusionWrapper:
                     unet_path, cuda_stream, use_cuda_graph=False
                 )
 
-                # Always set ControlNet support to True for universal TensorRT engines
-                # This allows the engine to accept dummy inputs when no ControlNets are used
-                setattr(stream.unet, 'use_control', True)
+                # Set ControlNet metadata on the engine for runtime use
+                stream.unet.use_control = True  # Always True for universal engines
                 if use_controlnet_trt and unet_arch:
-                    setattr(stream.unet, 'unet_arch', unet_arch)
+                    stream.unet.unet_arch = unet_arch
 
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
@@ -865,8 +865,8 @@ class StreamDiffusionWrapper:
                     stream.pipe.vae_scale_factor,
                     use_cuda_graph=False,
                 )
-                setattr(stream.vae, "config", vae_config)
-                setattr(stream.vae, "dtype", vae_dtype)
+                stream.vae.config = vae_config
+                stream.vae.dtype = vae_dtype
 
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -914,6 +914,7 @@ class StreamDiffusionWrapper:
         # Apply ControlNet patch if needed
         if use_controlnet and controlnet_config:
             stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir)
+            self._stream_has_controlnet_methods = True  # Stream now has ControlNet methods
 
         return stream
 
@@ -1009,7 +1010,7 @@ class StreamDiffusionWrapper:
         if not self.use_controlnet:
             raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
-        if hasattr(self.stream, 'add_controlnet'):
+        if self._stream_has_controlnet_methods:
             cn_config = {
                 'model_id': model_id,
                 'preprocessor': preprocessor,
@@ -1021,21 +1022,19 @@ class StreamDiffusionWrapper:
         else:
             raise RuntimeError("add_controlnet: ControlNet functionality not available on this pipeline")
 
-
-
     def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
-        if self.use_controlnet and hasattr(self.stream, 'update_control_image_efficient'):
+        if self.use_controlnet and self._stream_has_controlnet_methods:
             self.stream.update_control_image_efficient(control_image, index=index)
 
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""
-        if self.use_controlnet and hasattr(self.stream, 'update_controlnet_scale'):
+        if self.use_controlnet and self._stream_has_controlnet_methods:
             self.stream.update_controlnet_scale(index, scale)
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
-        if self.use_controlnet and hasattr(self.stream, 'get_last_processed_image'):
+        if self.use_controlnet and self._stream_has_controlnet_methods:
             return self.stream.get_last_processed_image(index)
         return None
 
