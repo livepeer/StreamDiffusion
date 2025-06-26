@@ -1,7 +1,7 @@
 import os
 import yaml
 import json
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
@@ -48,7 +48,24 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
     wrapper = StreamDiffusionWrapper(**wrapper_params)
     prepare_params = _extract_prepare_params(final_config)
 
-    if prepare_params.get('prompt'):
+    # Handle regular prepare or prompt blending prepare
+    if 'prompt_blending' in final_config:
+        # Use prompt blending
+        blend_config = final_config['prompt_blending']
+        
+        # First prepare with base prompt (will be overridden)
+        base_prepare_params = {k: v for k, v in prepare_params.items() if k != 'prompt_blending'}
+        if base_prepare_params.get('prompt'):
+            wrapper.prepare(**base_prepare_params)
+        
+        # Apply prompt blending
+        wrapper.stream._param_updater.update_stream_params(
+            prompt_list=blend_config.get('prompt_list', []),
+            negative_prompt=prepare_params.get('negative_prompt', ''),
+            interpolation_method=blend_config.get('interpolation_method', 'slerp')
+        )
+    elif prepare_params.get('prompt'):
+        # Regular single prompt prepare
         wrapper.prepare(**prepare_params)
 
     return wrapper
@@ -97,13 +114,24 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract parameters for wrapper.prepare() from config"""
-    return {
+    prepare_params = {
         'prompt': config.get('prompt', ''),
         'negative_prompt': config.get('negative_prompt', ''),
         'num_inference_steps': config.get('num_inference_steps', 50),
         'guidance_scale': config.get('guidance_scale', 1.2),
         'delta': config.get('delta', 1.0),
     }
+    
+    # Handle prompt blending configuration
+    if 'prompt_blending' in config:
+        blend_config = config['prompt_blending']
+        prepare_params['prompt_blending'] = {
+            'prompt_list': blend_config.get('prompt_list', []),
+            'interpolation_method': blend_config.get('interpolation_method', 'slerp'),
+            'enable_caching': blend_config.get('enable_caching', True)
+        }
+    
+    return prepare_params
 
 def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Prepare ControlNet configurations for wrapper"""
@@ -124,6 +152,23 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         controlnet_configs.append(controlnet_config)
 
     return controlnet_configs
+
+def create_prompt_blending_config(
+    base_config: Dict[str, Any],
+    prompt_list: List[Tuple[str, float]],
+    interpolation_method: str = "slerp",
+    enable_caching: bool = True
+) -> Dict[str, Any]:
+    """Create a configuration with prompt blending settings"""
+    config = base_config.copy()
+    
+    config['prompt_blending'] = {
+        'prompt_list': prompt_list,
+        'interpolation_method': interpolation_method,
+        'enable_caching': enable_caching
+    }
+    
+    return config
 
 def _parse_dtype(dtype_str: str) -> Any:
     """Parse dtype string to torch dtype"""
@@ -158,3 +203,29 @@ def _validate_config(config: Dict[str, Any]) -> None:
 
             if 'model_id' not in controlnet:
                 raise ValueError(f"_validate_config: ControlNet {i} missing required 'model_id'")
+
+    # Validate prompt blending configuration if present
+    if 'prompt_blending' in config:
+        blend_config = config['prompt_blending']
+        if not isinstance(blend_config, dict):
+            raise ValueError("_validate_config: 'prompt_blending' must be a dictionary")
+        
+        if 'prompt_list' in blend_config:
+            prompt_list = blend_config['prompt_list']
+            if not isinstance(prompt_list, list):
+                raise ValueError("_validate_config: 'prompt_list' must be a list")
+            
+            for i, prompt_item in enumerate(prompt_list):
+                if not isinstance(prompt_item, (list, tuple)) or len(prompt_item) != 2:
+                    raise ValueError(f"_validate_config: Prompt item {i} must be [text, weight] pair")
+                
+                text, weight = prompt_item
+                if not isinstance(text, str):
+                    raise ValueError(f"_validate_config: Prompt text {i} must be a string")
+                
+                if not isinstance(weight, (int, float)) or weight < 0:
+                    raise ValueError(f"_validate_config: Prompt weight {i} must be a non-negative number")
+        
+        interpolation_method = blend_config.get('interpolation_method', 'slerp')
+        if interpolation_method not in ['linear', 'slerp']:
+            raise ValueError("_validate_config: interpolation_method must be 'linear' or 'slerp'")
