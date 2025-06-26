@@ -12,17 +12,32 @@ class StreamParameterUpdater:
         self._current_negative_prompt: str = ""
         self._cache_hits = 0
         self._cache_misses = 0
+        
+        # Seed blending caches  
+        self._seed_cache: Dict[int, Dict] = {}
+        self._current_seed_list: List[Tuple[int, float]] = []
+        self._seed_cache_hits = 0
+        self._seed_cache_misses = 0
     
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
         total_requests = self._cache_hits + self._cache_misses
         hit_rate = self._cache_hits / total_requests if total_requests > 0 else 0
+        
+        total_seed_requests = self._seed_cache_hits + self._seed_cache_misses
+        seed_hit_rate = self._seed_cache_hits / total_seed_requests if total_seed_requests > 0 else 0
+        
         return {
             "cached_prompts": len(self._prompt_cache),
             "cache_hits": self._cache_hits,
             "cache_misses": self._cache_misses,
             "hit_rate": f"{hit_rate:.2%}",
-            "current_prompts": len(self._current_prompt_list)
+            "current_prompts": len(self._current_prompt_list),
+            "cached_seeds": len(self._seed_cache),
+            "seed_cache_hits": self._seed_cache_hits,
+            "seed_cache_misses": self._seed_cache_misses,
+            "seed_hit_rate": f"{seed_hit_rate:.2%}",
+            "current_seeds": len(self._current_seed_list)
         }
     
     def clear_caches(self) -> None:
@@ -32,6 +47,11 @@ class StreamParameterUpdater:
         self._current_negative_prompt = ""
         self._cache_hits = 0
         self._cache_misses = 0
+        
+        self._seed_cache.clear()
+        self._current_seed_list.clear()
+        self._seed_cache_hits = 0
+        self._seed_cache_misses = 0
 
     @torch.no_grad()
     def update_stream_params(
@@ -44,6 +64,8 @@ class StreamParameterUpdater:
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         interpolation_method: Literal["linear", "slerp"] = "slerp",
+        seed_list: Optional[List[Tuple[int, float]]] = None,
+        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
         
@@ -74,6 +96,13 @@ class StreamParameterUpdater:
                 interpolation_method=interpolation_method
             )
         
+        # Handle seed blending if seed_list is provided
+        if seed_list is not None:
+            self._update_blended_seeds(
+                seed_list=seed_list,
+                interpolation_method=seed_interpolation_method
+            )
+        
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
 
@@ -101,6 +130,31 @@ class StreamParameterUpdater:
         
         # Recompute blended embeddings with new weights
         self._apply_prompt_blending(interpolation_method)
+
+    @torch.no_grad()
+    def update_seed_weights(
+        self, 
+        seed_weights: List[float],
+        interpolation_method: Literal["linear", "slerp"] = "linear"
+    ) -> None:
+        """Update weights for current seed list without regenerating noise."""
+        if not self._current_seed_list:
+            print("update_seed_weights: Warning: No current seed list to update weights for")
+            return
+            
+        if len(seed_weights) != len(self._current_seed_list):
+            print(f"update_seed_weights: Warning: Weight count {len(seed_weights)} doesn't match seed count {len(self._current_seed_list)}")
+            return
+        
+        # Update the current seed list with new weights
+        updated_seed_list = []
+        for i, (seed_value, _) in enumerate(self._current_seed_list):
+            updated_seed_list.append((seed_value, seed_weights[i]))
+        
+        self._current_seed_list = updated_seed_list
+        
+        # Recompute blended noise with new weights
+        self._apply_seed_blending(interpolation_method)
 
     @torch.no_grad()
     def _update_blended_prompts(
@@ -234,40 +288,114 @@ class StreamParameterUpdater:
         return result.view(original_shape)
 
     @torch.no_grad()
-    def _update_blended_seeds(self, seed_list: List[Tuple[int, float]]) -> None:
-        """Blend multiple seeds with weights to create diverse noise."""
-        if not seed_list:
+    def _update_blended_seeds(
+        self,
+        seed_list: List[Tuple[int, float]],
+        interpolation_method: Literal["linear", "slerp"] = "linear"
+    ) -> None:
+        """Update seed tensors using multiple weighted seeds."""
+        # Store current state
+        self._current_seed_list = seed_list.copy()
+        
+        # Cache any new seed noise tensors
+        self._cache_seed_noise(seed_list)
+        
+        # Apply blending
+        self._apply_seed_blending(interpolation_method)
+
+    def _cache_seed_noise(self, seed_list: List[Tuple[int, float]]) -> None:
+        """Cache seed noise tensors for efficient reuse."""
+        for idx, (seed_value, weight) in enumerate(seed_list):
+            if idx not in self._seed_cache or self._seed_cache[idx]['seed'] != seed_value:
+                # Cache miss - generate noise for the seed
+                self._seed_cache_misses += 1
+                generator = torch.Generator(device=self.stream.device)
+                generator.manual_seed(seed_value)
+                
+                noise = torch.randn(
+                    (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
+                    generator=generator,
+                    device=self.stream.device,
+                    dtype=self.stream.dtype
+                )
+                
+                self._seed_cache[idx] = {
+                    'noise': noise,
+                    'seed': seed_value
+                }
+            else:
+                # Cache hit
+                self._seed_cache_hits += 1
+
+    def _apply_seed_blending(self, interpolation_method: Literal["linear", "slerp"]) -> None:
+        """Apply weighted blending of cached seed noise tensors."""
+        if not self._current_seed_list:
             return
             
-        # Generate noise tensors for each seed
         noise_tensors = []
         weights = []
         
-        for seed_value, weight in seed_list:
-            generator = torch.Generator(device=self.stream.device)
-            generator.manual_seed(seed_value)
-            
-            noise = torch.randn(
-                (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
-                generator=generator,
-                device=self.stream.device,
-                dtype=self.stream.dtype
-            )
-            noise_tensors.append(noise)
-            weights.append(weight)
+        for idx, (seed_value, weight) in enumerate(self._current_seed_list):
+            if idx in self._seed_cache:
+                noise_tensors.append(self._seed_cache[idx]['noise'])
+                weights.append(weight)
+        
+        if not noise_tensors:
+            print("_apply_seed_blending: Warning: No cached noise tensors found")
+            return
         
         # Normalize weights
         weights = torch.tensor(weights, device=self.stream.device, dtype=self.stream.dtype)
         weights = weights / weights.sum()
         
-        # Blend noise tensors
-        blended_noise = torch.zeros_like(noise_tensors[0])
-        for noise, weight in zip(noise_tensors, weights):
-            blended_noise += weight * noise
+        # Apply interpolation
+        if interpolation_method == "slerp" and len(noise_tensors) == 2:
+            # Spherical linear interpolation for 2 seeds
+            noise1, noise2 = noise_tensors[0], noise_tensors[1]
+            t = weights[1].item()  # Use second weight as interpolation factor
+            combined_noise = self._slerp_noise(noise1, noise2, t)
+        else:
+            # Linear interpolation (weighted average)
+            combined_noise = torch.zeros_like(noise_tensors[0])
+            for noise, weight in zip(noise_tensors, weights):
+                combined_noise += weight * noise
         
         # Update stream noise
-        self.stream.init_noise = blended_noise
+        self.stream.init_noise = combined_noise
         self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+
+    def _slerp_noise(self, noise1: torch.Tensor, noise2: torch.Tensor, t: float) -> torch.Tensor:
+        """Spherical linear interpolation between two noise tensors."""
+        # Handle case where t is 0 or 1
+        if t <= 0:
+            return noise1
+        if t >= 1:
+            return noise2
+        
+        # SLERP on flattened noise but preserve original shape
+        original_shape = noise1.shape
+        flat1 = noise1.view(-1)
+        flat2 = noise2.view(-1)
+        
+        # Normalize
+        flat1_norm = F.normalize(flat1, dim=0)
+        flat2_norm = F.normalize(flat2, dim=0)
+        
+        # Calculate angle
+        dot_product = torch.clamp(torch.dot(flat1_norm, flat2_norm), -1.0, 1.0)
+        theta = torch.acos(dot_product)
+        
+        # Handle parallel vectors
+        if theta.abs() < 1e-6:
+            result = (1 - t) * flat1 + t * flat2
+        else:
+            # SLERP formula
+            sin_theta = torch.sin(theta)
+            w1 = torch.sin((1 - t) * theta) / sin_theta
+            w2 = torch.sin(t * theta) / sin_theta
+            result = w1 * flat1 + w2 * flat2
+        
+        return result.view(original_shape)
 
     def _update_seed(self, seed: int) -> None:
         """Update the generator seed and regenerate seed-dependent tensors."""
@@ -482,4 +610,140 @@ class StreamParameterUpdater:
         self._prompt_cache = new_cache
         
         # Recompute blended embeddings
-        self._apply_prompt_blending(interpolation_method) 
+        self._apply_prompt_blending(interpolation_method)
+
+    @torch.no_grad()
+    def update_seed_at_index(
+        self, 
+        index: int, 
+        new_seed: int,
+        interpolation_method: Literal["linear", "slerp"] = "linear"
+    ) -> None:
+        """Update a single seed at the specified index without regenerating others."""
+        if not self._current_seed_list:
+            print("update_seed_at_index: Warning: No current seed list")
+            return
+            
+        if index < 0 or index >= len(self._current_seed_list):
+            print(f"update_seed_at_index: Warning: Index {index} out of range (0-{len(self._current_seed_list)-1})")
+            return
+        
+        # Update the seed value while keeping the weight
+        old_seed, weight = self._current_seed_list[index]
+        self._current_seed_list[index] = (new_seed, weight)
+        
+        print(f"update_seed_at_index: Updated seed {index}: {old_seed} -> {new_seed}")
+        
+        # Cache the new seed noise
+        self._cache_seed_noise([(new_seed, weight)])
+        
+        # Update cache index to point to the new seed
+        if index in self._seed_cache and self._seed_cache[index]['seed'] != new_seed:
+            # Find if this seed is already cached elsewhere
+            existing_cache_key = None
+            for cache_idx, cache_data in self._seed_cache.items():
+                if cache_data['seed'] == new_seed:
+                    existing_cache_key = cache_idx
+                    break
+            
+            if existing_cache_key is not None:
+                # Reuse existing cached noise
+                self._seed_cache[index] = self._seed_cache[existing_cache_key].copy()
+                self._seed_cache_hits += 1
+            else:
+                # Generate new noise
+                self._seed_cache_misses += 1
+                generator = torch.Generator(device=self.stream.device)
+                generator.manual_seed(new_seed)
+                
+                noise = torch.randn(
+                    (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
+                    generator=generator,
+                    device=self.stream.device,
+                    dtype=self.stream.dtype
+                )
+                
+                self._seed_cache[index] = {
+                    'noise': noise,
+                    'seed': new_seed
+                }
+        
+        # Recompute blended noise with updated seed
+        self._apply_seed_blending(interpolation_method)
+
+    @torch.no_grad()
+    def get_current_seeds(self) -> List[Tuple[int, float]]:
+        """Get the current seed list with weights."""
+        return self._current_seed_list.copy()
+
+    @torch.no_grad()
+    def add_seed(
+        self, 
+        seed: int, 
+        weight: float = 1.0,
+        interpolation_method: Literal["linear", "slerp"] = "linear"
+    ) -> None:
+        """Add a new seed to the current list."""
+        new_index = len(self._current_seed_list)
+        self._current_seed_list.append((seed, weight))
+        
+        print(f"add_seed: Added seed {new_index}: {seed} with weight {weight}")
+        
+        # Cache the new seed noise
+        generator = torch.Generator(device=self.stream.device)
+        generator.manual_seed(seed)
+        
+        noise = torch.randn(
+            (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
+            generator=generator,
+            device=self.stream.device,
+            dtype=self.stream.dtype
+        )
+        
+        self._seed_cache[new_index] = {
+            'noise': noise,
+            'seed': seed
+        }
+        self._seed_cache_misses += 1
+        
+        # Recompute blended noise
+        self._apply_seed_blending(interpolation_method)
+
+    @torch.no_grad()
+    def remove_seed_at_index(
+        self, 
+        index: int,
+        interpolation_method: Literal["linear", "slerp"] = "linear"
+    ) -> None:
+        """Remove a seed at the specified index."""
+        if not self._current_seed_list:
+            print("remove_seed_at_index: Warning: No current seed list")
+            return
+            
+        if index < 0 or index >= len(self._current_seed_list):
+            print(f"remove_seed_at_index: Warning: Index {index} out of range")
+            return
+        
+        if len(self._current_seed_list) <= 1:
+            print("remove_seed_at_index: Warning: Cannot remove last seed")
+            return
+        
+        # Remove from current list
+        removed_seed = self._current_seed_list.pop(index)
+        print(f"remove_seed_at_index: Removed seed {index}: {removed_seed[0]}")
+        
+        # Remove from cache and reindex
+        if index in self._seed_cache:
+            del self._seed_cache[index]
+        
+        # Shift cache indices down
+        new_cache = {}
+        for cache_idx, cache_data in self._seed_cache.items():
+            if cache_idx < index:
+                new_cache[cache_idx] = cache_data
+            elif cache_idx > index:
+                new_cache[cache_idx - 1] = cache_data
+        self._seed_cache = new_cache
+        
+        # Recompute blended noise
+        self._apply_seed_blending(interpolation_method) 

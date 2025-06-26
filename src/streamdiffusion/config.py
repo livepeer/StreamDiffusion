@@ -54,7 +54,7 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
         blend_config = final_config['prompt_blending']
         
         # First prepare with base prompt (will be overridden)
-        base_prepare_params = {k: v for k, v in prepare_params.items() if k != 'prompt_blending'}
+        base_prepare_params = {k: v for k, v in prepare_params.items() if k not in ['prompt_blending', 'seed_blending']}
         if base_prepare_params.get('prompt'):
             wrapper.prepare(**base_prepare_params)
         
@@ -66,7 +66,16 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
         )
     elif prepare_params.get('prompt'):
         # Regular single prompt prepare
-        wrapper.prepare(**prepare_params)
+        clean_prepare_params = {k: v for k, v in prepare_params.items() if k not in ['prompt_blending', 'seed_blending']}
+        wrapper.prepare(**clean_prepare_params)
+
+    # Apply seed blending if configured
+    if 'seed_blending' in final_config:
+        seed_blend_config = final_config['seed_blending']
+        wrapper.stream._param_updater.update_stream_params(
+            seed_list=seed_blend_config.get('seed_list', []),
+            seed_interpolation_method=seed_blend_config.get('interpolation_method', 'linear')
+        )
 
     return wrapper
 
@@ -131,6 +140,15 @@ def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
             'enable_caching': blend_config.get('enable_caching', True)
         }
     
+    # Handle seed blending configuration
+    if 'seed_blending' in config:
+        seed_blend_config = config['seed_blending']
+        prepare_params['seed_blending'] = {
+            'seed_list': seed_blend_config.get('seed_list', []),
+            'interpolation_method': seed_blend_config.get('interpolation_method', 'linear'),
+            'enable_caching': seed_blend_config.get('enable_caching', True)
+        }
+    
     return prepare_params
 
 def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -164,6 +182,23 @@ def create_prompt_blending_config(
     
     config['prompt_blending'] = {
         'prompt_list': prompt_list,
+        'interpolation_method': interpolation_method,
+        'enable_caching': enable_caching
+    }
+    
+    return config
+
+def create_seed_blending_config(
+    base_config: Dict[str, Any],
+    seed_list: List[Tuple[int, float]],
+    interpolation_method: str = "linear",
+    enable_caching: bool = True
+) -> Dict[str, Any]:
+    """Create a configuration with seed blending settings"""
+    config = base_config.copy()
+    
+    config['seed_blending'] = {
+        'seed_list': seed_list,
         'interpolation_method': interpolation_method,
         'enable_caching': enable_caching
     }
@@ -229,3 +264,29 @@ def _validate_config(config: Dict[str, Any]) -> None:
         interpolation_method = blend_config.get('interpolation_method', 'slerp')
         if interpolation_method not in ['linear', 'slerp']:
             raise ValueError("_validate_config: interpolation_method must be 'linear' or 'slerp'")
+
+    # Validate seed blending configuration if present
+    if 'seed_blending' in config:
+        seed_blend_config = config['seed_blending']
+        if not isinstance(seed_blend_config, dict):
+            raise ValueError("_validate_config: 'seed_blending' must be a dictionary")
+        
+        if 'seed_list' in seed_blend_config:
+            seed_list = seed_blend_config['seed_list']
+            if not isinstance(seed_list, list):
+                raise ValueError("_validate_config: 'seed_list' must be a list")
+            
+            for i, seed_item in enumerate(seed_list):
+                if not isinstance(seed_item, (list, tuple)) or len(seed_item) != 2:
+                    raise ValueError(f"_validate_config: Seed item {i} must be [seed, weight] pair")
+                
+                seed_value, weight = seed_item
+                if not isinstance(seed_value, int) or seed_value < 0:
+                    raise ValueError(f"_validate_config: Seed value {i} must be a non-negative integer")
+                
+                if not isinstance(weight, (int, float)) or weight < 0:
+                    raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
+        
+        interpolation_method = seed_blend_config.get('interpolation_method', 'linear')
+        if interpolation_method not in ['linear', 'slerp']:
+            raise ValueError("_validate_config: seed blending interpolation_method must be 'linear' or 'slerp'")

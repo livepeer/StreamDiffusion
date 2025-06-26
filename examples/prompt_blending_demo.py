@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-StreamDiffusion Prompt Blending Demo
+StreamDiffusion Prompt & Seed Blending Demo
 
-Demonstrates real-time prompt blending and weight adjustment capabilities in StreamDiffusion.
-Shows how to blend multiple prompts with adjustable weights at runtime.
+Demonstrates real-time prompt and seed blending capabilities in StreamDiffusion.
+Shows how to blend multiple prompts and/or seeds with adjustable weights at runtime.
 
-Based on the standalone pipeline structure but focuses on prompt blending without ControlNets.
+Based on the standalone pipeline structure but focuses on blending without ControlNets.
 """
 
 import sys
@@ -85,64 +85,92 @@ class PromptBlendingPipeline:
     
 
     
-    def demonstrate_smooth_prompt_blending(self, image: Image.Image) -> List[Image.Image]:
-        """Demonstrate smooth blending between two prompts over exactly 20 images."""
-        print("\n=== Smooth Prompt Blending Demo ===")
+    def demonstrate_smooth_blending(self, image: Image.Image) -> List[Image.Image]:
+        """Demonstrate smooth blending between prompts and seeds over exactly 20 images."""
+        print("\n=== Smooth Prompt & Seed Blending Demo ===")
         
-        # Check if config has prompt blending
+        # Check if config has blending configurations
         config_data = load_config(self.config_file)
         
-        if 'prompt_blending' in config_data:
-            # Use prompt blending mode
-            blend_config = config_data['prompt_blending']
-            if len(blend_config['prompt_list']) >= 2:
-                prompt_a = blend_config['prompt_list'][0][0]
-                prompt_b = blend_config['prompt_list'][1][0]
+        has_prompt_blending = 'prompt_blending' in config_data
+        has_seed_blending = 'seed_blending' in config_data
+        
+        if has_prompt_blending or has_seed_blending:
+            results = []
+            num_images = 20
+            
+            # Setup prompt blending if available
+            prompt_a, prompt_b = None, None
+            if has_prompt_blending:
+                blend_config = config_data['prompt_blending']
+                if len(blend_config['prompt_list']) >= 2:
+                    prompt_a = blend_config['prompt_list'][0][0]
+                    prompt_b = blend_config['prompt_list'][1][0]
+                    print("Prompt blending enabled:")
+                    print(f"  Prompt A: {prompt_a}")
+                    print(f"  Prompt B: {prompt_b}")
+            
+            # Setup seed blending if available
+            seed_a, seed_b = None, None
+            if has_seed_blending:
+                seed_config = config_data['seed_blending']
+                if len(seed_config['seed_list']) >= 2:
+                    seed_a = seed_config['seed_list'][0][0]
+                    seed_b = seed_config['seed_list'][1][0]
+                    print("Seed blending enabled:")
+                    print(f"  Seed A: {seed_a}")
+                    print(f"  Seed B: {seed_b}")
+            
+            print(f"  Generating {num_images} images with smooth transitions")
+            print(f"\nGenerating {num_images} images:")
+            
+            for i in range(num_images):
+                # Calculate weights: from 100% A to 100% B
+                t = i / (num_images - 1)  # 0.0 to 1.0
+                weight_a = 1.0 - t
+                weight_b = t
                 
-                print("Blending between two prompts:")
-                print(f"  Prompt A: {prompt_a}")
-                print(f"  Prompt B: {prompt_b}")
-                print(f"  Generating 20 images with smooth weight transitions")
+                status_parts = []
+                if prompt_a and prompt_b:
+                    status_parts.append(f"Prompt A={weight_a:.2f}, B={weight_b:.2f}")
+                if seed_a and seed_b:
+                    status_parts.append(f"Seed A={weight_a:.2f}, B={weight_b:.2f}")
                 
-                results = []
-                num_images = 20
+                print(f"  Image {i+1:02d}/{num_images}: {' | '.join(status_parts)}")
                 
-                print(f"\nGenerating {num_images} images:")
+                # Prepare update parameters
+                update_params = {}
                 
-                for i in range(num_images):
-                    # Calculate weights: from 100% A to 100% B
-                    t = i / (num_images - 1)  # 0.0 to 1.0
-                    weight_a = 1.0 - t
-                    weight_b = t
-                    
-                    print(f"  Image {i+1:02d}/{num_images}: A={weight_a:.2f}, B={weight_b:.2f}")
-                    
-                    # Create prompt list with current weights
-                    prompt_list = [
+                # Add prompt blending if available
+                if prompt_a and prompt_b:
+                    update_params['prompt_list'] = [
                         [prompt_a, weight_a],
                         [prompt_b, weight_b]
                     ]
-                    
-                    # Apply blending with new weights
-                    self.wrapper.stream._param_updater.update_stream_params(
-                        prompt_list=prompt_list,
-                        interpolation_method="slerp"
-                    )
-                    
-                    # Generate image
-                    result = self.process_image(image)
-                    results.append(result)
+                    update_params['interpolation_method'] = "slerp"
                 
-                # Show cache performance
-                cache_info = self.wrapper.stream._param_updater.get_cache_info()
-                print(f"\nCache performance: {cache_info}")
+                # Add seed blending if available
+                if seed_a and seed_b:
+                    update_params['seed_list'] = [
+                        [seed_a, weight_a],
+                        [seed_b, weight_b]
+                    ]
+                    update_params['seed_interpolation_method'] = "linear"
                 
-            else:
-                print("Config has prompt_blending but not enough prompts - falling back to single prompt")
-                results = self._generate_single_prompt_sequence(image, config_data)
+                # Apply blending with new weights
+                self.wrapper.stream._param_updater.update_stream_params(**update_params)
+                
+                # Generate image
+                result = self.process_image(image)
+                results.append(result)
+            
+            # Show cache performance
+            cache_info = self.wrapper.stream._param_updater.get_cache_info()
+            print(f"\nCache performance: {cache_info}")
+            
         else:
             # Fall back to single prompt mode
-            print("No prompt blending in config - using single prompt mode")
+            print("No prompt or seed blending in config - using single prompt mode")
             results = self._generate_single_prompt_sequence(image, config_data)
         
         return results
@@ -231,12 +259,12 @@ def run_prompt_blending_demo(config_file: str, input_image_path: str, engine_onl
         print(f"Input saved: {input_path}")
         
         print("\n" + "="*70)
-        print("PROMPT BLENDING DEMONSTRATION - 20 IMAGE SEQUENCE")
+        print("PROMPT & SEED BLENDING DEMONSTRATION - 20 IMAGE SEQUENCE")
         print("="*70)
         
         # Generate the 20-image smooth blend sequence
         start_time = time.time()
-        blend_results = pipeline.demonstrate_smooth_prompt_blending(input_image)
+        blend_results = pipeline.demonstrate_smooth_blending(input_image)
         blend_time = time.time() - start_time
         
         # Save all 20 images
@@ -249,13 +277,14 @@ def run_prompt_blending_demo(config_file: str, input_image_path: str, engine_onl
         
         # Final summary
         print("\n" + "="*70)
-        print("DEMO COMPLETE - SMOOTH PROMPT BLENDING")
+        print("DEMO COMPLETE - SMOOTH PROMPT & SEED BLENDING")
         print("="*70)
         print(f"Total images generated: {len(blend_results)} (plus 1 input)")
-        print(f"Each image represents a different weight ratio between two prompts:")
-        print("  • Image 01: 100% Prompt A,   0% Prompt B")
-        print("  • Image 10:  53% Prompt A,  47% Prompt B") 
-        print("  • Image 20:   0% Prompt A, 100% Prompt B")
+        print(f"Each image represents different blending ratios:")
+        print("  • Image 01: 100% Source A,   0% Source B")
+        print("  • Image 10:  53% Source A,  47% Source B") 
+        print("  • Image 20:   0% Source A, 100% Source B")
+        print("  (Source A/B can be prompts and/or seeds depending on config)")
         print(f"\nFiles saved with pattern: blend_XX_{timestamp}.png")
         print("\nTo create an animation:")
         print(f"ffmpeg -r 10 -i {output_dir}/blend_%02d_{timestamp}.png -pix_fmt yuv420p blend_animation.mp4")
@@ -274,7 +303,7 @@ def run_prompt_blending_demo(config_file: str, input_image_path: str, engine_onl
 
 def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description="StreamDiffusion Prompt Blending Demo")
+    parser = argparse.ArgumentParser(description="StreamDiffusion Prompt & Seed Blending Demo")
     parser.add_argument("--config", type=str,
                         default=os.path.join(os.path.dirname(__file__), "..", "..", "configs", "sd15_img2img.yaml"),
                         help="Path to configuration file")
@@ -285,17 +314,17 @@ def main():
     args = parser.parse_args()
 
     print("=" * 70)
-    print("StreamDiffusion Prompt Blending Demo")
+    print("StreamDiffusion Prompt & Seed Blending Demo")
     print("=" * 70)
     print(f"Config: {args.config}")
     print(f"Input Image: {args.input_image}")
     print("=" * 70)
     print("This demo generates exactly 20 images showing:")
-    print("• Smooth blending between two contrasting prompts")
+    print("• Smooth blending between prompts and/or seeds")
     print("• Each image has different weight ratios (100%A → 100%B)")
-    print("• SLERP interpolation for smooth semantic transitions")
-    print("• Efficient prompt caching (only 2 prompts encoded)")
-    print("• Perfect for creating smooth animations")
+    print("• SLERP interpolation for prompts, linear/SLERP for seeds")
+    print("• Efficient caching for both prompts and noise tensors")
+    print("• Perfect for creating smooth animations with varied content")
     print("")
     print("📊 Output: 20 images + 1 input = 21 total files")
     print("🎬 Animation: Use ffmpeg command shown at the end")
@@ -308,7 +337,7 @@ def main():
     )
     
     if success:
-        print("\n✓ Prompt blending demo completed successfully!")
+        print("\n✓ Prompt & seed blending demo completed successfully!")
         print("Check the output images to see the blending effects in action.")
     else:
         print("\n✗ Demo failed - check configuration and dependencies")
