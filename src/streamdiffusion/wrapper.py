@@ -237,6 +237,7 @@ class StreamDiffusionWrapper:
         guidance_scale: Optional[float] = None,
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
+        seed: Optional[int] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -251,12 +252,15 @@ class StreamDiffusionWrapper:
             The delta multiplier of virtual residual noise.
         t_index_list : Optional[List[int]]
             The t_index_list to use for inference.
+        seed : Optional[int]
+            The random seed to use for noise generation.
         """
         self.stream.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             delta=delta,
             t_index_list=t_index_list,
+            seed=seed,
         )
 
     def __call__(

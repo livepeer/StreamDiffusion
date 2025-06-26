@@ -9,6 +9,7 @@
   export let guidanceScale: number = 1.1;
   export let delta: number = 0.7;
   export let numInferenceSteps: number = 50;
+  export let seed: number = 2;
 
   const dispatch = createEventDispatcher();
 
@@ -210,6 +211,23 @@
     }
   }
 
+  async function updateSeed(value: number) {
+    try {
+      seed = value;
+      const response = await fetch('/api/update-seed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seed: value })
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateSeed: Failed to update seed:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateSeed: Update failed:', error);
+    }
+  }
+
   function handleGuidanceScaleChange(event: Event) {
     const target = event.target as HTMLInputElement;
     const value = parseFloat(target.value);
@@ -226,6 +244,12 @@
     const target = event.target as HTMLInputElement;
     const value = parseInt(target.value);
     updateNumInferenceSteps(value);
+  }
+
+  function handleSeedChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = parseInt(target.value);
+    updateSeed(value);
   }
 </script>
 
@@ -405,6 +429,23 @@
                 class="w-full appearance-none cursor-pointer"
               />
               <p class="text-xs text-gray-500">Number of denoising steps</p>
+            </div>
+            
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="text-sm font-medium text-gray-600 dark:text-gray-400">Seed</label>
+                <span class="text-sm text-gray-600 dark:text-gray-400">{seed}</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="999999"
+                step="1"
+                value={seed}
+                on:input={handleSeedChange}
+                class="w-full appearance-none cursor-pointer"
+              />
+              <p class="text-xs text-gray-500">Random seed for noise generation</p>
             </div>
           </div>
         </div>
