@@ -81,9 +81,6 @@
   <div class="flex items-center justify-between">
     <h3 class="text-lg font-semibold">Prompt Blending</h3>
     <div class="flex gap-2">
-      <Button on:click={normalizeWeights} classList="text-sm">
-        Normalize Weights
-      </Button>
       <Button on:click={addPrompt} classList="text-sm">
         + Add Prompt
       </Button>

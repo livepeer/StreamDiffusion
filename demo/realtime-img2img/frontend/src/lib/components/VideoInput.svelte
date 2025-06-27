@@ -77,10 +77,10 @@
   }
 </script>
 
-<div class="relative w-full aspect-square overflow-hidden rounded-lg border border-slate-300 bg-gray-100 dark:bg-gray-800">
+<div class="relative w-full aspect-square max-w-xs mx-auto overflow-hidden rounded-lg border border-slate-300 bg-gray-100 dark:bg-gray-800">
   <div class="relative z-10 w-full h-full">
     {#if $mediaDevices.length > 0}
-      <div class="absolute bottom-2 right-2 z-10">
+      <div class="absolute bottom-1 right-1 z-10">
         <MediaListSwitcher />
       </div>
     {/if}
@@ -98,7 +98,7 @@
     <canvas bind:this={canvasEl} class="absolute left-0 top-0 w-full h-full object-cover rounded-lg opacity-0"></canvas>
   </div>
   <div class="absolute left-0 top-0 flex w-full h-full items-center justify-center">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-20 h-20 opacity-20 text-gray-400">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-16 h-16 opacity-20 text-gray-400">
       <path
         fill="currentColor"
         d="M224 256a128 128 0 1 0 0-256 128 128 0 1 0 0 256zm-45.7 48A178.3 178.3 0 0 0 0 482.3 29.7 29.7 0 0 0 29.7 512h388.6a29.7 29.7 0 0 0 29.7-29.7c0-98.5-79.8-178.3-178.3-178.3h-91.4z"

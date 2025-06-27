@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import type { Fields, PipelineInfo } from '$lib/types';
   import { PipelineMode } from '$lib/types';
   import ImagePlayer from '$lib/components/ImagePlayer.svelte';
@@ -33,15 +33,25 @@
   let warningMessage: string = '';
   
   // Panel state management
-  let showBasicControls: boolean = true;
-  let showAdvancedControls: boolean = true;
-  let showBlendingControls: boolean = false;
-  let showControlNetConfig: boolean = false;
+  let showPromptBlending: boolean = false;
+  let showSeedBlending: boolean = false;
   let leftPanelCollapsed: boolean = false;
   let rightPanelCollapsed: boolean = false;
 
+  // FPS tracking
+  let fps = 0;
+  let fpsInterval: number | null = null;
+
   onMount(() => {
     getSettings();
+    updateFPS();
+    fpsInterval = setInterval(updateFPS, 1000);
+  });
+
+  onDestroy(() => {
+    if (fpsInterval) {
+      clearInterval(fpsInterval);
+    }
   });
 
   async function getSettings() {
@@ -170,6 +180,82 @@
       toggleQueueChecker(true);
     }
   }
+
+  async function updateFPS() {
+    try {
+      const response = await fetch('/api/fps');
+      const data = await response.json();
+      fps = data.fps;
+    } catch (error) {
+      console.error('updateFPS: Failed to fetch FPS:', error);
+    }
+  }
+
+  // Pipeline configuration upload
+  let fileInput: HTMLInputElement;
+  let uploading = false;
+  let uploadStatus = '';
+
+  async function uploadConfig() {
+    if (!fileInput.files || fileInput.files.length === 0) {
+      uploadStatus = 'Please select a YAML file';
+      return;
+    }
+
+    const file = fileInput.files[0];
+    if (!file.name.endsWith('.yaml') && !file.name.endsWith('.yml')) {
+      uploadStatus = 'Please select a YAML file (.yaml or .yml)';
+      return;
+    }
+
+    uploading = true;
+    uploadStatus = 'Uploading configuration...';
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/controlnet/upload-config', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        uploadStatus = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        fileInput.value = '';
+        
+        if (result.controlnet) {
+          controlnetInfo = result.controlnet;
+          if (result.t_index_list) {
+            tIndexList = [...result.t_index_list];
+          }
+          if (result.config_prompt) {
+            pipelineValues.update(values => ({
+              ...values,
+              prompt: result.config_prompt
+            }));
+          }
+        }
+        
+        setTimeout(() => {
+          uploadStatus = '';
+        }, 4000);
+      } else {
+        uploadStatus = `Error: ${result.detail || 'Failed to load configuration'}`;
+      }
+    } catch (error) {
+      console.error('uploadConfig: Upload failed:', error);
+      uploadStatus = 'Upload failed. Please try again.';
+    } finally {
+      uploading = false;
+    }
+  }
+
+  function selectFile() {
+    fileInput.click();
+  }
 </script>
 
 <svelte:head>
@@ -203,8 +289,24 @@
         {/if}
       </div>
       
-      <!-- Main Control Button -->
-      <div class="ml-4">
+      <!-- Pipeline Configuration and Main Controls -->
+      <div class="flex items-center gap-4">
+        <!-- Pipeline Configuration -->
+        <div class="flex items-center gap-2">
+          <Button on:click={selectFile} disabled={uploading} classList="text-sm px-3 py-2">
+            {uploading ? 'Uploading...' : 'Load YAML Config'}
+          </Button>
+        </div>
+        
+        <input
+          bind:this={fileInput}
+          type="file"
+          accept=".yaml,.yml"
+          class="hidden"
+          on:change={uploadConfig}
+        />
+        
+        <!-- Main Control Button -->
         <Button on:click={toggleLcmLive} {disabled} classList={'text-lg px-6 py-3 font-semibold'}>
           {#if isLCMRunning}
             Stop Stream
@@ -214,6 +316,14 @@
         </Button>
       </div>
     </div>
+    
+    {#if uploadStatus}
+      <div class="mt-2 text-center">
+        <p class="text-sm {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
+          {uploadStatus}
+        </p>
+      </div>
+    {/if}
   </header>
 
   {#if pipelineParams}
@@ -245,34 +355,33 @@
             </div>
           {/if}
 
-          <!-- Basic Pipeline Controls -->
+          <!-- Prompt Blending -->
           <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
             <button 
-              on:click={() => showBasicControls = !showBasicControls}
+              on:click={() => showPromptBlending = !showPromptBlending}
               class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
             >
-              <h3 class="text-md font-medium">Pipeline Settings</h3>
-              <span class="text-sm">{showBasicControls ? '−' : '+'}</span>
+              <h3 class="text-md font-medium">Prompt Blending</h3>
+              <span class="text-sm">{showPromptBlending ? '−' : '+'}</span>
             </button>
-            {#if showBasicControls}
+            {#if showPromptBlending}
               <div class="p-4 pt-0">
-                <PipelineOptions {pipelineParams} />
+                <PromptBlendingControl {promptBlendingConfig} />
               </div>
             {/if}
           </div>
 
-          <!-- Blending Controls -->
+          <!-- Seed Blending -->
           <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
             <button 
-              on:click={() => showBlendingControls = !showBlendingControls}
+              on:click={() => showSeedBlending = !showSeedBlending}
               class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
             >
-              <h3 class="text-md font-medium">Prompt & Seed Blending</h3>
-              <span class="text-sm">{showBlendingControls ? '−' : '+'}</span>
+              <h3 class="text-md font-medium">Seed Blending</h3>
+              <span class="text-sm">{showSeedBlending ? '−' : '+'}</span>
             </button>
-            {#if showBlendingControls}
-              <div class="p-4 pt-0 space-y-4">
-                <PromptBlendingControl {promptBlendingConfig} />
+            {#if showSeedBlending}
+              <div class="p-4 pt-0">
                 <SeedBlendingControl {seedBlendingConfig} />
               </div>
             {/if}
@@ -285,8 +394,18 @@
         <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex flex-col">
           <div class="flex items-center justify-between mb-4">
             <h2 class="text-lg font-semibold">Generated Output</h2>
-            <div class="text-sm text-gray-600 dark:text-gray-400">
-              Status: {isLCMRunning ? 'Running' : 'Stopped'}
+            <div class="flex items-center gap-4">
+              {#if isLCMRunning}
+                <div class="flex items-center gap-2 px-3 py-1 bg-green-100 dark:bg-green-900 rounded-lg">
+                  <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span class="text-sm font-medium text-green-800 dark:text-green-200">
+                    {fps.toFixed(1)} FPS
+                  </span>
+                </div>
+              {/if}
+              <div class="text-sm text-gray-600 dark:text-gray-400">
+                Status: {isLCMRunning ? 'Streaming' : 'Stopped'}
+              </div>
             </div>
           </div>
           <div class="flex-1 flex items-center justify-center">
@@ -311,29 +430,15 @@
         </div>
         
         {#if !rightPanelCollapsed}
-          <!-- ControlNet Configuration -->
-          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-            <button 
-              on:click={() => showControlNetConfig = !showControlNetConfig}
-              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
-            >
-              <h3 class="text-md font-medium">ControlNet & Inference</h3>
-              <span class="text-sm">{showControlNetConfig ? '−' : '+'}</span>
-            </button>
-            {#if showControlNetConfig}
-              <div class="p-4 pt-0">
-                <ControlNetConfig 
-                  {controlnetInfo} 
-                  {tIndexList} 
-                  {guidanceScale}
-                  {delta}
-                  {numInferenceSteps}
-                  on:controlnetUpdated={handleControlNetUpdate}
-                  on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
-                ></ControlNetConfig>
-              </div>
-            {/if}
-          </div>
+          <ControlNetConfig 
+            {controlnetInfo} 
+            {tIndexList} 
+            {guidanceScale}
+            {delta}
+            {numInferenceSteps}
+            on:controlnetUpdated={handleControlNetUpdate}
+            on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
+          ></ControlNetConfig>
         {/if}
       </div>
     </div>
