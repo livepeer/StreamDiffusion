@@ -221,6 +221,17 @@ class App:
                 current_num_inference_steps = self.uploaded_controlnet_config.get('num_inference_steps', 50)
                 current_seed = self.uploaded_controlnet_config.get('seed', 2)
             
+            # Get prompt and seed blending configuration from uploaded config
+            prompt_blending_config = None
+            seed_blending_config = None
+            
+            if self.uploaded_controlnet_config:
+                if 'prompt_blending' in self.uploaded_controlnet_config:
+                    prompt_blending_config = self.uploaded_controlnet_config['prompt_blending']
+                
+                if 'seed_blending' in self.uploaded_controlnet_config:
+                    seed_blending_config = self.uploaded_controlnet_config['seed_blending']
+            
             return JSONResponse(
                 {
                     "info": info_schema,
@@ -235,6 +246,8 @@ class App:
                     "delta": current_delta,
                     "num_inference_steps": current_num_inference_steps,
                     "seed": current_seed,
+                    "prompt_blending": prompt_blending_config,
+                    "seed_blending": seed_blending_config,
                 }
             )
 
@@ -449,6 +462,84 @@ class App:
             except Exception as e:
                 logging.error(f"update_seed: Failed to update seed: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update seed: {str(e)}")
+
+        @self.app.post("/api/prompt-blending/update")
+        async def update_prompt_blending(request: Request):
+            """Update prompt blending configuration in real-time"""
+            try:
+                data = await request.json()
+                prompt_list = data.get("prompt_list")
+                interpolation_method = data.get("interpolation_method", "slerp")
+                
+                if prompt_list is None:
+                    raise HTTPException(status_code=400, detail="Missing prompt_list parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Validate prompt_list structure
+                if not isinstance(prompt_list, list):
+                    raise HTTPException(status_code=400, detail="prompt_list must be a list")
+                
+                for item in prompt_list:
+                    if not isinstance(item, list) or len(item) != 2:
+                        raise HTTPException(status_code=400, detail="Each prompt_list item must be [prompt, weight]")
+                    if not isinstance(item[0], str) or not isinstance(item[1], (int, float)):
+                        raise HTTPException(status_code=400, detail="Each prompt_list item must be [string, number]")
+                
+                # Update prompt blending in the pipeline using parameter updater
+                self.pipeline.stream.stream._param_updater.update_stream_params(
+                    prompt_list=prompt_list,
+                    interpolation_method=interpolation_method
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated prompt blending with {len(prompt_list)} prompts"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_prompt_blending: Failed to update prompt blending: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update prompt blending: {str(e)}")
+
+        @self.app.post("/api/seed-blending/update")
+        async def update_seed_blending(request: Request):
+            """Update seed blending configuration in real-time"""
+            try:
+                data = await request.json()
+                seed_list = data.get("seed_list")
+                seed_interpolation_method = data.get("seed_interpolation_method", "linear")
+                
+                if seed_list is None:
+                    raise HTTPException(status_code=400, detail="Missing seed_list parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Validate seed_list structure
+                if not isinstance(seed_list, list):
+                    raise HTTPException(status_code=400, detail="seed_list must be a list")
+                
+                for item in seed_list:
+                    if not isinstance(item, list) or len(item) != 2:
+                        raise HTTPException(status_code=400, detail="Each seed_list item must be [seed, weight]")
+                    if not isinstance(item[0], int) or not isinstance(item[1], (int, float)):
+                        raise HTTPException(status_code=400, detail="Each seed_list item must be [int, number]")
+                
+                # Update seed blending in the pipeline using parameter updater
+                self.pipeline.stream.stream._param_updater.update_stream_params(
+                    seed_list=seed_list,
+                    seed_interpolation_method=seed_interpolation_method
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated seed blending with {len(seed_list)} seeds"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_seed_blending: Failed to update seed blending: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update seed blending: {str(e)}")
 
         @self.app.get("/api/fps")
         async def get_fps():

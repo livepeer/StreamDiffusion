@@ -30,7 +30,7 @@
     canvasEl.height = size.height;
   });
   $: {
-    console.log(selectedDevice);
+    console.log('VideoInput: selectedDevice', selectedDevice);
   }
   onDestroy(() => {
     if (videoFrameCallbackId) videoEl.cancelVideoFrameCallback(videoFrameCallbackId);
@@ -77,15 +77,15 @@
   }
 </script>
 
-<div class="relative mx-auto max-w-lg overflow-hidden rounded-lg border border-slate-300">
-  <div class="relative z-10 aspect-square w-full object-cover">
+<div class="relative w-full aspect-square overflow-hidden rounded-lg border border-slate-300 bg-gray-100 dark:bg-gray-800">
+  <div class="relative z-10 w-full h-full">
     {#if $mediaDevices.length > 0}
-      <div class="absolute bottom-0 right-0 z-10">
+      <div class="absolute bottom-2 right-2 z-10">
         <MediaListSwitcher />
       </div>
     {/if}
     <video
-      class="pointer-events-none aspect-square w-full object-cover"
+      class="pointer-events-none w-full h-full object-cover rounded-lg"
       bind:this={videoEl}
       on:loadeddata={() => {
         videoIsReady = true;
@@ -95,11 +95,10 @@
       muted
       loop
     ></video>
-    <canvas bind:this={canvasEl} class="absolute left-0 top-0 aspect-square w-full object-cover"
-    ></canvas>
+    <canvas bind:this={canvasEl} class="absolute left-0 top-0 w-full h-full object-cover rounded-lg opacity-0"></canvas>
   </div>
-  <div class="absolute left-0 top-0 flex aspect-square w-full items-center justify-center">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-40 p-5 opacity-20">
+  <div class="absolute left-0 top-0 flex w-full h-full items-center justify-center">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-20 h-20 opacity-20 text-gray-400">
       <path
         fill="currentColor"
         d="M224 256a128 128 0 1 0 0-256 128 128 0 1 0 0 256zm-45.7 48A178.3 178.3 0 0 0 0 482.3 29.7 29.7 0 0 0 29.7 512h388.6a29.7 29.7 0 0 0 29.7-29.7c0-98.5-79.8-178.3-178.3-178.3h-91.4z"
