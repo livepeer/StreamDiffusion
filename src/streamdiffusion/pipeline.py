@@ -85,22 +85,30 @@ class StreamDiffusion:
         pretrained_model_name_or_path_or_dict: Union[
             str, Dict[str, torch.Tensor]
         ] = "latent-consistency/lcm-lora-sdv1-5",
-        adapter_name: Optional[Any] = None,
+        adapter_name: Optional[Any] = "lcm",
         **kwargs,
     ) -> None:
         self.pipe.load_lora_weights(
-            pretrained_model_name_or_path_or_dict, adapter_name, **kwargs
+            pretrained_model_name_or_path_or_dict, adapter_name = adapter_name, **kwargs
         )
 
     def load_lora(
         self,
         pretrained_lora_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],
-        adapter_name: Optional[Any] = None,
         **kwargs,
     ) -> None:
+        """
+        Loads a LoRA into the underlying pipeline. This does NOT fuse; use set_adapters to activate.
+        """
         self.pipe.load_lora_weights(
-            pretrained_lora_model_name_or_path_or_dict, adapter_name, **kwargs
+            pretrained_lora_model_name_or_path_or_dict, **kwargs
         )
+
+    def set_adapters(self, adapter_names, adapter_weights=None):
+        """
+        Sets active LoRA adapters and their weights in the underlying pipeline.
+        """
+        self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
 
     def fuse_lora(
         self,
@@ -289,7 +297,7 @@ class StreamDiffusion:
         t_index_list : Optional[List[int]]
             The t_index_list to use for inference.
         seed : Optional[int]
-            The random seed to use for noise generation.
+-            The random seed to use for noise generation.
         """
         self._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
