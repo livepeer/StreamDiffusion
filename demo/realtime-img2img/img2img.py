@@ -29,7 +29,6 @@ default_prompt = "Portrait of The Joker halloween costume, face painting, with ,
 default_negative_prompt = "black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity"
 
 page_content = """<h1 class="text-3xl font-bold">StreamDiffusion</h1>
-<h3 class="text-xl font-bold">Image-to-Image</h3>
 <p class="text-sm">
     This demo showcases
     <a
@@ -37,14 +36,14 @@ page_content = """<h1 class="text-3xl font-bold">StreamDiffusion</h1>
     target="_blank"
     class="text-blue-500 underline hover:no-underline">StreamDiffusion
 </a>
-Image to Image pipeline using configuration system.
+pipeline using configuration system.
 </p>
 """
 
 
 class Pipeline:
     class Info(BaseModel):
-        name: str = "StreamDiffusion img2img"
+        name: str = "StreamDiffusion"
         input_mode: str = "image"
         page_content: str = page_content
 
@@ -73,16 +72,28 @@ class Pipeline:
         # Load configuration if provided
         self.config = None
         self.use_config = False
+        self.pipeline_mode = "img2img"  # default mode
 
         if args.controlnet_config:
             try:
                 self.config = load_config(args.controlnet_config)
                 self.use_config = True
                 print("__init__: Using configuration file mode")
+                
+                # Check mode from config
+                self.pipeline_mode = self.config.get('mode', 'img2img')
+                print(f"__init__: Pipeline mode set to {self.pipeline_mode}")
+                
             except Exception as e:
                 print(f"__init__: Failed to load config file {args.controlnet_config}: {e}")
                 print("__init__: Falling back to standard mode")
                 self.use_config = False
+
+        # Update input_mode based on pipeline mode
+        if self.pipeline_mode == "txt2img":
+            self.Info.input_mode = "text"
+        else:
+            self.Info.input_mode = "image"
 
         params = self.InputParams()
 
@@ -172,13 +183,25 @@ class Pipeline:
                 guidance_scale=self.guidance_scale,
             )
 
-        if self.use_config and self.config and 'controlnets' in self.config:
-            # ControlNet mode: update control image and use PIL image
-            self.stream.update_control_image_efficient(params.image)
-            output_image = self.stream(params.image)
+        # Handle different modes
+        if self.pipeline_mode == "txt2img":
+            # Text-to-image mode
+            if self.use_config and self.config and 'controlnets' in self.config:
+                # txt2img with ControlNets: need image for control
+                self.stream.update_control_image_efficient(params.image)
+                output_image = self.stream(params.image)
+            else:
+                # Pure txt2img: no image needed
+                output_image = self.stream()
         else:
-            # Standard mode: use original logic with preprocessed tensor
-            image_tensor = self.stream.preprocess_image(params.image)
-            output_image = self.stream(image=image_tensor, prompt=params.prompt)
+            # Image-to-image mode: use original logic
+            if self.use_config and self.config and 'controlnets' in self.config:
+                # ControlNet mode: update control image and use PIL image
+                self.stream.update_control_image_efficient(params.image)
+                output_image = self.stream(params.image)
+            else:
+                # Standard mode: use original logic with preprocessed tensor
+                image_tensor = self.stream.preprocess_image(params.image)
+                output_image = self.stream(image=image_tensor, prompt=params.prompt)
 
         return output_image

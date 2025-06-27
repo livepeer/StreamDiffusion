@@ -86,12 +86,25 @@ class App:
                         await self.conn_manager.disconnect(user_id)
                         return
                     data = await self.conn_manager.receive_json(user_id)
+                    if data is None:
+                        break
                     if data["status"] == "next_frame":
-                        info = Pipeline.Info()
                         params = await self.conn_manager.receive_json(user_id)
                         params = Pipeline.InputParams(**params)
                         params = SimpleNamespace(**params.dict())
-                        if info.input_mode == "image":
+                        
+                        # Check if we need image data based on pipeline
+                        need_image = True
+                        if self.pipeline and hasattr(self.pipeline, 'pipeline_mode'):
+                            # Need image for img2img OR for txt2img with ControlNets
+                            has_controlnets = self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config
+                            need_image = self.pipeline.pipeline_mode == "img2img" or has_controlnets
+                        elif self.uploaded_controlnet_config and 'mode' in self.uploaded_controlnet_config:
+                            # Need image for img2img OR for txt2img with ControlNets
+                            has_controlnets = 'controlnets' in self.uploaded_controlnet_config
+                            need_image = self.uploaded_controlnet_config['mode'] == "img2img" or has_controlnets
+                        
+                        if need_image:
                             image_data = await self.conn_manager.receive_bytes(user_id)
                             if len(image_data) == 0:
                                 await self.conn_manager.send_json(
@@ -99,6 +112,9 @@ class App:
                                 )
                                 continue
                             params.image = bytes_to_pil(image_data)
+                        else:
+                            params.image = None
+                        
                         await self.conn_manager.update_data(user_id, params)
 
             except Exception as e:
@@ -143,10 +159,14 @@ class App:
                         params = await self.conn_manager.get_latest_data(user_id)
                         if params is None:
                             continue
-                        image = self.pipeline.predict(params)
-                        if image is None:
+                        
+                        try:
+                            image = self.pipeline.predict(params)
+                            if image is None:
+                                continue
+                            frame = pil_to_frame(image)
+                        except Exception as e:
                             continue
-                        frame = pil_to_frame(image)
                         
                         # Update FPS counter
                         frame_time = time.time() - frame_start_time
