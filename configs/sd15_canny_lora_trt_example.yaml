@@ -1,0 +1,30 @@
+model_id: "Lykon/dreamshaper-8"
+prompt: "an anime render of a girl with purple hair, masterpiece, pixel art, PixArFK,"
+negative_prompt: "bad quality, worst quality, low quality, normal quality, lowres, low details, oversaturated, undersaturated, overexposed, underexposed, grayscale, bw, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, jpeg artifacts, signature, watermark, username, blurry"
+resolution: 512
+t_index_list: [20, 35, 45]
+frame_buffer_size: 1
+warmup: 10
+acceleration: "tensorrt"
+do_add_noise: false
+use_denoising_batch: true
+enable_similar_image_filter: true
+similar_image_filter_threshold: 0.98
+seed: 2
+num_inference_steps: 50
+guidance_scale: 1.1
+use_lcm_lora: true
+#Just add the lora dict with the respective lora weights
+# The lora weights are used to modify the model's behavior during inference
+lora_dict:
+  "/workspace/StreamDiffusion/examples/controlnet/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors": 1.2
+
+# ControlNet configuration
+controlnets:
+  - model_id: "lllyasviel/control_v11p_sd15_canny"
+    conditioning_scale: 0.29
+    preprocessor: "canny"
+    preprocessor_params:
+      low_threshold: 100
+      high_threshold: 200
+    enabled: true
