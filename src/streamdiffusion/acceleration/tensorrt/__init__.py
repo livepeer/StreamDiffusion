@@ -15,6 +15,7 @@ from .models import VAE, BaseModel, UNet, VAEEncoder
 from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
 from .controlnet_wrapper import create_controlnet_wrapper
 from .engine_pool import ControlNetEnginePool
+from .ipadapter_wrapper import create_ipadapter_wrapper
 
 
 class TorchVAEEncoder(torch.nn.Module):
@@ -114,8 +115,14 @@ def accelerate_with_tensorrt(
     # Detect if ControlNet is being used
     use_controlnet = hasattr(stream, 'controlnets') and len(getattr(stream, 'controlnets', [])) > 0
     
+    # Detect if IPAdapter is being used
+    use_ipadapter = hasattr(stream, 'ipadapters') and len(getattr(stream, 'ipadapters', [])) > 0
+    
     if use_controlnet:
         print("ControlNet detected - enabling TensorRT ControlNet support")
+    
+    if use_ipadapter:
+        print("IPAdapter detected - enabling TensorRT IPAdapter support")
         
         # Detect model architecture
         try:
@@ -132,6 +139,21 @@ def accelerate_with_tensorrt(
             print("Falling back to standard TensorRT compilation without ControlNet")
             use_controlnet = False
             unet_arch = {}
+    elif use_ipadapter:
+        # IPAdapter needs model detection too (for cross_attention_dim)
+        try:
+            model_type = detect_model_from_diffusers_unet(unet)
+            cross_attention_dim = unet.config.cross_attention_dim
+            
+            print(f"Detected model: {model_type}")
+            print(f"IPAdapter: Standard IPAdapter (4 tokens), cross_attention_dim={cross_attention_dim}")
+            
+            unet_arch = {"context_dim": cross_attention_dim}
+        except Exception as e:
+            print(f"Failed to detect model architecture: {e}")
+            print("Falling back to standard TensorRT compilation without IPAdapter")
+            use_ipadapter = False
+            unet_arch = {}
     else:
         unet_arch = {}
 
@@ -142,7 +164,7 @@ def accelerate_with_tensorrt(
     vae_encoder_engine_path = f"{engine_dir}/vae_encoder.engine"
     vae_decoder_engine_path = f"{engine_dir}/vae_decoder.engine"
 
-    # Create UNet model with ControlNet support if needed
+    # Create UNet model with ControlNet and/or IPAdapter support if needed
     unet_model = UNet(
         fp16=True,
         device=stream.device,
@@ -152,6 +174,7 @@ def accelerate_with_tensorrt(
         unet_dim=unet.config.in_channels,
         use_control=use_controlnet,
         unet_arch=unet_arch if use_controlnet else None,
+        use_ipadapter=use_ipadapter,
     )
     
     vae_decoder_model = VAE(
@@ -182,8 +205,23 @@ def accelerate_with_tensorrt(
                 unet_engine_path,
                 **engine_build_options,
             )
+        elif use_ipadapter:
+            print("Compiling UNet with IPAdapter support")
+            
+            # Create IPAdapter-aware wrapper for ONNX export (skip processors for safety)
+            wrapped_unet = create_ipadapter_wrapper(unet, install_processors=False)
+            
+            # Compile with IPAdapter support
+            compile_unet(
+                wrapped_unet,  # Use wrapped UNet
+                unet_model,
+                create_onnx_path("unet", onnx_dir, opt=False),
+                create_onnx_path("unet", onnx_dir, opt=True),
+                unet_engine_path,
+                **engine_build_options,
+            )
         else:
-            print("Compiling UNet without ControlNet support")
+            print("Compiling UNet without ControlNet or IPAdapter support")
             compile_unet(
                 unet,
                 unet_model,
@@ -243,6 +281,14 @@ def accelerate_with_tensorrt(
         print("ControlNet engine pool initialized")
     else:
         setattr(stream.unet, 'use_control', False)
+    
+    # Store IPAdapter metadata on the engine for runtime use
+    if use_ipadapter:
+        setattr(stream.unet, 'use_ipadapter', True)
+        setattr(stream.unet, 'ipadapter_arch', unet_arch)
+        print("TensorRT UNet engine configured for IPAdapter support")
+    else:
+        setattr(stream.unet, 'use_ipadapter', False)
     
     stream.vae = AutoencoderKLEngine(
         vae_encoder_engine_path,

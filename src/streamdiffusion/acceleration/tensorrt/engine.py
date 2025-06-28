@@ -7,7 +7,10 @@ from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTinyOutput
 from diffusers.models.autoencoders.autoencoder_kl import DecoderOutput
 from polygraphy import cuda
 
-from .utilities import Engine
+try:
+    from .utilities import Engine
+except ImportError:
+    from utilities import Engine
 
 
 class UNet2DConditionModelEngine:
@@ -26,6 +29,7 @@ class UNet2DConditionModelEngine:
         latent_model_input: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
+        image_embeddings: Optional[torch.Tensor] = None,
         down_block_additional_residuals: Optional[List[torch.Tensor]] = None,
         mid_block_additional_residual: Optional[torch.Tensor] = None,
         controlnet_conditioning: Optional[Dict[str, List[torch.Tensor]]] = None,
@@ -47,6 +51,11 @@ class UNet2DConditionModelEngine:
             "timestep": timestep,
             "encoder_hidden_states": encoder_hidden_states,
         }
+
+        # Add image embeddings if provided (IPAdapter support)
+        if image_embeddings is not None:
+            shape_dict["image_embeddings"] = image_embeddings.shape
+            input_dict["image_embeddings"] = image_embeddings
 
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:
