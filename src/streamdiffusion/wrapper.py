@@ -605,20 +605,12 @@ class StreamDiffusionWrapper:
                 adapter_names = []
                 adapter_weights = []
                 if use_lcm_lora:
-                    adapter_names.append("lcm")
-                    adapter_weights.append(1.1)  # Default LCM-LoRA scale
-                for lora_name, lora_scale in lora_dict.items():
-                    adapter_name = os.path.basename(lora_name).replace('.safetensors', '').replace('.pt', '')
-                    stream.load_lora(lora_name, adapter_name=adapter_name)
-                    print(f"Use LoRA: {lora_name} as adapter '{adapter_name}' in weights {lora_scale}")
-                # Build adapter names and weights lists
-                adapter_names = []
-                adapter_weights = []
-                if use_lcm_lora:
                     adapter_names.append('lcm')
                     adapter_weights.append(1.1)
                 for lora_name, lora_scale in lora_dict.items():
                     adapter_name = os.path.basename(lora_name).replace('.safetensors', '').replace('.pt', '')
+                    stream.load_lora(lora_name, adapter_name=adapter_name)
+                    print(f"Use LoRA: {lora_name} as adapter '{adapter_name}' in weights {lora_scale}")
                     adapter_names.append(adapter_name)
                     adapter_weights.append(lora_scale)
                 stream.set_adapters(adapter_names, adapter_weights=adapter_weights)
@@ -945,7 +937,7 @@ class StreamDiffusionWrapper:
         Returns:
             ControlNet-enabled pipeline (ControlNetPipeline or SDXLTurboControlNetPipeline)
         """
-        # Extract pipeline_type from controlnet_config if it's in there
+        # Extract pipeline_type from controlnet_config if it exists
         if isinstance(controlnet_config, list):
             config_dict = controlnet_config[0] if controlnet_config else {}
         else:
