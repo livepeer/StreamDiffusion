@@ -233,6 +233,7 @@ class UNet(BaseModel):
         unet_arch=None,
         image_height=512,
         image_width=512,
+        use_ipadapter=False,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
@@ -249,6 +250,13 @@ class UNet(BaseModel):
         
         self.use_control = use_control
         self.unet_arch = unet_arch or {}
+        self.use_ipadapter = use_ipadapter
+        
+        # Standard IPAdapter configuration (simplified)
+        if self.use_ipadapter:
+            self.num_image_tokens = 4  # Standard IPAdapter only
+            # embedding_dim already set based on model detection (768/2048)
+            print(f"UNet: IPAdapter enabled - Standard IPAdapter (4 tokens), embedding_dim={self.embedding_dim}")
         
         if self.use_control and self.unet_arch:
             self.control_inputs = self.get_control(image_height, image_width)
@@ -317,8 +325,10 @@ class UNet(BaseModel):
         self._original_get_sample_input = self.get_sample_input
 
     def get_input_names(self):
-        """Get input names including ControlNet inputs"""
+        """Get input names including ControlNet and IPAdapter inputs"""
         base_names = ["sample", "timestep", "encoder_hidden_states"]
+        if self.use_ipadapter:
+            base_names.append("image_embeddings")
         if self.use_control and self.control_inputs:
             control_names = sorted(self.control_inputs.keys())
             return base_names + control_names
@@ -334,6 +344,9 @@ class UNet(BaseModel):
             "encoder_hidden_states": {0: "2B"},
             "latent": {0: "2B", 2: "H", 3: "W"},
         }
+        
+        if self.use_ipadapter:
+            base_axes["image_embeddings"] = {0: "2B"}  # Fixed 4 tokens, embedding_dim
         
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
@@ -377,6 +390,13 @@ class UNet(BaseModel):
             ],
         }
         
+        if self.use_ipadapter:
+            profile["image_embeddings"] = [
+                (min_batch, 4, self.embedding_dim),      # Always 4 tokens
+                (batch_size, 4, self.embedding_dim),
+                (max_batch, 4, self.embedding_dim),
+            ]
+        
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
                 channels = shape_spec["channels"]
@@ -400,6 +420,9 @@ class UNet(BaseModel):
             "latent": (2 * batch_size, 4, latent_height, latent_width),
         }
         
+        if self.use_ipadapter:
+            shape_dict["image_embeddings"] = (2 * batch_size, 4, self.embedding_dim)
+        
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
                 channels = shape_spec["channels"]
@@ -421,6 +444,15 @@ class UNet(BaseModel):
             torch.ones((2 * batch_size,), dtype=torch.float32, device=self.device),
             torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
+        
+        if self.use_ipadapter:
+            # Standard IPAdapter: 4 tokens, architecture-specific embedding dimension
+            # Use same dtype as encoder_hidden_states for consistency
+            image_embeds = torch.randn(
+                2 * batch_size, 4, self.embedding_dim,  # Always 4 tokens
+                dtype=dtype, device=self.device
+            )
+            base_inputs.append(image_embeds)
         
         if self.use_control and self.control_inputs:
             control_inputs = []

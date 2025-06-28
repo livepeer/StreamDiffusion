@@ -5,12 +5,21 @@ from typing import *
 import torch
 from diffusers.models import ControlNetModel
 
-from .models import BaseModel
-from .utilities import (
-    build_engine,
-    export_onnx,
-    optimize_onnx,
-)
+try:
+    from .models import BaseModel
+    from .utilities import (
+        build_engine,
+        export_onnx,
+        optimize_onnx,
+    )
+except ImportError:
+    # Handle case when running as standalone script
+    from models import BaseModel
+    from utilities import (
+        build_engine,
+        export_onnx,
+        optimize_onnx,
+    )
 
 
 def create_onnx_path(name, onnx_dir, opt=True):
