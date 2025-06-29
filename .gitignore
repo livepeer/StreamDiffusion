@@ -212,3 +212,6 @@ models/RealESR*
 # Ignore user config files
 configs/*.yaml
 configs/*.yml
+
+images/outputs/*
+images/inputs/*
