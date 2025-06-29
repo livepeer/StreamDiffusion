@@ -257,6 +257,7 @@ class UNet(BaseModel):
         image_height=512,
         image_width=512,
         use_ipadapter=False,
+        num_image_tokens=4,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
@@ -274,12 +275,15 @@ class UNet(BaseModel):
         self.use_control = use_control
         self.unet_arch = unet_arch or {}
         self.use_ipadapter = use_ipadapter
+        self.num_image_tokens = num_image_tokens
         
-        # Standard IPAdapter configuration (simplified)
+        # Baked-in IPAdapter configuration
         if self.use_ipadapter:
-            self.num_image_tokens = 4  # Standard IPAdapter only
-            # embedding_dim already set based on model detection (768/2048)
-            print(f"UNet: IPAdapter enabled - Standard IPAdapter (4 tokens), embedding_dim={self.embedding_dim}")
+            # With baked-in processors, we extend text_maxlen to include image tokens
+            self.text_maxlen = text_maxlen + self.num_image_tokens
+            print(f"UNet: IPAdapter enabled with baked-in processors")
+            print(f"UNet: {self.num_image_tokens} tokens, embedding_dim={self.embedding_dim}")
+            print(f"UNet: Extended text_maxlen to {self.text_maxlen} (text + image tokens)")
         
         if self.use_control and self.unet_arch:
             self.control_inputs = self.get_control(image_height, image_width)
@@ -348,10 +352,9 @@ class UNet(BaseModel):
         self._original_get_sample_input = self.get_sample_input
 
     def get_input_names(self):
-        """Get input names including ControlNet and IPAdapter inputs"""
+        """Get input names including ControlNet inputs (IPAdapter is baked-in)"""
         base_names = ["sample", "timestep", "encoder_hidden_states"]
-        if self.use_ipadapter:
-            base_names.append("image_embeddings")
+        # Note: IPAdapter no longer needs separate inputs - processors are baked-in
         if self.use_control and self.control_inputs:
             control_names = sorted(self.control_inputs.keys())
             return base_names + control_names
@@ -364,12 +367,11 @@ class UNet(BaseModel):
         base_axes = {
             "sample": {0: "2B", 2: "H", 3: "W"},
             "timestep": {0: "2B"},
-            "encoder_hidden_states": {0: "2B"},
+            "encoder_hidden_states": {0: "2B"},  # Now includes concatenated text+image tokens
             "latent": {0: "2B", 2: "H", 3: "W"},
         }
         
-        if self.use_ipadapter:
-            base_axes["image_embeddings"] = {0: "2B"}  # Fixed 4 tokens, embedding_dim
+        # Note: IPAdapter tokens are now concatenated in encoder_hidden_states
         
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
@@ -436,12 +438,7 @@ class UNet(BaseModel):
             ],
         }
         
-        if self.use_ipadapter:
-            profile["image_embeddings"] = [
-                (min_batch, 4, self.embedding_dim),      # Always 4 tokens
-                (batch_size, 4, self.embedding_dim),
-                (max_batch, 4, self.embedding_dim),
-            ]
+        # Note: IPAdapter tokens are now included in encoder_hidden_states via extended text_maxlen
         
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
@@ -481,8 +478,7 @@ class UNet(BaseModel):
             "latent": (2 * batch_size, 4, latent_height, latent_width),
         }
         
-        if self.use_ipadapter:
-            shape_dict["image_embeddings"] = (2 * batch_size, 4, self.embedding_dim)
+        # Note: IPAdapter tokens are now included in encoder_hidden_states via extended text_maxlen
         
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
@@ -519,14 +515,8 @@ class UNet(BaseModel):
             torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
         
-        if self.use_ipadapter:
-            # Standard IPAdapter: 4 tokens, architecture-specific embedding dimension
-            # Use same dtype as encoder_hidden_states for consistency
-            image_embeds = torch.randn(
-                2 * batch_size, 4, self.embedding_dim,  # Always 4 tokens
-                dtype=dtype, device=self.device
-            )
-            base_inputs.append(image_embeds)
+        # Note: IPAdapter tokens are now included in encoder_hidden_states via extended text_maxlen
+        # No separate image_embeddings input needed with baked-in processors
         
         if self.use_control and self.control_inputs:
             control_inputs = []

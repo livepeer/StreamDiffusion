@@ -215,6 +215,7 @@ class BaseIPAdapterPipeline:
         
         This method properly combines IPAdapter image conditioning with StreamDiffusion's
         existing text embeddings, maintaining compatibility with both txt2img and img2img modes.
+        Now includes TensorRT mode detection and separate embedding storage.
         
         Args:
             prompt: Text prompt  
@@ -237,9 +238,16 @@ class BaseIPAdapterPipeline:
         )
         
         # Get the original text embeddings from StreamDiffusion
-        # These were set up by the prepare() method with proper batch dimensions
-        original_prompt_embeds = self.stream.prompt_embeds
-        original_negative_prompt_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
+        # Store original embeddings on first call to prevent accumulation
+        if not hasattr(self.stream, '_original_text_prompt_embeds'):
+            self.stream._original_text_prompt_embeds = self.stream.prompt_embeds.clone()
+            self.stream._original_text_negative_prompt_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
+            if self.stream._original_text_negative_prompt_embeds is not None:
+                self.stream._original_text_negative_prompt_embeds = self.stream._original_text_negative_prompt_embeds.clone()
+        
+        # Always use the original text embeddings (not the combined ones from previous calls)
+        original_prompt_embeds = self.stream._original_text_prompt_embeds
+        original_negative_prompt_embeds = self.stream._original_text_negative_prompt_embeds
         
         if original_prompt_embeds is None:
             print("_update_stream_embeddings: Warning - No original prompt embeddings found")
@@ -251,6 +259,11 @@ class BaseIPAdapterPipeline:
             print(f"_update_stream_embeddings: Original negative embeds shape: {original_negative_prompt_embeds.shape}")
         print(f"_update_stream_embeddings: Negative image embeds shape: {negative_image_prompt_embeds.shape}")
         
+        # Detect TensorRT mode (same pattern as ControlNet)
+        is_tensorrt = hasattr(self.stream.unet, 'engine') or hasattr(self.stream, 'unet_engine')
+        
+        print(f"_update_stream_embeddings: TensorRT mode detected: {is_tensorrt}")
+        
         # Ensure image embeddings have the same batch size as original embeddings
         batch_size = original_prompt_embeds.shape[0]
         
@@ -258,6 +271,9 @@ class BaseIPAdapterPipeline:
         if image_prompt_embeds.shape[0] == 1 and batch_size > 1:
             image_prompt_embeds = image_prompt_embeds.repeat(batch_size, 1, 1)
             negative_image_prompt_embeds = negative_image_prompt_embeds.repeat(batch_size, 1, 1)
+        
+        # For IPAdapter, both TensorRT and PyTorch modes use concatenated embeddings
+        print("_update_stream_embeddings: IPAdapter mode - concatenating embeddings (same for TensorRT and PyTorch)")
         
         # Concatenate text and image embeddings along the sequence dimension (dim=1)
         # This is how IPAdapter is designed to work - text tokens + image tokens
@@ -280,6 +296,11 @@ class BaseIPAdapterPipeline:
         total_tokens = combined_prompt_embeds.shape[1]
         first_ipadapter.set_tokens(image_prompt_embeds.shape[0] * first_ipadapter.num_tokens)
         print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * first_ipadapter.num_tokens}")
+        
+        if is_tensorrt:
+            print("_update_stream_embeddings: TensorRT mode - using concatenated embeddings (same as PyTorch)")
+        else:
+            print("_update_stream_embeddings: PyTorch mode - using concatenated embeddings")
     
     def prepare(self, *args, **kwargs):
         """Forward prepare calls to the underlying StreamDiffusion"""
