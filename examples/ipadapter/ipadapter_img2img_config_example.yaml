@@ -9,38 +9,30 @@ width: 512
 height: 512
 mode: "img2img"  # Changed from txt2img to img2img
 
-# StreamDiffusion parameters optimized for video
-t_index_list: [22, 32, 45]  # Different t_index_list for img2img (closer to img2img examples)
+# StreamDiffusion parameters
+t_index_list: [16, 32, 45]  # Different t_index_list for img2img (closer to img2img examples)
 frame_buffer_size: 1
 warmup: 10
 acceleration: "tensorrt"
 use_denoising_batch: true    # img2img typically uses denoising batch
-cfg_type: "self"             # img2img uses "self" instead of "none"
+cfg_type: "none"             # img2img uses "self" instead of "none"
 seed: 42
 
 engine_dir: "C:\\_dev\\comfy\\ComfyUI\\StreamDiffusion\\engines"
 
-
-
-# Text prompts (combined with IPAdapter style conditioning)
-prompt: "beautiful cinematic lighting, high quality, detailed"
-negative_prompt: "blurry, low quality, distorted, ugly"
-num_inference_steps: 50  # Reduced for real-time performance
-guidance_scale: 1.2
-delta: 0.5
+# Text prompts (these will be combined with IPAdapter style conditioning)
+prompt: "a beautiful woman made of gold, abstract golden scultpure"
+negative_prompt: "blurry, horror, worst quality, low quality"
+num_inference_steps: 50
+guidance_scale: 1.0
+delta: 1  # Delta parameter for img2img
 
 use_controlnet: false
 # IPAdapter configuration
 ipadapters:
+  # Using HuggingFace model ID (automatic download)
   - ipadapter_model_path: "h94/IP-Adapter"  # Auto-downloads ip-adapter_sd15.bin
     image_encoder_path: "h94/IP-Adapter"    # Auto-downloads image_encoder
-    style_image: "C:\\_dev\\comfy\\ComfyUI\\StreamDiffusion\\images\\inputs\\input.png"  # Style reference for video processing
-    scale: 1.0  # Strong IPAdapter influence (same as "strong" output in reference script)
+    style_image: "../../images/inputs/gold.jpg"  # Style reference image (IPAdapter conditioning)
+    scale: 0.7  # Slightly lower scale for img2img to balance with input image
     enabled: true
-    
-  # You can add multiple IPAdapters for multi-style conditioning
-  # - ipadapter_model_path: "h94/IP-Adapter"
-  #   image_encoder_path: "h94/IP-Adapter" 
-  #   style_image: "../../images/inputs/another_style.png"
-  #   scale: 0.5
-  #   enabled: false 
