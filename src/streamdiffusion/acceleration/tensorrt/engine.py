@@ -29,7 +29,6 @@ class UNet2DConditionModelEngine:
         latent_model_input: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
-        image_embeddings: Optional[torch.Tensor] = None,
         down_block_additional_residuals: Optional[List[torch.Tensor]] = None,
         mid_block_additional_residual: Optional[torch.Tensor] = None,
         controlnet_conditioning: Optional[Dict[str, List[torch.Tensor]]] = None,
@@ -52,10 +51,8 @@ class UNet2DConditionModelEngine:
             "encoder_hidden_states": encoder_hidden_states,
         }
 
-        # Add image embeddings if provided (IPAdapter support)
-        if image_embeddings is not None:
-            shape_dict["image_embeddings"] = image_embeddings.shape
-            input_dict["image_embeddings"] = image_embeddings
+        # Note: IPAdapter embeddings are now baked into encoder_hidden_states
+        # No separate image_embeddings handling needed
 
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:

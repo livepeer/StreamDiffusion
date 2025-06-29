@@ -390,11 +390,20 @@ class StreamDiffusion:
         else:
             x_t_latent_plus_uc = x_t_latent
 
+        # Prepare kwargs for UNet call
+        unet_kwargs = {
+            "encoder_hidden_states": self.prompt_embeds,
+            "return_dict": False,
+        }
+        
+        # Note: IPAdapter embeddings are now baked into UNet via attention processors
+        # Both TensorRT and PyTorch modes use the same concatenated embeddings in encoder_hidden_states
+        # No special handling needed for separate image_embeddings
+                
         model_pred = self.unet(
             x_t_latent_plus_uc,
             t_list,
-            encoder_hidden_states=self.prompt_embeds,
-            return_dict=False,
+            **unet_kwargs
         )[0]
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):

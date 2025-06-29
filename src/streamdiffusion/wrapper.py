@@ -103,6 +103,8 @@ class StreamDiffusionWrapper:
         # ControlNet options
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # IPAdapter options
+        use_ipadapter: bool = False,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -184,6 +186,7 @@ class StreamDiffusionWrapper:
         """
         self.sd_turbo = "turbo" in model_id_or_path
         self.use_controlnet = use_controlnet
+        self.use_ipadapter = use_ipadapter
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -239,6 +242,7 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             use_controlnet=use_controlnet,
             controlnet_config=controlnet_config,
+            use_ipadapter=use_ipadapter,
         )
 
         # Store acceleration settings for ControlNet integration
@@ -734,6 +738,7 @@ class StreamDiffusionWrapper:
         normalize_seed_weights: bool = True,
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        use_ipadapter: bool = False,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -886,6 +891,7 @@ class StreamDiffusionWrapper:
                     validate_architecture
                 )
                 from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_wrapper
+                from streamdiffusion.acceleration.tensorrt.ipadapter_wrapper import create_ipadapter_wrapper
 
                 def create_prefix(
                     model_id_or_path: str,
@@ -900,20 +906,33 @@ class StreamDiffusionWrapper:
                     else:
                         return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
 
-                # Always enable ControlNet TensorRT support to create universal engines
+                # Detect IPAdapter and ControlNet support needed
                 use_controlnet_trt = False
+                use_ipadapter_trt = False
                 unet_arch = {}
                 
-                if acceleration == "tensorrt":
-                    try:
-                        model_type = detect_model_from_diffusers_unet(stream.unet)
+                # Use the explicit use_ipadapter parameter
+                has_ipadapter = use_ipadapter
+                
+                try:
+                    model_type = detect_model_from_diffusers_unet(stream.unet)
+                    
+                    if has_ipadapter:
+                        # IPAdapter mode: Only enable IPAdapter support
+                        use_ipadapter_trt = True
+                        cross_attention_dim = stream.unet.config.cross_attention_dim
+                        unet_arch = {"context_dim": cross_attention_dim}
+                        print(f"IPAdapter detected - enabling TensorRT IPAdapter support for {model_type}")
+                        print(f"IPAdapter: Standard IPAdapter (4 tokens), cross_attention_dim={cross_attention_dim}")
+                    else:
+                        # ControlNet mode: Enable ControlNet support for backward compatibility
                         unet_arch = extract_unet_architecture(stream.unet)
                         unet_arch = validate_architecture(unet_arch, model_type)
                         use_controlnet_trt = True
-                        print(f"Building universal TensorRT engines with ControlNet support for {model_type}")
-                    except Exception as e:
-                        print(f"ControlNet architecture detection failed: {e}, building engines without ControlNet support")
-                        use_controlnet_trt = False
+                        print(f"Enabling TensorRT ControlNet support for {model_type}")
+                        
+                except Exception as e:
+                    print(f"Architecture detection failed: {e}, compiling without special support")
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
@@ -983,12 +1002,13 @@ class StreamDiffusionWrapper:
 
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-
                     print(f"Creating UNet model for image size: {self.width}x{self.height}")
 
-
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
+                    # Get IPAdapter token count for UNet model
+                    num_image_tokens = 4  # Default to standard IPAdapter
+                    if use_ipadapter_trt and hasattr(stream, 'ipadapters') and stream.ipadapters:
+                        first_ipadapter = stream.ipadapters[0]
+                        num_image_tokens = getattr(first_ipadapter, 'num_tokens', 4)
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -998,13 +1018,34 @@ class StreamDiffusionWrapper:
                         unet_dim=stream.unet.config.in_channels,
                         use_control=use_controlnet_trt,
                         unet_arch=unet_arch if use_controlnet_trt else None,
+                        use_ipadapter=use_ipadapter_trt,
+                        num_image_tokens=num_image_tokens,
                         image_height=self.height,
                         image_width=self.width,
                     )
 
-
-                    # Use ControlNet wrapper if ControlNet support is enabled
-                    if use_controlnet_trt:
+                    # Use appropriate wrapper based on mode
+                    if use_ipadapter_trt:
+                        print("Compiling UNet with IPAdapter support (baked-in processors)")
+                        
+                        # Get IPAdapter configuration for proper token count
+                        num_tokens = 4  # Default to standard IPAdapter
+                        if hasattr(stream, 'ipadapters') and stream.ipadapters:
+                            first_ipadapter = stream.ipadapters[0]
+                            num_tokens = getattr(first_ipadapter, 'num_tokens', 4)
+                        
+                        # Create IPAdapter-aware wrapper with baked-in processors
+                        wrapped_unet = create_ipadapter_wrapper(stream.unet, num_tokens=num_tokens)
+                        compile_unet(
+                            wrapped_unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
+                        )
+                    elif use_controlnet_trt:
+                        print("Compiling UNet with ControlNet support")
                         control_input_names = unet_model.get_input_names()
                         wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
                         compile_unet(
@@ -1020,6 +1061,7 @@ class StreamDiffusionWrapper:
                             },
                         )
                     else:
+                        print("Compiling UNet without special support")
                         compile_unet(
                             stream.unet,
                             unet_model,
@@ -1096,14 +1138,21 @@ class StreamDiffusionWrapper:
                 stream.unet = UNet2DConditionModelEngine(
                     unet_path, cuda_stream, use_cuda_graph=False
                 )
-
-                # Always set ControlNet support to True for universal TensorRT engines
-                # This allows the engine to accept dummy inputs when no ControlNets are used
-                stream.unet.use_control = True
-                if use_controlnet_trt and unet_arch:
-                    stream.unet.unet_arch = unet_arch
-                    stream.unet.unet_arch = unet_arch
-
+                
+                # Store metadata on the engine for runtime use
+                if use_controlnet_trt:
+                    setattr(stream.unet, 'use_control', True)
+                    setattr(stream.unet, 'unet_arch', unet_arch)
+                    setattr(stream.unet, 'use_ipadapter', False)
+                    print("TensorRT UNet engine configured for ControlNet support")
+                elif use_ipadapter_trt:
+                    setattr(stream.unet, 'use_control', False)
+                    setattr(stream.unet, 'use_ipadapter', True)
+                    setattr(stream.unet, 'ipadapter_arch', unet_arch)
+                    print("TensorRT UNet engine configured for IPAdapter support")
+                else:
+                    setattr(stream.unet, 'use_control', False)
+                    setattr(stream.unet, 'use_ipadapter', False)
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,
