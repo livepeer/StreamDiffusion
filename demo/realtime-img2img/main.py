@@ -149,6 +149,7 @@ class App:
                         print("stream: Recreating pipeline with new ControlNet config...")
                     elif self.resolution_needs_reload:
                         print(f"stream: Recreating pipeline with new resolution {self.new_width}x{self.new_height}...")
+                        self.pipeline = self._create_pipeline_with_config()
                     else:
                         print("stream: Upgrading to ControlNet pipeline...")
                     
@@ -510,16 +511,29 @@ class App:
                 
                 print(f"Updating resolution to {width}x{height}")
                 
+                # Check if ControlNet is enabled (TESTING)
+                '''
+                controlnet_enabled = (self.uploaded_controlnet_config and 'controlnets' in self.uploaded_controlnet_config) or \
+                                   (self.pipeline and hasattr(self.pipeline, 'use_config') and 
+                                    self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)
+                '''
+
                 # Store new resolution and mark for pipeline restart
                 self.new_width = width
                 self.new_height = height
-                self.resolution_needs_reload = True  # Mark that pipeline needs recreation
+                self.resolution_needs_reload = True
+                message = f"Resolution updated to {width}x{height}"
+
+                # TODO: This is a hack to force a pipeline recreation.
+                # We should be able to do this directly in update_stream_params.
+                # self.pipeline = self._create_pipeline_with_config()
 
                 return JSONResponse({
                     "success": True, 
                     "width": width, 
                     "height": height,
-                    "message": "Resolution updated - pipeline will restart on next stream request"
+                    "message": message,
+                    "requires_restart": self.resolution_needs_reload
                 })
                 
             except Exception as e:

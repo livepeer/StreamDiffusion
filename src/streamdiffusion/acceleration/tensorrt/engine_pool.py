@@ -40,9 +40,19 @@ class ControlNetEnginePool:
                 engine_file = model_dir / "cnet.engine"
                 if engine_file.exists():
                     dir_name = model_dir.name
-                    # Parse the new naming format with width/height
-                    if "--width-" in dir_name and "--height-" in dir_name:
-                        # Extract model_id from the new format
+                    
+                    # Check for new dynamic naming convention first (preferred)
+                    if "--dyn-512-1024" in dir_name:
+                        # Extract model_id from dynamic format
+                        model_part = dir_name.split("--batch-")[0] if "--batch-" in dir_name else dir_name.split("--dyn-")[0]
+                        model_id = model_part.replace("controlnet_", "").replace("_", "/")
+                        
+                        self.compiled_models.add(model_id)
+                        print(f"ControlNetEnginePool._discover_existing_engines: Discovered dynamic ControlNet engine: {model_id} (dyn-512-1024)")
+                        
+                    # Check for legacy static naming format with width/height
+                    elif "--width-" in dir_name and "--height-" in dir_name:
+                        # Extract model_id from the legacy format
                         model_part = dir_name.split("--batch-")[0] if "--batch-" in dir_name else dir_name.split("--width-")[0]
                         model_id = model_part.replace("controlnet_", "").replace("_", "/")
                         
@@ -53,14 +63,16 @@ class ControlNetEnginePool:
                         engine_width = int(width_part)
                         engine_height = int(height_part.split("--")[0]) if "--" in height_part else int(height_part)
                         
-                        # Only add to compiled models if dimensions match current setup
-                        if engine_width == self.image_width and engine_height == self.image_height:
+                        # Only add legacy engines if dimensions match current setup AND no dynamic engine exists
+                        if (engine_width == self.image_width and engine_height == self.image_height and 
+                            model_id not in self.compiled_models):
                             self.compiled_models.add(model_id)
-                            print(f"ControlNetEnginePool._discover_existing_engines: Discovered compatible ControlNet engine: {model_id} ({engine_width}x{engine_height})")
+                            print(f"ControlNetEnginePool._discover_existing_engines: Discovered legacy ControlNet engine: {model_id} ({engine_width}x{engine_height})")
                         else:
-                            print(f"ControlNetEnginePool._discover_existing_engines: Found incompatible ControlNet engine: {model_id} ({engine_width}x{engine_height} vs current {self.image_width}x{self.image_height})")
+                            print(f"ControlNetEnginePool._discover_existing_engines: Skipping incompatible legacy ControlNet engine: {model_id} ({engine_width}x{engine_height} vs current {self.image_width}x{self.image_height})")
+                            
+                    # Legacy format without dimensions - assume 512x512
                     else:
-                        # Legacy format without dimensions - assume 512x512
                         if self.image_width == 512 and self.image_height == 512:
                             if "--batch-" in dir_name:
                                 model_part = dir_name.split("--batch-")[0]
@@ -68,8 +80,10 @@ class ControlNetEnginePool:
                             else:
                                 model_id = dir_name.replace("controlnet_", "").replace("_", "/")
                             
-                            self.compiled_models.add(model_id)
-                            print(f"ControlNetEnginePool._discover_existing_engines: Discovered legacy ControlNet engine: {model_id} (assuming 512x512)")
+                            # Only add if no dynamic or specific legacy engine exists
+                            if model_id not in self.compiled_models:
+                                self.compiled_models.add(model_id)
+                                print(f"ControlNetEnginePool._discover_existing_engines: Discovered very legacy ControlNet engine: {model_id} (assuming 512x512)")
     
     def get_or_load_engine(self, 
                           model_id: str,
@@ -77,11 +91,13 @@ class ControlNetEnginePool:
                           model_type: str = "sd15",
                           batch_size: int = 1) -> HybridControlNet:
         """Get or load ControlNet engine with TensorRT/PyTorch fallback"""
-        cache_key = f"{model_id}--batch-{batch_size}--width-{self.image_width}--height-{self.image_height}"
+        # Use dynamic cache key to match new naming convention
+        cache_key = f"{model_id}--batch-{batch_size}--dyn-512-1024"
         
         if cache_key in self.engines:
             return self.engines[cache_key]
         
+        # Use dynamic engine directory (no longer depends on specific width/height)
         model_engine_dir = self._get_model_engine_dir(model_id, batch_size, self.image_width, self.image_height)
         engine_path = model_engine_dir / "cnet.engine"
         
@@ -126,11 +142,12 @@ class ControlNetEnginePool:
                            batch_size: int) -> bool:
         """Compile ControlNet to TensorRT"""
         try:
-            print(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for {self.image_width}x{self.image_height}")
+            print(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for dynamic 512-1024 range")
             
-            # Use actual image dimensions instead of hardcoded 512x512
-            height = self.image_height
-            width = self.image_width
+            # Use dynamic dimensions instead of fixed dimensions
+            # This matches the main UNet approach for universal engines
+            opt_height = self.image_height
+            opt_width = self.image_width
             
             if model_type.lower() in ["sdxl", "sdxl-turbo"]:
                 embedding_dim = 2048
@@ -161,16 +178,26 @@ class ControlNetEnginePool:
             print(f"ControlNetEnginePool._compile_controlnet: Engine path: {engine_path}")
             
             builder = EngineBuilder(controlnet_model, pytorch_model, device=torch.device("cuda"))
+            
+            # Use the same dynamic build options as main UNet engines
+            engine_build_options = {
+                'opt_batch_size': batch_size,
+                'opt_image_height': opt_height,
+                'opt_image_width': opt_width,
+                'build_dynamic_shape': True,  # Force dynamic shapes for universal engines
+                'min_image_resolution': 512,
+                'max_image_resolution': 1024,
+                'build_static_batch': False,  # Enable dynamic batching
+            }
+            
             builder.build(
                 str(onnx_path),
                 str(onnx_opt_path), 
                 str(engine_path),
-                opt_batch_size=batch_size,
-                opt_image_height=height,
-                opt_image_width=width
+                **engine_build_options
             )
             
-            print(f"ControlNetEnginePool._compile_controlnet: Successfully compiled ControlNet engine: {engine_path}")
+            print(f"ControlNetEnginePool._compile_controlnet: Successfully compiled dynamic ControlNet engine: {engine_path}")
             return True
             
         except Exception as e:
@@ -214,7 +241,8 @@ class ControlNetEnginePool:
         status = {
             "total_engines": len(self.engines),
             "compiled_models": len(self.compiled_models),
-            "image_dimensions": f"{self.image_width}x{self.image_height}",
+            "resolution_support": "dyn-512-1024",  # Dynamic resolution support
+            "current_dimensions": f"{self.image_width}x{self.image_height}",  # Current working resolution
             "engines": {}
         }
         
@@ -235,7 +263,11 @@ class ControlNetEnginePool:
     def _get_model_engine_dir(self, model_id: str, batch_size: int = 1, width: int = 512, height: int = 512) -> Path:
         """Get the engine directory for a specific ControlNet model with resolution-specific naming"""
         safe_name = model_id.replace("/", "_").replace("\\", "_").replace(":", "_")
-        safe_name = f"controlnet_{safe_name}--batch-{batch_size}--width-{width}--height-{height}"
+        
+        # Use dynamic naming convention to match main UNet engines
+        # This allows ControlNet engines to support 512-1024 resolution range
+        dynamic_suffix = "dyn-512-1024"
+        safe_name = f"controlnet_{safe_name}--batch-{batch_size}--{dynamic_suffix}"
         
         model_dir = Path(self.engine_dir) / safe_name
         model_dir.mkdir(parents=True, exist_ok=True)

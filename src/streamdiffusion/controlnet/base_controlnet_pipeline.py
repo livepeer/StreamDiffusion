@@ -514,12 +514,64 @@ class BaseControlNetPipeline:
             # Forward pass through ControlNet
             try:
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
+                
+                '''
+                # CRITICAL FIX: Validate and correct ControlNet feature dimensions
+                # Ensure ControlNet features match UNet's expected latent space dimensions
+                expected_latent_h = x_t_latent.shape[2]  # UNet latent height
+                expected_latent_w = x_t_latent.shape[3]  # UNet latent width
+                
+                # Fix down_samples dimensions
+                if down_samples:
+                    corrected_down_samples = []
+                    for j, sample in enumerate(down_samples):
+                        current_h, current_w = sample.shape[2], sample.shape[3]
+                        
+                        # Calculate expected dimensions based on UNet downsampling factors
+                        # Standard SD UNet downsampling: 1x, 1x, 1x, 2x, 2x, 2x, 4x, 4x, 4x, 8x, 8x, 8x
+                        if j < 3:  # First 3 blocks: no downsampling from latent
+                            expected_h, expected_w = expected_latent_h, expected_latent_w
+                        elif j < 6:  # Next 3 blocks: 2x downsampling from latent
+                            expected_h, expected_w = expected_latent_h // 2, expected_latent_w // 2
+                        elif j < 9:  # Next 3 blocks: 4x downsampling from latent
+                            expected_h, expected_w = expected_latent_h // 4, expected_latent_w // 4
+                        else:  # Last 3 blocks: 8x downsampling from latent
+                            expected_h, expected_w = expected_latent_h // 8, expected_latent_w // 8
+                        
+                        # Ensure minimum dimensions (avoid 0 or negative)
+                        expected_h = max(1, expected_h)
+                        expected_w = max(1, expected_w)
+                        
+                        if current_h != expected_h or current_w != expected_w:
+                            # Interpolate to correct dimensions
+                            corrected_sample = torch.nn.functional.interpolate(
+                                sample, size=(expected_h, expected_w), 
+                                mode='bilinear', align_corners=False
+                            )
+                            corrected_down_samples.append(corrected_sample)
+                        else:
+                            corrected_down_samples.append(sample)
+                    
+                    down_samples = corrected_down_samples
+                
+                # Fix mid_sample dimensions
+                if mid_sample is not None:
+                    current_h, current_w = mid_sample.shape[2], mid_sample.shape[3]
+                    expected_h, expected_w = expected_latent_h // 8, expected_latent_w // 8  # Mid block is most downsampled
+                    expected_h, expected_w = max(1, expected_h), max(1, expected_w)
+                    
+                    if current_h != expected_h or current_w != expected_w:
+                        mid_sample = torch.nn.functional.interpolate(
+                            mid_sample, size=(expected_h, expected_w),
+                            mode='bilinear', align_corners=False
+                        )
+                '''
+                
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
             except Exception as e:
                 print(f"_get_controlnet_conditioning: ControlNet {i} failed: {e}")
                 continue
-        
         # Early exit if no outputs
         if not down_samples_list:
             return None, None
