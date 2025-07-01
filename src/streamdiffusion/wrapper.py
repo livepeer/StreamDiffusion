@@ -655,10 +655,12 @@ class StreamDiffusionWrapper:
                     height: int,
                 ):
                     maybe_path = Path(model_id_or_path)
+                    # Use dynamic engine naming to distinguish from static engines
+                    dynamic_suffix = "dyn-512-1024"
                     if maybe_path.exists():
-                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
+                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
                     else:
-                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--width-{width}--height-{height}"
+                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
 
                 # Always enable ControlNet TensorRT support to create universal engines
                 use_controlnet_trt = False
@@ -772,6 +774,9 @@ class StreamDiffusionWrapper:
                             engine_build_options={
                                 'opt_image_height': self.height,
                                 'opt_image_width': self.width,
+                                'build_dynamic_shape': True,  # Force dynamic shapes
+                                'min_image_resolution': 512,
+                                'max_image_resolution': 1024,
                             },
                         )
                     else:
@@ -785,6 +790,9 @@ class StreamDiffusionWrapper:
                             engine_build_options={
                                 'opt_image_height': self.height,
                                 'opt_image_width': self.width,
+                                'build_dynamic_shape': True,  # Force dynamic shapes
+                                'min_image_resolution': 512,
+                                'max_image_resolution': 1024,
                             },
                         )
 
@@ -812,6 +820,9 @@ class StreamDiffusionWrapper:
                         engine_build_options={
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
+                            'build_dynamic_shape': True,  # Force dynamic shapes
+                            'min_image_resolution': 512,
+                            'max_image_resolution': 1024,
                         },
                     )
                     delattr(stream.vae, "forward")
@@ -840,6 +851,9 @@ class StreamDiffusionWrapper:
                         engine_build_options={
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
+                            'build_dynamic_shape': True,  # Force dynamic shapes
+                            'min_image_resolution': 512,
+                            'max_image_resolution': 1024,
                         },
                     )
 

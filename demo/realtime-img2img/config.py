@@ -18,6 +18,7 @@ class Args(NamedTuple):
     acceleration: str
     engine_dir: str
     controlnet_config: str
+    api_only: bool
 
     def pretty_print(self):
         print("\n")
@@ -111,6 +112,13 @@ parser.add_argument(
     type=str,
     default=None,
     help="Path to ControlNet YAML configuration file (optional)",
+)
+parser.add_argument(
+    "--api-only",
+    dest="api_only",
+    action="store_true",
+    default=False,
+    help="Run API only without serving frontend static files (useful for development with separate Vite dev server)",
 )
 parser.set_defaults(taesd=USE_TAESD)
 config = Args(**vars(parser.parse_args()))

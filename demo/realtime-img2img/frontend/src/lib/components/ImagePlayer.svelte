@@ -1,6 +1,7 @@
 <script lang="ts">
   import { lcmLiveStatus, LCMLiveStatus, streamId } from '$lib/lcmLive';
-  import { getPipelineValues } from '$lib/store';
+  import { getPipelineValues, pipelineValues } from '$lib/store';
+  import { parseResolution, type ResolutionInfo } from '$lib/utils';
 
   import Button from '$lib/components/Button.svelte';
   import Floppy from '$lib/icons/floppy.svelte';
@@ -8,7 +9,25 @@
 
   $: isLCMRunning = $lcmLiveStatus !== LCMLiveStatus.DISCONNECTED;
   $: console.log('isLCMRunning', isLCMRunning);
+  
   let imageEl: HTMLImageElement;
+  let currentResolution: ResolutionInfo;
+
+  // Reactive resolution parsing
+  $: {
+    if ($pipelineValues.resolution) {
+      currentResolution = parseResolution($pipelineValues.resolution);
+    } else {
+      // Default fallback
+      currentResolution = {
+        width: 512,
+        height: 512,
+        aspectRatio: 1,
+        aspectRatioString: "1:1"
+      };
+    }
+  }
+  
   async function takeSnapshot() {
     if (isLCMRunning) {
       await snapImage(imageEl, {
@@ -22,15 +41,25 @@
 </script>
 
 <div
-  class="relative mx-auto aspect-square max-w-lg self-center overflow-hidden rounded-lg border border-slate-300"
+  class="relative mx-auto w-full max-w-2xl self-center overflow-hidden rounded-lg border border-slate-300"
+  style="aspect-ratio: {currentResolution?.aspectRatio || 1}"
 >
   <!-- svelte-ignore a11y-missing-attribute -->
   {#if isLCMRunning && $streamId}
     <img
       bind:this={imageEl}
-      class="aspect-square w-full rounded-lg"
+      class="w-full h-full rounded-lg object-cover"
+      style="aspect-ratio: {currentResolution?.aspectRatio || 1}"
       src={'/api/stream/' + $streamId}
     />
+    
+    <!-- Resolution indicator -->
+    {#if currentResolution}
+      <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
+        Output: {currentResolution.width}×{currentResolution.height} ({currentResolution.aspectRatioString})
+      </div>
+    {/if}
+    
     <div class="absolute bottom-1 right-1">
       <Button
         on:click={takeSnapshot}
@@ -42,9 +71,20 @@
       </Button>
     </div>
   {:else}
-    <img
-      class="aspect-square w-full rounded-lg"
-      src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
-    />
+    <div 
+      class="w-full h-full rounded-lg flex items-center justify-center"
+      style="aspect-ratio: {currentResolution?.aspectRatio || 1}"
+    >
+      {#if currentResolution}
+        <div class="text-center text-gray-500">
+          <div class="text-sm font-medium">Ready for {currentResolution.width}×{currentResolution.height}</div>
+          <div class="text-xs">Aspect Ratio: {currentResolution.aspectRatioString}</div>
+        </div>
+      {:else}
+        <div class="text-center text-gray-500 text-sm">
+          Ready
+        </div>
+      {/if}
+    </div>
   {/if}
 </div>

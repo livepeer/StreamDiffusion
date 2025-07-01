@@ -18,7 +18,7 @@
 <div class="flex items-center justify-center text-xs">
   <button
     title="Share your screen"
-    class="border-1 my-1 flex cursor-pointer gap-1 rounded-md border-gray-500 border-opacity-50 bg-slate-100 bg-opacity-30 p-1 font-medium text-white"
+    class="border-1 my-1 flex cursor-pointer gap-1 rounded-md border-gray-500 border-opacity-50 bg-black bg-opacity-30 p-1 font-medium text-white"
     on:click={() => mediaStreamActions.startScreenCapture()}
   >
     <span>Share</span>
@@ -30,7 +30,7 @@
       bind:value={deviceId}
       on:change={() => mediaStreamActions.switchCamera(deviceId)}
       id="devices-list"
-      class="border-1 block cursor-pointer rounded-md border-gray-800 border-opacity-50 bg-slate-100 bg-opacity-30 p-1 font-medium text-white"
+      class="border-1 block cursor-pointer rounded-md border-gray-800 border-opacity-50 bg-black bg-opacity-30 p-1 font-medium text-white"
     >
       {#each $mediaDevices as device, i}
         <option value={device.deviceId}>{device.label}</option>

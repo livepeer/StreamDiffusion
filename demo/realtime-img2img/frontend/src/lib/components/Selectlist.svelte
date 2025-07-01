@@ -14,10 +14,10 @@
     <select
       bind:value
       id="model-list"
-      class="cursor-pointer rounded-md border-2 border-gray-500 p-2 font-light dark:text-black"
+      class="cursor-pointer rounded-md border-2 border-gray-500 p-2 bg-white text-gray-900"
     >
-      {#each params.values as model, i}
-        <option value={model} selected={i === 0}>{model}</option>
+      {#each params.values as model}
+        <option value={model} class="bg-white text-gray-900">{model}</option>
       {/each}
     </select>
   {/if}

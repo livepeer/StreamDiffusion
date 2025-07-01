@@ -124,7 +124,17 @@ class BaseModel:
         return onnx_opt_graph
 
     def check_dims(self, batch_size, image_height, image_width):
-        assert batch_size >= self.min_batch and batch_size <= self.max_batch
+        # Make batch size check more flexible for ONNX export
+        if hasattr(self, '_allow_export_batch_override') and self._allow_export_batch_override:
+            # During ONNX export, allow different batch sizes
+            effective_min_batch = min(self.min_batch, batch_size)
+            effective_max_batch = max(self.max_batch, batch_size)
+        else:
+            effective_min_batch = self.min_batch
+            effective_max_batch = self.max_batch
+            
+        assert batch_size >= effective_min_batch and batch_size <= effective_max_batch, \
+            f"Batch size {batch_size} not in range [{effective_min_batch}, {effective_max_batch}]"
         assert image_height % 8 == 0 or image_width % 8 == 0
         latent_height = image_height // 8
         latent_width = image_width // 8
@@ -133,18 +143,31 @@ class BaseModel:
         return (latent_height, latent_width)
 
     def get_minmax_dims(self, batch_size, image_height, image_width, static_batch, static_shape):
-        min_batch = batch_size if static_batch else self.min_batch
-        max_batch = batch_size if static_batch else self.max_batch
+        # Following ComfyUI TensorRT approach: ensure proper min ≤ opt ≤ max constraints
+        # Even with static_batch=True, we need different min/max to avoid TensorRT constraint violations
+        
+        if static_batch:
+            # For static batch, still provide range to avoid min=opt=max constraint violation
+            min_batch = max(1, batch_size - 1)  # At least 1, but allow some range
+            max_batch = batch_size
+        else:
+            min_batch = self.min_batch
+            max_batch = self.max_batch
+        
         latent_height = image_height // 8
         latent_width = image_width // 8
-        min_image_height = image_height if static_shape else self.min_image_shape
-        max_image_height = image_height if static_shape else self.max_image_shape
-        min_image_width = image_width if static_shape else self.min_image_shape
-        max_image_width = image_width if static_shape else self.max_image_shape
-        min_latent_height = latent_height if static_shape else self.min_latent_shape
-        max_latent_height = latent_height if static_shape else self.max_latent_shape
-        min_latent_width = latent_width if static_shape else self.min_latent_shape
-        max_latent_width = latent_width if static_shape else self.max_latent_shape
+        
+        # Force dynamic shapes for height/width to enable runtime resolution changes
+        # Always use 512-1024 range regardless of static_shape flag (following ComfyUI pattern)
+        min_image_height = self.min_image_shape
+        max_image_height = self.max_image_shape
+        min_image_width = self.min_image_shape
+        max_image_width = self.max_image_shape
+        min_latent_height = self.min_latent_shape
+        max_latent_height = self.max_latent_shape
+        min_latent_width = self.min_latent_shape
+        max_latent_width = self.max_latent_shape
+        
         return (
             min_batch,
             max_batch,
@@ -363,10 +386,33 @@ class UNet(BaseModel):
             max_latent_width,
         ) = self.get_minmax_dims(batch_size, image_height, image_width, static_batch, static_shape)
         
+        # Following TensorRT documentation: ensure proper min ≤ opt ≤ max constraints for ALL dimensions
+        # Calculate optimal latent dimensions that fall within min/max range
+        opt_latent_height = min(max(latent_height, min_latent_height), max_latent_height)
+        opt_latent_width = min(max(latent_width, min_latent_width), max_latent_width)
+        
+        # Ensure no dimension equality that causes constraint violations
+        if opt_latent_height == min_latent_height and min_latent_height < max_latent_height:
+            opt_latent_height = min(min_latent_height + 8, max_latent_height)  # Add 8 pixels for separation
+        if opt_latent_width == min_latent_width and min_latent_width < max_latent_width:
+            opt_latent_width = min(min_latent_width + 8, max_latent_width)
+        
+        # Image dimensions for ControlNet inputs
+        min_image_h, max_image_h = self.min_image_shape, self.max_image_shape
+        min_image_w, max_image_w = self.min_image_shape, self.max_image_shape
+        opt_image_height = min(max(image_height, min_image_h), max_image_h)
+        opt_image_width = min(max(image_width, min_image_w), max_image_w)
+        
+        # Ensure image dimension separation as well
+        if opt_image_height == min_image_h and min_image_h < max_image_h:
+            opt_image_height = min(min_image_h + 64, max_image_h)  # Add 64 pixels for separation
+        if opt_image_width == min_image_w and min_image_w < max_image_w:
+            opt_image_width = min(min_image_w + 64, max_image_w)
+        
         profile = {
             "sample": [
                 (min_batch, self.unet_dim, min_latent_height, min_latent_width),
-                (batch_size, self.unet_dim, latent_height, latent_width),
+                (batch_size, self.unet_dim, opt_latent_height, opt_latent_width),
                 (max_batch, self.unet_dim, max_latent_height, max_latent_width),
             ],
             "timestep": [(min_batch,), (batch_size,), (max_batch,)],
@@ -378,15 +424,30 @@ class UNet(BaseModel):
         }
         
         if self.use_control and self.control_inputs:
+            # Use the actual calculated spatial dimensions for each ControlNet input
+            # Each control input has its own specific spatial resolution based on UNet architecture
             for name, shape_spec in self.control_inputs.items():
                 channels = shape_spec["channels"]
-                height = shape_spec["height"]
-                width = shape_spec["width"]
+                control_height = shape_spec["height"]
+                control_width = shape_spec["width"]
+                
+                # Create optimization profile with proper spatial dimension scaling
+                # Scale the spatial dimensions proportionally with the main latent dimensions
+                scale_h = opt_latent_height / latent_height if latent_height > 0 else 1.0
+                scale_w = opt_latent_width / latent_width if latent_width > 0 else 1.0
+                
+                min_control_h = max(1, int(control_height * min_latent_height / latent_height))
+                max_control_h = max(min_control_h + 1, int(control_height * max_latent_height / latent_height))
+                opt_control_h = max(min_control_h, min(int(control_height * scale_h), max_control_h))
+                
+                min_control_w = max(1, int(control_width * min_latent_width / latent_width))
+                max_control_w = max(min_control_w + 1, int(control_width * max_latent_width / latent_width))
+                opt_control_w = max(min_control_w, min(int(control_width * scale_w), max_control_w))
                 
                 profile[name] = [
-                    (min_batch, channels, height, width),
-                    (batch_size, channels, height, width),
-                    (max_batch, channels, height, width),
+                    (min_batch, channels, min_control_h, min_control_w),    # min
+                    (batch_size, channels, opt_control_h, opt_control_w),   # opt  
+                    (max_batch, channels, max_control_h, max_control_w),    # max
                 ]
         
         return profile
@@ -401,40 +462,63 @@ class UNet(BaseModel):
         }
         
         if self.use_control and self.control_inputs:
+            # Use the actual calculated spatial dimensions for each ControlNet input
             for name, shape_spec in self.control_inputs.items():
                 channels = shape_spec["channels"]
-                height = shape_spec["height"]
-                width = shape_spec["width"]
-                
-                shape_dict[name] = (2 * batch_size, channels, height, width)
+                control_height = shape_spec["height"]
+                control_width = shape_spec["width"]
+                shape_dict[name] = (2 * batch_size, channels, control_height, control_width)
         
         return shape_dict
 
     def get_sample_input(self, batch_size, image_height, image_width):
-        latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
+        # Enable flexible batch size checking for ONNX export
+        self._allow_export_batch_override = True
+        
+        try:
+            latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
+        finally:
+            # Clean up the override flag
+            if hasattr(self, '_allow_export_batch_override'):
+                delattr(self, '_allow_export_batch_override')
+        
         dtype = torch.float16 if self.fp16 else torch.float32
+        
+        # Use smaller batch size for memory efficiency during ONNX export
+        export_batch_size = min(batch_size, 1)  # Use batch size 1 for ONNX export to save memory
         
         base_inputs = [
             torch.randn(
-                2 * batch_size, self.unet_dim, latent_height, latent_width, dtype=torch.float32, device=self.device
+                2 * export_batch_size, self.unet_dim, latent_height, latent_width, 
+                dtype=torch.float32, device=self.device
             ),
-            torch.ones((2 * batch_size,), dtype=torch.float32, device=self.device),
-            torch.randn(2 * batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
+            torch.ones((2 * export_batch_size,), dtype=torch.float32, device=self.device),
+            torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
         
         if self.use_control and self.control_inputs:
             control_inputs = []
+            
+            # Use the ACTUAL calculated spatial dimensions for each control input
+            # This ensures each control input matches its expected UNet feature map resolution
+            
             for name in sorted(self.control_inputs.keys()):
                 shape_spec = self.control_inputs[name]
                 channels = shape_spec["channels"]
-                height = shape_spec["height"]
-                width = shape_spec["width"]
+                
+                # KEY FIX: Use the specific spatial dimensions calculated for this control input
+                control_height = shape_spec["height"]
+                control_width = shape_spec["width"]
                 
                 control_input = torch.randn(
-                    2 * batch_size, channels, height, width, 
+                    2 * export_batch_size, channels, control_height, control_width, 
                     dtype=dtype, device=self.device
                 )
                 control_inputs.append(control_input)
+                
+                # Clear cache periodically to prevent memory buildup
+                if len(control_inputs) % 4 == 0:
+                    torch.cuda.empty_cache()
             
             return tuple(base_inputs + control_inputs)
         

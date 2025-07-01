@@ -1,7 +1,9 @@
 import adapter from '@sveltejs/adapter-static';
-import { vitePreprocess } from '@sveltejs/kit/vite';
-/** @type {import('@sveltejs/kit').Config} */
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+
 const config = {
+  extensions: ['.svelte'],
+  compilerOptions: {},
   preprocess: vitePreprocess({ postcss: true }),
   kit: {
     adapter: adapter({
@@ -11,6 +13,11 @@ const config = {
       precompress: false,
       strict: true
     })
+  },
+  vitePlugin: {
+    exclude: [],
+    // experimental options
+    experimental: {}
   }
 };
 

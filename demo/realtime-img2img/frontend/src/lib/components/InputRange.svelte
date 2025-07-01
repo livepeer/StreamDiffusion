@@ -11,7 +11,7 @@
 <div class="grid max-w-md grid-cols-4 items-center gap-3">
   <label class="text-sm font-medium" for={params.id}>{params?.title}</label>
   <input
-    class="col-span-2 h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-300 dark:bg-gray-500"
+    class="col-span-2 h-2 w-full cursor-pointer appearance-none rounded-lg"
     bind:value
     type="range"
     id={params.id}
@@ -24,11 +24,13 @@
     type="number"
     step={params?.step ?? 1}
     bind:value
-    class="rounded-md border px-1 py-1 text-center text-xs font-bold dark:text-black"
+    class="rounded-md border px-1 py-1 text-center text-xs font-bold"
   />
 </div>
 <!-- 
 <style lang="postcss" scoped>
+  @reference "tailwindcss";
+  
   input[type='range']::-webkit-slider-runnable-track {
     @apply h-2 cursor-pointer rounded-lg dark:bg-gray-50;
   }

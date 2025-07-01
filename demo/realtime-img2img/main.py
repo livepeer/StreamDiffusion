@@ -42,16 +42,31 @@ class App:
         # Store uploaded ControlNet config separately
         self.uploaded_controlnet_config = None
         self.config_needs_reload = False  # Track when pipeline needs recreation
+        # Store current resolution for pipeline recreation
+        self.new_width = 512
+        self.new_height = 512
         self.init_app()
 
     def init_app(self):
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # Enhanced CORS for API-only development mode
+        if self.args.api_only:
+            # More permissive CORS for development
+            self.app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],  # Include common Vite dev ports
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+        else:
+            # Standard CORS for production
+            self.app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
 
         @self.app.websocket("/api/ws/{user_id}")
         async def websocket_endpoint(user_id: uuid.UUID, websocket: WebSocket):
@@ -198,6 +213,13 @@ class App:
             
             # Get current acceleration setting
             current_acceleration = self.args.acceleration
+            
+            # Get current resolution
+            current_resolution = f"{self.new_width}x{self.new_height}"
+            # Add aspect ratio for display
+            aspect_ratio = self._calculate_aspect_ratio(self.new_width, self.new_height)
+            if aspect_ratio:
+                current_resolution += f" ({aspect_ratio})"
             if self.uploaded_controlnet_config and 'acceleration' in self.uploaded_controlnet_config:
                 current_acceleration = self.uploaded_controlnet_config['acceleration']
             
@@ -235,6 +257,7 @@ class App:
                     "delta": current_delta,
                     "num_inference_steps": current_num_inference_steps,
                     "seed": current_seed,
+                    "current_resolution": current_resolution,
                 }
             )
 
@@ -449,6 +472,44 @@ class App:
             except Exception as e:
                 logging.error(f"update_seed: Failed to update seed: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update seed: {str(e)}")
+
+        @self.app.post("/api/update-resolution")
+        async def update_resolution(request: Request):
+            """Update resolution (width x height) and recreate pipeline"""
+            try:
+                data = await request.json()
+                resolution_str = data.get('resolution')
+                
+                if not resolution_str:
+                    return JSONResponse({"success": False, "detail": "Resolution parameter is required"}, status_code=400)
+                
+                # Parse resolution string (e.g., "512x768 (2:3)" -> width=512, height=768)
+                resolution_part = resolution_str.split(' ')[0]  # Get "512x768" part
+                try:
+                    width, height = map(int, resolution_part.split('x'))
+                except ValueError:
+                    return JSONResponse({"success": False, "detail": "Invalid resolution format"}, status_code=400)
+                
+                # Validate resolution ranges (512-1024 in steps of 64)
+                if not (512 <= width <= 1024 and width % 64 == 0):
+                    return JSONResponse({"success": False, "detail": "Width must be between 512 and 1024 in steps of 64"}, status_code=400)
+                if not (512 <= height <= 1024 and height % 64 == 0):
+                    return JSONResponse({"success": False, "detail": "Height must be between 512 and 1024 in steps of 64"}, status_code=400)
+                
+                print(f"Updating resolution to {width}x{height}")
+                
+                # Store new resolution for pipeline recreation
+                self.new_width = width
+                self.new_height = height
+                
+                # Mark that pipeline needs to be recreated with new resolution
+                self.pipeline = None  # Force recreation on next stream request
+                
+                return JSONResponse({"success": True, "width": width, "height": height})
+                
+            except Exception as e:
+                print(f"Error updating resolution: {e}")
+                return JSONResponse({"success": False, "detail": str(e)}, status_code=500)
 
         @self.app.get("/api/fps")
         async def get_fps():
@@ -713,18 +774,29 @@ class App:
                 }
             })
 
-        if not os.path.exists("public"):
-            os.makedirs("public")
+        # Only mount static files if not in API-only mode
+        if not self.args.api_only:
+            if not os.path.exists("public"):
+                os.makedirs("public")
 
-        self.app.mount(
-            "/", StaticFiles(directory="./frontend/public", html=True), name="public"
-        )
+            self.app.mount(
+                "/", StaticFiles(directory="./frontend/public", html=True), name="public"
+            )
+        else:
+            # In API-only mode, add a simple root endpoint for health check
+            @self.app.get("/")
+            async def api_root():
+                return JSONResponse({
+                    "message": "StreamDiffusion API Server", 
+                    "mode": "api-only",
+                    "frontend": "Run separately with 'npm run dev' in ./frontend/"
+                })
 
     def _create_default_pipeline(self):
         """Create the default pipeline (standard mode)"""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch_dtype = torch.float16
-        return Pipeline(self.args, device, torch_dtype)
+        return Pipeline(self.args, device, torch_dtype, width=self.new_width, height=self.new_height)
 
     def _create_pipeline_with_config(self, controlnet_config_path=None):
         """Create a new pipeline with optional ControlNet configuration"""
@@ -750,7 +822,7 @@ class App:
         else:
             new_args = self.args
         
-        new_pipeline = Pipeline(new_args, device, torch_dtype)
+        new_pipeline = Pipeline(new_args, device, torch_dtype, width=self.new_width, height=self.new_height)
         
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
@@ -795,6 +867,17 @@ class App:
                     })
         
         return controlnet_info
+
+    def _calculate_aspect_ratio(self, width: int, height: int) -> str:
+        """Calculate and return aspect ratio as a string"""
+        import math
+        
+        # Find GCD to simplify the ratio
+        gcd = math.gcd(width, height)
+        simplified_width = width // gcd
+        simplified_height = height // gcd
+        
+        return f"{simplified_width}:{simplified_height}"
 
 
 app = App(config).app

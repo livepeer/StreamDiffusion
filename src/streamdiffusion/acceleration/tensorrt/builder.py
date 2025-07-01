@@ -41,7 +41,7 @@ class EngineBuilder:
         max_image_resolution: int = 1024,
         build_enable_refit: bool = False,
         build_static_batch: bool = False,
-        build_dynamic_shape: bool = False,
+        build_dynamic_shape: bool = True,
         build_all_tactics: bool = False,
         onnx_opset: int = 17,
         force_engine_build: bool = False,

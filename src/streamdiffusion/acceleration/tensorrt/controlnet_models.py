@@ -54,21 +54,26 @@ class ControlNetTRT(BaseModel):
     
     def get_input_profile(self, batch_size, image_height, image_width, 
                          static_batch, static_shape):
-        """Generate TensorRT input profiles for ControlNet"""
+        """Generate TensorRT input profiles for ControlNet with dynamic 512-1024 range"""
         min_batch = batch_size if static_batch else self.min_batch
         max_batch = batch_size if static_batch else self.max_batch
         
-        min_ctrl_h = 256 if not static_shape else image_height
-        max_ctrl_h = 1024 if not static_shape else image_height
-        min_ctrl_w = 256 if not static_shape else image_width  
-        max_ctrl_w = 1024 if not static_shape else image_width
+        # Force dynamic shapes for universal engines (512-1024 range)
+        min_ctrl_h = 256
+        max_ctrl_h = 1024
+        min_ctrl_w = 256
+        max_ctrl_w = 1024
         
-        latent_h = image_height // 8
-        latent_w = image_width // 8
-        min_latent_h = min_ctrl_h // 8
-        max_latent_h = max_ctrl_h // 8
-        min_latent_w = min_ctrl_w // 8
-        max_latent_w = max_ctrl_w // 8
+        # Ensure opt dimensions are valid and within range
+        opt_ctrl_h = min(max(image_height, min_ctrl_h), max_ctrl_h)
+        opt_ctrl_w = min(max(image_width, min_ctrl_w), max_ctrl_w)
+        
+        latent_h = opt_ctrl_h // 8
+        latent_w = opt_ctrl_w // 8
+        min_latent_h = min_ctrl_h // 8  # 64
+        max_latent_h = max_ctrl_h // 8  # 128
+        min_latent_w = min_ctrl_w // 8  # 64
+        max_latent_w = max_ctrl_w // 8  # 128
         
         return {
             "sample": [
@@ -86,7 +91,7 @@ class ControlNetTRT(BaseModel):
             ],
             "controlnet_cond": [
                 (min_batch, 3, min_ctrl_h, min_ctrl_w),
-                (batch_size, 3, image_height, image_width),
+                (batch_size, 3, opt_ctrl_h, opt_ctrl_w),
                 (max_batch, 3, max_ctrl_h, max_ctrl_w),
             ],
         }

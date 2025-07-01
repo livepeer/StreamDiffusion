@@ -20,7 +20,7 @@
     type="number"
     id="seed"
     name="seed"
-    class="col-span-2 rounded-md border border-gray-700 p-2 text-right font-light dark:text-black"
+    class="col-span-2 rounded-md border border-gray-700 p-2 text-right"
   />
   <Button on:click={randomize}>Rand</Button>
 </div>
