@@ -15,6 +15,7 @@
   "dependencies": {
     "@sveltejs/adapter-static": "^3.0.8",
     "@sveltejs/kit": "^2.22.2",
+    "@tailwindcss/postcss": "^4.1.11",
     "piexifjs": "^1.0.6",
     "rvfc-polyfill": "^1.0.7",
     "svelte": "^5.34.9",
