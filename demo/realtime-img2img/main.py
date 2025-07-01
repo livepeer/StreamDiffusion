@@ -45,6 +45,8 @@ class App:
         # Store current resolution for pipeline recreation
         self.new_width = 512
         self.new_height = 512
+        # Add flag for resolution changes
+        self.resolution_needs_reload = False  # Track when resolution changes require pipeline restart
         self.init_app()
 
     def init_app(self):
@@ -138,16 +140,26 @@ class App:
                         self.pipeline = self._create_default_pipeline()
                     print("stream: Pipeline created successfully")
                 
-                # Recreate pipeline if config changed
-                elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)):
+                # Recreate pipeline if config changed or resolution changed
+                elif (self.config_needs_reload or 
+                      self.resolution_needs_reload or 
+                      (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config))):
+                    
                     if self.config_needs_reload:
                         print("stream: Recreating pipeline with new ControlNet config...")
+                    elif self.resolution_needs_reload:
+                        print(f"stream: Recreating pipeline with new resolution {self.new_width}x{self.new_height}...")
                     else:
                         print("stream: Upgrading to ControlNet pipeline...")
                     
-                    self.pipeline = self._create_pipeline_with_config()
+                    if self.uploaded_controlnet_config:
+                        self.pipeline = self._create_pipeline_with_config()
+                    else:
+                        self.pipeline = self._create_default_pipeline()
+                    
                     self.config_needs_reload = False  # Reset the flag
-                    print("stream: Pipeline recreated with ControlNet support")
+                    self.resolution_needs_reload = False  # Reset the flag
+                    print("stream: Pipeline recreated successfully")
 
                 async def generate():
                     while True:
@@ -475,7 +487,7 @@ class App:
 
         @self.app.post("/api/update-resolution")
         async def update_resolution(request: Request):
-            """Update resolution (width x height) and recreate pipeline"""
+            """Update resolution (width x height) by restarting the pipeline"""
             try:
                 data = await request.json()
                 resolution_str = data.get('resolution')
@@ -498,14 +510,17 @@ class App:
                 
                 print(f"Updating resolution to {width}x{height}")
                 
-                # Store new resolution for pipeline recreation
+                # Store new resolution and mark for pipeline restart
                 self.new_width = width
                 self.new_height = height
-                
-                # Mark that pipeline needs to be recreated with new resolution
-                self.pipeline = None  # Force recreation on next stream request
-                
-                return JSONResponse({"success": True, "width": width, "height": height})
+                self.resolution_needs_reload = True  # Mark that pipeline needs recreation
+
+                return JSONResponse({
+                    "success": True, 
+                    "width": width, 
+                    "height": height,
+                    "message": "Resolution updated - pipeline will restart on next stream request"
+                })
                 
             except Exception as e:
                 print(f"Error updating resolution: {e}")

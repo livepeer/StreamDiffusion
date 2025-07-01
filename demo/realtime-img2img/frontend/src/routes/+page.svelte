@@ -151,26 +151,27 @@
     }
   }
 
-  async function handleResolutionUpdate(newResolution: string) {
+  async function handleResolutionUpdate(resolution: string) {
     try {
       const response = await fetch('/api/update-resolution', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          resolution: newResolution
-        }),
+        body: JSON.stringify({ resolution }),
       });
-
+      
       if (response.ok) {
         const result = await response.json();
         console.log('Resolution updated:', result.width + 'x' + result.height);
-        warningMessage = `Resolution changed to ${result.width}x${result.height}. Pipeline will be recreated on next start.`;
         
-        // If currently running, show warning about restart needed
-        if (isLCMRunning) {
-          warningMessage = `Resolution changed to ${result.width}x${result.height}. Please stop and restart to apply changes.`;
+        // Show success message - no restart needed for real-time updates
+        if (result.message) {
+          warningMessage = result.message;
+          // Clear message after a few seconds
+          setTimeout(() => {
+            warningMessage = '';
+          }, 3000);
         }
       } else {
         const result = await response.json();
