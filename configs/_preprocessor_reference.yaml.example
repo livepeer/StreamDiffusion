@@ -50,6 +50,15 @@ preprocessor_params:
   gaussian_sigma: 6.0          # float, Gaussian blur sigma
   intensity_threshold: 8       # int, intensity calculation threshold
 
+# Soft Edge Detection (real-time optimized)
+preprocessor: "soft_edge"
+preprocessor_params:
+  image_resolution: 512         # int, 256-1024, final output resolution (512 recommended for optimal performance)
+  strength: 1.0                # float, 0.1-2.0, edge detection strength
+  soft_threshold: 0.5          # float, 0.1-0.9, controls edge softness
+  multi_scale: true            # bool, use multi-scale edge detection for better quality
+  gaussian_sigma: 1.0          # float, 0.5-3.0, pre-smoothing sigma
+
 # Advanced Preprocessors (Require additional setup)
 # --------------------------------------------------
 
@@ -99,6 +108,7 @@ sd15_models_include_but_not_limited_to:
   seg: "lllyasviel/control_v11p_sd15_seg"
   normal: "lllyasviel/control_v11p_sd15_normalbae"
   mlsd: "lllyasviel/control_v11p_sd15_mlsd"
+  hed: "lllyasviel/control_v11p_sd15_hed"  # Compatible with soft_edge preprocessor
 
 # Stable Diffusion 2.1 Models  
 sd21_models_include_but_not_limited_to:
@@ -115,6 +125,7 @@ sdxl_models_include_but_not_limited_to:
   canny: "diffusers/controlnet-canny-sdxl-1.0"
   depth: "diffusers/controlnet-depth-sdxl-1.0"
   openpose: "thibaud/controlnet-openpose-sdxl-1.0"
+  # Note: soft_edge preprocessor compatible with HED-based ControlNet models
 
 # Note: Many more ControlNet models exist on HuggingFace Hub.
 # Search for "controlnet" to find additional models for your specific needs. 

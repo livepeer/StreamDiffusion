@@ -15,6 +15,7 @@
   
   export let width = 512;
   export let height = 512;
+  export let currentResolution: ResolutionInfo | undefined = undefined;
 
   let videoEl: HTMLVideoElement;
   let canvasEl: HTMLCanvasElement;
@@ -25,15 +26,19 @@
   const THROTTLE = 1000 / 120;
   let selectedDevice: string = '';
   let videoIsReady = false;
-  let currentResolution: ResolutionInfo;
+  let localResolution: ResolutionInfo;
 
   // Reactive resolution parsing
   $: {
-    if ($pipelineValues.resolution) {
-      currentResolution = parseResolution($pipelineValues.resolution);
+    if (currentResolution) {
+      // Use prop if provided
+      localResolution = currentResolution;
+    } else if ($pipelineValues.resolution) {
+      // Fallback to pipeline values
+      localResolution = parseResolution($pipelineValues.resolution);
     } else {
       // Fallback to props
-      currentResolution = {
+      localResolution = {
         width,
         height,
         aspectRatio: width / height,
@@ -43,16 +48,16 @@
   }
 
   // Update canvas size when resolution changes
-  $: if (canvasEl && currentResolution) {
-    canvasEl.width = currentResolution.width;
-    canvasEl.height = currentResolution.height;
+  $: if (canvasEl && localResolution) {
+    canvasEl.width = localResolution.width;
+    canvasEl.height = localResolution.height;
   }
 
   onMount(() => {
     ctx = canvasEl.getContext('2d') as CanvasRenderingContext2D;
-    if (currentResolution) {
-      canvasEl.width = currentResolution.width;
-      canvasEl.height = currentResolution.height;
+    if (localResolution) {
+      canvasEl.width = localResolution.width;
+      canvasEl.height = localResolution.height;
     } else {
       canvasEl.width = width;
       canvasEl.height = height;
@@ -60,7 +65,7 @@
   });
   
   $: {
-    console.log(selectedDevice);
+    console.log('VideoInput: selectedDevice', selectedDevice);
   }
   
   onDestroy(() => {
@@ -78,7 +83,7 @@
       return;
     }
     
-    if (!currentResolution) return;
+    if (!localResolution) return;
     
     const videoWidth = videoEl.videoWidth;
     const videoHeight = videoEl.videoHeight;
@@ -87,12 +92,12 @@
     const cropRegion = calculateCropRegion(
       videoWidth,
       videoHeight,
-      currentResolution.width,
-      currentResolution.height
+      localResolution.width,
+      localResolution.height
     );
     
     // Clear canvas and draw the cropped/scaled video
-    ctx.clearRect(0, 0, currentResolution.width, currentResolution.height);
+    ctx.clearRect(0, 0, localResolution.width, localResolution.height);
     ctx.drawImage(
       videoEl,
       cropRegion.x,
@@ -101,8 +106,8 @@
       cropRegion.height,
       0,
       0,
-      currentResolution.width,
-      currentResolution.height
+      localResolution.width,
+      localResolution.height
     );
     
     const blob = await new Promise<Blob>((resolve) => {
@@ -123,18 +128,18 @@
   }
 </script>
 
-<div class="relative mx-auto w-full max-w-2xl overflow-hidden rounded-lg border border-slate-300">
-  <div 
-    class="relative z-10 w-full object-cover"
-    style="aspect-ratio: {currentResolution?.aspectRatio || 1}"
-  >
+<div 
+  class="relative w-full max-w-xs mx-auto overflow-hidden rounded-lg border border-slate-300 bg-gray-100 dark:bg-gray-800"
+  style="aspect-ratio: {localResolution?.aspectRatio || 1}"
+>
+  <div class="relative z-10 w-full h-full">
     {#if $mediaDevices.length > 0}
-      <div class="absolute bottom-0 right-0 z-10">
+      <div class="absolute bottom-1 right-1 z-10">
         <MediaListSwitcher />
       </div>
     {/if}
     <video
-      class="pointer-events-none w-full h-full object-cover"
+      class="pointer-events-none w-full h-full object-cover rounded-lg"
       bind:this={videoEl}
       on:loadeddata={() => {
         videoIsReady = true;
@@ -144,21 +149,17 @@
       muted
       loop
     ></video>
-    <canvas 
-      bind:this={canvasEl} 
-      class="absolute left-0 top-0 w-full h-full object-cover"
-      style="aspect-ratio: {currentResolution?.aspectRatio || 1}"
-    ></canvas>
+    <canvas bind:this={canvasEl} class="absolute left-0 top-0 w-full h-full object-cover rounded-lg opacity-0"></canvas>
     
     <!-- Resolution indicator -->
-    {#if currentResolution}
+    {#if localResolution}
       <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
-        {currentResolution.width}×{currentResolution.height} ({currentResolution.aspectRatioString})
+        {localResolution.width}×{localResolution.height} ({localResolution.aspectRatioString})
       </div>
     {/if}
   </div>
-  <div class="absolute left-0 top-0 flex w-full h-full items-center justify-center" style="aspect-ratio: {currentResolution?.aspectRatio || 1}">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-40 p-5 opacity-20">
+  <div class="absolute left-0 top-0 flex w-full h-full items-center justify-center">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 448" class="w-16 h-16 opacity-20 text-gray-400">
       <path
         fill="currentColor"
         d="M224 256a128 128 0 1 0 0-256 128 128 0 1 0 0 256zm-45.7 48A178.3 178.3 0 0 0 0 482.3 29.7 29.7 0 0 0 29.7 512h388.6a29.7 29.7 0 0 0 29.7-29.7c0-98.5-79.8-178.3-178.3-178.3h-91.4z"

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import type { Fields, PipelineInfo } from '$lib/types';
   import { PipelineMode } from '$lib/types';
   import ImagePlayer from '$lib/components/ImagePlayer.svelte';
@@ -7,6 +7,9 @@
   import Button from '$lib/components/Button.svelte';
   import PipelineOptions from '$lib/components/PipelineOptions.svelte';
   import ControlNetConfig from '$lib/components/ControlNetConfig.svelte';
+  import PromptBlendingControl from '$lib/components/PromptBlendingControl.svelte';
+  import SeedBlendingControl from '$lib/components/SeedBlendingControl.svelte';
+  import ResolutionPicker from '$lib/components/ResolutionPicker.svelte';
   import Spinner from '$lib/icons/spinner.svelte';
   import Warning from '$lib/components/Warning.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
@@ -22,12 +25,17 @@
   let delta: number = 0.7;
   let numInferenceSteps: number = 50;
   let seed: number = 2;
+  let promptBlendingConfig: any = null;
+  let seedBlendingConfig: any = null;
+  let normalizePromptWeights: boolean = true;
+  let normalizeSeedWeights: boolean = true;
   let pageContent: string;
   let isImageMode: boolean = false;
   let maxQueueSize: number = 0;
   let currentQueueSize: number = 0;
   let queueCheckerRunning: boolean = false;
   let warningMessage: string = '';
+
   let currentResolution: ResolutionInfo;
   let apiError: string = '';
   let isRetrying: boolean = false;
@@ -47,8 +55,27 @@
     }
   }
   
+  // Panel state management
+  let showPromptBlending: boolean = false;
+  let showSeedBlending: boolean = false;
+  let showResolutionPicker: boolean = true; // Default to expanded
+  let leftPanelCollapsed: boolean = false;
+  let rightPanelCollapsed: boolean = false;
+
+  // FPS tracking
+  let fps = 0;
+  let fpsInterval: number | null = null;
+
   onMount(() => {
     getSettings();
+    updateFPS();
+    fpsInterval = setInterval(updateFPS, 1000);
+  });
+
+  onDestroy(() => {
+    if (fpsInterval) {
+      clearInterval(fpsInterval);
+    }
   });
 
   async function getSettings() {
@@ -62,7 +89,7 @@
       }
       
       const settings = await response.json();
-      
+
       pipelineParams = settings.input_params.properties;
       pipelineInfo = settings.info.properties;
       controlnetInfo = settings.controlnet || null;
@@ -71,6 +98,10 @@
       delta = settings.delta || 0.7;
       numInferenceSteps = settings.num_inference_steps || 50;
       seed = settings.seed || 2;
+      promptBlendingConfig = settings.prompt_blending || null;
+      seedBlendingConfig = settings.seed_blending || null;
+      normalizePromptWeights = settings.normalize_prompt_weights ?? true;
+      normalizeSeedWeights = settings.normalize_seed_weights ?? true;
       isImageMode = pipelineInfo.input_mode.default === PipelineMode.IMAGE;
       maxQueueSize = settings.max_queue_size;
       pageContent = settings.page_content;
@@ -92,8 +123,8 @@
       }
       
       console.log(pipelineParams);
-      console.log('ControlNet Info:', controlnetInfo);
-      console.log('T-Index List:', tIndexList);
+      console.log('handleControlNetUpdate: ControlNet Info:', controlnetInfo);
+      console.log('handleControlNetUpdate: T-Index List:', tIndexList);
       toggleQueueChecker(true);
       
     } catch (error) {
@@ -123,8 +154,8 @@
       tIndexList = [...event.detail.t_index_list];
     }
     
-    console.log('ControlNet updated:', controlnetInfo);
-    console.log('T-Index List updated:', tIndexList);
+    console.log('handleControlNetUpdate: ControlNet updated:', controlnetInfo);
+    console.log('handleControlNetUpdate: T-Index List updated:', tIndexList);
   }
 
   async function handleTIndexListUpdate(newTIndexList: number[]) {
@@ -141,13 +172,13 @@
 
       if (response.ok) {
         tIndexList = [...newTIndexList]; // Update local state
-        console.log('T-Index List updated:', tIndexList);
+        console.log('handleTIndexListUpdate: T-Index List updated:', tIndexList);
       } else {
         const result = await response.json();
-        console.error('Failed to update t_index_list:', result.detail);
+        console.error('handleTIndexListUpdate: Failed to update t_index_list:', result.detail);
       }
     } catch (error) {
-      console.error('Failed to update t_index_list:', error);
+      console.error('handleTIndexListUpdate: Failed to update t_index_list:', error);
     }
   }
 
@@ -190,6 +221,7 @@
       getQueueSize();
     }
   }
+  
   async function getQueueSize() {
     if (!queueCheckerRunning) {
       return;
@@ -234,6 +266,7 @@
       previousResolution = $pipelineValues.resolution;
     }
   }
+  
   let disabled = false;
   async function toggleLcmLive() {
     try {
@@ -259,6 +292,148 @@
       toggleQueueChecker(true);
     }
   }
+
+  async function updateFPS() {
+    try {
+      const response = await fetch('/api/fps');
+      const data = await response.json();
+      fps = data.fps;
+    } catch (error) {
+      console.error('updateFPS: Failed to fetch FPS:', error);
+    }
+  }
+
+  async function refreshBlendingConfigs() {
+    try {
+      const response = await fetch('/api/blending/current');
+      const data = await response.json();
+      
+      if (data.prompt_blending) {
+        promptBlendingConfig = data.prompt_blending;
+        console.log('refreshBlendingConfigs: Updated prompt blending:', promptBlendingConfig);
+      }
+      
+      if (data.seed_blending) {
+        seedBlendingConfig = data.seed_blending;
+        console.log('refreshBlendingConfigs: Updated seed blending:', seedBlendingConfig);
+      }
+      
+      if (data.normalize_prompt_weights !== undefined) {
+        normalizePromptWeights = data.normalize_prompt_weights;
+      }
+      
+      if (data.normalize_seed_weights !== undefined) {
+        normalizeSeedWeights = data.normalize_seed_weights;
+      }
+      
+      console.log('refreshBlendingConfigs: Blending configs refreshed');
+    } catch (error) {
+      console.error('refreshBlendingConfigs: Failed to refresh blending configs:', error);
+    }
+  }
+
+  // Pipeline configuration upload
+  let fileInput: HTMLInputElement;
+  let uploading = false;
+  let uploadStatus = '';
+
+  async function uploadConfig() {
+    if (!fileInput.files || fileInput.files.length === 0) {
+      uploadStatus = 'Please select a YAML file';
+      return;
+    }
+
+    const file = fileInput.files[0];
+    if (!file.name.endsWith('.yaml') && !file.name.endsWith('.yml')) {
+      uploadStatus = 'Please select a YAML file (.yaml or .yml)';
+      return;
+    }
+
+    uploading = true;
+    uploadStatus = 'Uploading configuration...';
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/controlnet/upload-config', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        uploadStatus = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        fileInput.value = '';
+        
+        // Update ControlNet info
+        if (result.controlnet) {
+          controlnetInfo = result.controlnet;
+        }
+        
+        // Update streaming parameters
+        if (result.t_index_list) {
+          tIndexList = [...result.t_index_list];
+        }
+        if (result.guidance_scale !== undefined) {
+          guidanceScale = result.guidance_scale;
+        }
+        if (result.delta !== undefined) {
+          delta = result.delta;
+        }
+        if (result.num_inference_steps !== undefined) {
+          numInferenceSteps = result.num_inference_steps;
+        }
+        if (result.seed !== undefined) {
+          seed = result.seed;
+        }
+        
+        // Update normalization settings
+        if (result.normalize_prompt_weights !== undefined) {
+          normalizePromptWeights = result.normalize_prompt_weights;
+        }
+        if (result.normalize_seed_weights !== undefined) {
+          normalizeSeedWeights = result.normalize_seed_weights;
+        }
+        
+        // Update blending configurations
+        if (result.prompt_blending) {
+          promptBlendingConfig = result.prompt_blending;
+          showPromptBlending = true;  // Auto-expand if config has blending data
+          console.log('uploadConfig: Updated prompt blending config:', promptBlendingConfig);
+        }
+        if (result.seed_blending) {
+          seedBlendingConfig = result.seed_blending;
+          showSeedBlending = true;  // Auto-expand if config has blending data
+          console.log('uploadConfig: Updated seed blending config:', seedBlendingConfig);
+        }
+        
+        // Update main prompt if config prompt is available
+        if (result.config_prompt) {
+          pipelineValues.update(values => ({
+            ...values,
+            prompt: result.config_prompt
+          }));
+        }
+        
+        setTimeout(() => {
+          uploadStatus = '';
+        }, 4000);
+      } else {
+        uploadStatus = `Error: ${result.detail || 'Failed to load configuration'}`;
+      }
+    } catch (error) {
+      console.error('uploadConfig: Upload failed:', error);
+      uploadStatus = 'Upload failed. Please try again.';
+    } finally {
+      uploading = false;
+    }
+  }
+
+  function selectFile() {
+    fileInput.click();
+  }
 </script>
 
 <svelte:head>
@@ -267,61 +442,204 @@
   ></script>
 </svelte:head>
 
-<main class="container mx-auto flex max-w-5xl flex-col gap-3 px-4 py-4">
+<main class="h-screen flex flex-col overflow-hidden">
   <Warning bind:message={warningMessage}></Warning>
-  <article class="text-center">
-    {#if pageContent}
-      {@html pageContent}
-    {/if}
-    {#if maxQueueSize > 0}
-      <p class="text-sm">
-        There are <span id="queue_size" class="font-bold">{currentQueueSize}</span>
-        user(s) sharing the same GPU, affecting real-time performance. Maximum queue size is {maxQueueSize}.
-        <a
-          href="https://huggingface.co/spaces/radames/Real-Time-Latent-Consistency-Model?duplicate=true"
-          target="_blank"
-          class="text-blue-500 underline hover:no-underline">Duplicate</a
-        > and run it on your own GPU.
-      </p>
-    {/if}
-  </article>
-  {#if pipelineParams}
-    <article class="my-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-      {#if isImageMode}
-        <div class="sm:col-start-1 flex justify-center">
-          <VideoInput></VideoInput>
-        </div>
-      {/if}
-      <div class={isImageMode ? 'sm:col-start-2 flex justify-center' : 'col-span-2 flex justify-center'}>
-        <ImagePlayer />
+  
+  <!-- Header Section -->
+  <header class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-4 flex-shrink-0">
+    <div class="flex items-center justify-between">
+      <div class="flex-1">
+        {#if pageContent}
+          <div class="text-center">
+            {@html pageContent}
+          </div>
+        {/if}
+        {#if maxQueueSize > 0}
+          <p class="text-sm text-center mt-2">
+            There are <span id="queue_size" class="font-bold">{currentQueueSize}</span>
+            user(s) sharing the same GPU, affecting real-time performance. Maximum queue size is {maxQueueSize}.
+            <a
+              href="https://huggingface.co/spaces/radames/Real-Time-Latent-Consistency-Model?duplicate=true"
+              target="_blank"
+              class="text-blue-500 underline hover:no-underline">Duplicate</a
+            > and run it on your own GPU.
+          </p>
+        {/if}
       </div>
-      <div class="sm:col-span-2">
-        <Button on:click={toggleLcmLive} {disabled} classList={'text-lg my-1 p-2'}>
+      
+      <!-- Pipeline Configuration and Main Controls -->
+      <div class="flex items-center gap-4">
+        <!-- Pipeline Configuration -->
+        <div class="flex items-center gap-2">
+          <Button on:click={selectFile} disabled={uploading} classList="text-sm px-3 py-2">
+            {uploading ? 'Uploading...' : 'Load YAML Config'}
+          </Button>
+        </div>
+        
+        <input
+          bind:this={fileInput}
+          type="file"
+          accept=".yaml,.yml"
+          class="hidden"
+          on:change={uploadConfig}
+        />
+        
+        <!-- Main Control Button -->
+        <Button on:click={toggleLcmLive} {disabled} classList={'text-lg px-6 py-3 font-semibold'}>
           {#if isLCMRunning}
-            Stop
+            Stop Stream
           {:else}
-            Start
+            Start Stream
           {/if}
         </Button>
-        <PipelineOptions {pipelineParams}></PipelineOptions>
       </div>
-      <!-- ControlNet Configuration Section -->
-      <div class="sm:col-span-2">
-        <ControlNetConfig 
-          {controlnetInfo} 
-          {tIndexList} 
-          {guidanceScale}
-          {delta}
-          {numInferenceSteps}
-          {seed}
-          on:controlnetUpdated={handleControlNetUpdate}
-          on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
-        ></ControlNetConfig>
+    </div>
+    
+    {#if uploadStatus}
+      <div class="mt-2 text-center">
+        <p class="text-sm {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
+          {uploadStatus}
+        </p>
       </div>
-    </article>
+    {/if}
+  </header>
+
+  {#if pipelineParams}
+    <!-- Main Content Grid -->
+    <div class="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
+      
+      <!-- Left Panel - Input and Basic Controls -->
+      <div class="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-y-auto">
+        <!-- Panel Header -->
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold">Input & Controls</h2>
+          <button 
+            on:click={() => leftPanelCollapsed = !leftPanelCollapsed}
+            class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+          >
+            {leftPanelCollapsed ? '→' : '←'}
+          </button>
+        </div>
+        
+        {#if !leftPanelCollapsed}
+          <!-- Video Input (Image Mode Only) -->
+          {#if isImageMode}
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <h3 class="text-md font-medium mb-3">Video Input</h3>
+              <VideoInput
+                width={Number(pipelineParams.width.default)}
+                height={Number(pipelineParams.height.default)}
+                {currentResolution}
+              />
+            </div>
+          {/if}
+
+          <!-- Resolution Picker -->
+          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+            <button 
+              on:click={() => showResolutionPicker = !showResolutionPicker}
+              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
+            >
+              <h3 class="text-md font-medium">Resolution</h3>
+              <span class="text-sm">{showResolutionPicker ? '−' : '+'}</span>
+            </button>
+            {#if showResolutionPicker}
+              <div class="p-4 pt-0">
+                <ResolutionPicker {currentResolution} {pipelineParams} />
+              </div>
+            {/if}
+          </div>
+
+          <!-- Prompt Blending -->
+          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+            <button 
+              on:click={() => showPromptBlending = !showPromptBlending}
+              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
+            >
+              <h3 class="text-md font-medium">Prompt Blending</h3>
+              <span class="text-sm">{showPromptBlending ? '−' : '+'}</span>
+            </button>
+            {#if showPromptBlending}
+              <div class="p-4 pt-0">
+                <PromptBlendingControl {promptBlendingConfig} {normalizePromptWeights} />
+              </div>
+            {/if}
+          </div>
+
+          <!-- Seed Blending -->
+          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+            <button 
+              on:click={() => showSeedBlending = !showSeedBlending}
+              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
+            >
+              <h3 class="text-md font-medium">Seed Blending</h3>
+              <span class="text-sm">{showSeedBlending ? '−' : '+'}</span>
+            </button>
+            {#if showSeedBlending}
+              <div class="p-4 pt-0">
+                <SeedBlendingControl {seedBlendingConfig} {normalizeSeedWeights} />
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Center Panel - Main Image Output -->
+      <div class="col-span-12 lg:col-span-6 flex flex-col">
+        <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex flex-col">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold">Generated Output</h2>
+            <div class="flex items-center gap-4">
+              {#if isLCMRunning}
+                <div class="flex items-center gap-2 px-3 py-1 bg-green-100 dark:bg-green-900 rounded-lg">
+                  <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span class="text-sm font-medium text-green-800 dark:text-green-200">
+                    {fps.toFixed(1)} FPS
+                  </span>
+                </div>
+              {/if}
+              <div class="text-sm text-gray-600 dark:text-gray-400">
+                Status: {isLCMRunning ? 'Streaming' : 'Stopped'}
+              </div>
+            </div>
+          </div>
+          <div class="flex-1 flex items-center justify-center">
+            <div class="w-full max-w-2xl">
+              <ImagePlayer {currentResolution} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Panel - Advanced Controls -->
+      <div class="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-y-auto">
+        <!-- Panel Header -->
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold">Advanced Settings</h2>
+          <button 
+            on:click={() => rightPanelCollapsed = !rightPanelCollapsed}
+            class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+          >
+            {rightPanelCollapsed ? '←' : '→'}
+          </button>
+        </div>
+        
+        {#if !rightPanelCollapsed}
+          <ControlNetConfig 
+            {controlnetInfo} 
+            {tIndexList} 
+            {guidanceScale}
+            {delta}
+            {numInferenceSteps}
+            on:controlnetUpdated={handleControlNetUpdate}
+            on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
+          ></ControlNetConfig>
+        {/if}
+      </div>
+    </div>
   {:else if apiError}
     <!-- API Error -->
-    <div class="flex flex-col items-center justify-center gap-6 py-48 text-center">
+    <div class="flex-1 flex flex-col items-center justify-center gap-6 py-48 text-center">
       <div>
         <h2 class="text-2xl font-bold text-red-600 mb-2">API Connection Failed</h2>
         <p class="text-gray-600 dark:text-gray-400 mb-4 max-w-md">
@@ -342,10 +660,12 @@
       </div>
     </div>
   {:else}
-    <!-- Loading -->
-    <div class="flex items-center justify-center gap-3 py-48 text-2xl">
-      <Spinner classList={'animate-spin opacity-50'}></Spinner>
-      <p>Loading...</p>
+    <!-- Loading State -->
+    <div class="flex-1 flex items-center justify-center">
+      <div class="flex items-center gap-3 text-2xl">
+        <Spinner classList={'animate-spin opacity-50'} />
+        <p>Loading StreamDiffusion...</p>
+      </div>
     </div>
   {/if}
 </main>
@@ -355,5 +675,22 @@
   
   :global(html) {
     @apply text-black dark:bg-gray-900 dark:text-white;
+  }
+  
+  /* Custom scrollbar styling */
+  :global(.overflow-y-auto::-webkit-scrollbar) {
+    width: 6px;
+  }
+  
+  :global(.overflow-y-auto::-webkit-scrollbar-track) {
+    @apply bg-gray-100 dark:bg-gray-800;
+  }
+  
+  :global(.overflow-y-auto::-webkit-scrollbar-thumb) {
+    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+  }
+  
+  :global(.overflow-y-auto::-webkit-scrollbar-thumb:hover) {
+    @apply bg-gray-400 dark:bg-gray-500;
   }
 </style>

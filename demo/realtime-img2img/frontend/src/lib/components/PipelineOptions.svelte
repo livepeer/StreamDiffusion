@@ -13,7 +13,7 @@
   $: advanceOptions = Object.values(pipelineParams)?.filter(
     (e) => e?.hide == true && e?.disabled !== true
   );
-  $: featuredOptions = Object.values(pipelineParams)?.filter((e) => e?.hide !== true);
+  $: featuredOptions = Object.values(pipelineParams)?.filter((e) => e?.hide !== true && e?.id !== 'prompt');
 </script>
 
 <div class="flex flex-col gap-3">

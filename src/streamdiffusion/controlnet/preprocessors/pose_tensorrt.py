@@ -50,7 +50,6 @@ class TensorRTEngine:
 
     def load(self):
         """Load TensorRT engine from file"""
-        print(f"pose_tensorrt.load: Loading TensorRT engine: {self.engine_path}")
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
 
     def activate(self):
@@ -91,7 +90,7 @@ class TensorRTEngine:
         # Execute inference
         success = self.context.execute_async_v3(stream)
         if not success:
-            raise ValueError("pose_tensorrt.infer: TensorRT inference failed.")
+            raise ValueError("TensorRT inference failed.")
         
         return self.tensors
 
@@ -138,20 +137,13 @@ class PoseVisualization:
 
 def iterate_over_batch_predictions(predictions, batch_size):
     """Process batch predictions from TensorRT output"""
-    print(f"iterate_over_batch_predictions: Received {len(predictions)} predictions for batch_size {batch_size}")
-    for i, pred in enumerate(predictions):
-        print(f"iterate_over_batch_predictions: Prediction {i} shape: {pred.shape}, dtype: {pred.dtype}")
-    
     num_detections, batch_boxes, batch_scores, batch_joints = predictions
-    print(f"iterate_over_batch_predictions: Unpacked - num_detections: {num_detections.shape}, batch_boxes: {batch_boxes.shape}, batch_scores: {batch_scores.shape}, batch_joints: {batch_joints.shape}")
     
     for image_index in range(batch_size):
         num_detection_in_image = int(num_detections[image_index, 0])
-        print(f"iterate_over_batch_predictions: Image {image_index}, detections: {num_detection_in_image}")
 
         # Handle case where no detections are found
         if num_detection_in_image == 0:
-            print(f"iterate_over_batch_predictions: No detections found for image {image_index}, returning empty arrays")
             pred_scores = np.array([])
             pred_boxes = np.array([]).reshape(0, 4)
             pred_joints = np.array([]).reshape(0, 17, 3)
@@ -163,57 +155,38 @@ def iterate_over_batch_predictions(predictions, batch_size):
 
         yield image_index, pred_boxes, pred_scores, pred_joints
 
+# precompute edge links define skeleton connections (COCO format)
+edge_links = [[0, 17], [13, 15], [14, 16], [12, 14], [12, 17], [5, 6], 
+                [11, 13], [7, 9], [5, 7], [17, 11], [6, 8], [8, 10], 
+                [1, 3], [0, 1], [0, 2], [2, 4]]
 
+edge_colors = [
+    [255, 0, 0], [255, 85, 0], [170, 255, 0], [85, 255, 0], [85, 255, 0], 
+    [85, 0, 255], [255, 170, 0], [0, 177, 58], [0, 179, 119], [179, 179, 0], 
+    [0, 119, 179], [0, 179, 179], [119, 0, 179], [179, 0, 179], [178, 0, 118], [178, 0, 118]
+]
 def show_predictions_from_batch_format(predictions):
     """Convert predictions to pose visualization format"""
-    print(f"show_predictions_from_batch_format: Starting with {len(predictions)} predictions")
-    
     try:
         image_index, pred_boxes, pred_scores, pred_joints = next(
             iter(iterate_over_batch_predictions(predictions, 1)))
-        print(f"show_predictions_from_batch_format: Got predictions for image {image_index}")
-        print(f"show_predictions_from_batch_format: pred_joints shape: {pred_joints.shape}")
     except Exception as e:
-        print(f"show_predictions_from_batch_format: Error in iterate_over_batch_predictions: {e}")
-        raise
+        raise RuntimeError(f"show_predictions_from_batch_format: Error in iterate_over_batch_predictions: {e}")
 
-    # Edge links define skeleton connections (COCO format)
-    edge_links = [[0, 17], [13, 15], [14, 16], [12, 14], [12, 17], [5, 6], 
-                  [11, 13], [7, 9], [5, 7], [17, 11], [6, 8], [8, 10], 
-                  [1, 3], [0, 1], [0, 2], [2, 4]]
-    
-    edge_colors = [
-        [255, 0, 0], [255, 85, 0], [170, 255, 0], [85, 255, 0], [85, 255, 0], 
-        [85, 0, 255], [255, 170, 0], [0, 177, 58], [0, 179, 119], [179, 179, 0], 
-        [0, 119, 179], [0, 179, 179], [119, 0, 179], [179, 0, 179], [178, 0, 118], [178, 0, 118]
-    ]
-    
-    print(f"show_predictions_from_batch_format: Processing {pred_joints.shape[0]} detected poses")
+
     
     # Handle case where no poses are detected
     if pred_joints.shape[0] == 0:
-        print("show_predictions_from_batch_format: No poses detected, returning black image")
-        black_image = np.zeros((640, 640, 3))
-        return black_image
+        return np.zeros((640, 640, 3))
     
     # Add middle joint between shoulders (keypoints 5 and 6)
-    new_pred_joints = []
-    for i in range(pred_joints.shape[0]):
-        try:
-            list1 = pred_joints[i][5]
-            list2 = pred_joints[i][6]
-            middle_list = [(a + b) / 2 for a, b in zip(list1, list2)]
-            middle_data_np = np.array(middle_list)
-            row = np.expand_dims(middle_data_np, axis=0)
-            row = np.concatenate((pred_joints[i], row), axis=0)
-            new_pred_joints.append(row)
-            print(f"show_predictions_from_batch_format: Processed pose {i}, new shape: {row.shape}")
-        except Exception as e:
-            print(f"show_predictions_from_batch_format: Error processing pose {i}: {e}")
-            raise
-
-    new_pred_joints = np.array(new_pred_joints)
-    print(f"show_predictions_from_batch_format: Final new_pred_joints shape: {new_pred_joints.shape}")
+    try:
+        # Calculate middle joints for all poses at once
+        middle_joints = (pred_joints[:, 5] + pred_joints[:, 6]) / 2
+        # Add middle joint as keypoint 17 to all poses
+        new_pred_joints = np.concatenate([pred_joints, middle_joints[:, np.newaxis]], axis=1)
+    except Exception as e:
+        raise RuntimeError(f"show_predictions_from_batch_format: Error processing poses: {e}")
     
     # Create black background for pose visualization
     black_image = np.zeros((640, 640, 3))
@@ -227,10 +200,8 @@ def show_predictions_from_batch_format(predictions):
             joint_thickness=10,
             keypoint_radius=10
         )
-        print(f"show_predictions_from_batch_format: Pose drawing successful, output shape: {image.shape}")
     except Exception as e:
-        print(f"show_predictions_from_batch_format: Error in pose drawing: {e}")
-        raise
+        raise RuntimeError(f"show_predictions_from_batch_format: Error in pose drawing: {e}")
     
     return image
 
@@ -270,6 +241,8 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         )
         
         self._engine = None
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._is_cuda_available = torch.cuda.is_available()
     
     @property
     def engine(self):
@@ -283,9 +256,7 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
                 )
             
             if not os.path.exists(engine_path):
-                raise FileNotFoundError(f"pose_tensorrt.engine: TensorRT engine not found: {engine_path}")
-            
-            print(f"pose_tensorrt.engine: Loading TensorRT pose estimation engine: {engine_path}")
+                raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
             
             self._engine = TensorRTEngine(engine_path)
             self._engine.load()
@@ -312,37 +283,21 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         
         image_resized_uint8 = (image_resized * 255.0).type(torch.uint8)
         
-        if torch.cuda.is_available():
+        if self._is_cuda_available:
             image_resized_uint8 = image_resized_uint8.cuda()
         
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized_uint8}, cuda_stream)
         
-        print(f"pose_tensorrt.process: All result keys: {list(result.keys())}")
-        
-        predictions = []
-        for key in result.keys():
-            if key != 'input':
-                tensor_shape = result[key].shape
-                print(f"pose_tensorrt.process: Output tensor '{key}' shape: {tensor_shape}")
-                predictions.append(result[key].cpu().numpy())
-        
-        print(f"pose_tensorrt.process: Extracted {len(predictions)} predictions")
-        for i, pred in enumerate(predictions):
-            print(f"pose_tensorrt.process: Prediction {i} shape: {pred.shape}")
+        predictions = [result[key].cpu().numpy() for key in result.keys() if key != 'input']
         
         try:
-            print("pose_tensorrt.process: Starting pose visualization...")
             pose_image = show_predictions_from_batch_format(predictions)
-            print(f"pose_tensorrt.process: Pose visualization successful, output shape: {pose_image.shape}")
-        except Exception as e:
-            print(f"pose_tensorrt.process: Error in pose visualization: {e}")
-            print(f"pose_tensorrt.process: Error type: {type(e)}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            # Fallback to black image on error
             pose_image = np.zeros((detect_resolution, detect_resolution, 3))
         
-        pose_image = (pose_image.clip(0, 255)).astype(np.uint8)
+        pose_image = pose_image.clip(0, 255).astype(np.uint8)
         pose_image = cv2.cvtColor(pose_image, cv2.COLOR_BGR2RGB)
         
         result = Image.fromarray(pose_image)
@@ -370,34 +325,18 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": image_resized_uint8}, cuda_stream)
         
-        print(f"pose_tensorrt.process_tensor: All result keys: {list(result.keys())}")
-        
-        predictions = []
-        for key in result.keys():
-            if key != 'input':
-                tensor_shape = result[key].shape
-                print(f"pose_tensorrt.process_tensor: Output tensor '{key}' shape: {tensor_shape}")
-                predictions.append(result[key].cpu().numpy())
-        
-        print(f"pose_tensorrt.process_tensor: Extracted {len(predictions)} predictions")
-        for i, pred in enumerate(predictions):
-            print(f"pose_tensorrt.process_tensor: Prediction {i} shape: {pred.shape}")
+        predictions = [result[key].cpu().numpy() for key in result.keys() if key != 'input']
         
         try:
-            print("pose_tensorrt.process_tensor: Starting pose visualization...")
             pose_image = show_predictions_from_batch_format(predictions)
-            pose_image = (pose_image.clip(0, 255)).astype(np.uint8)
+            pose_image = pose_image.clip(0, 255).astype(np.uint8)
             pose_image = cv2.cvtColor(pose_image, cv2.COLOR_BGR2RGB)
             
             pose_tensor = torch.from_numpy(pose_image).float() / 255.0
             pose_tensor = pose_tensor.permute(2, 0, 1).unsqueeze(0).cuda()
-            print(f"pose_tensorrt.process_tensor: Pose visualization successful, tensor shape: {pose_tensor.shape}")
             
-        except Exception as e:
-            print(f"pose_tensorrt.process_tensor: Error in pose visualization: {e}")
-            print(f"pose_tensorrt.process_tensor: Error type: {type(e)}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            # Fallback to black tensor on error
             pose_tensor = torch.zeros(1, 3, detect_resolution, detect_resolution).cuda()
         
         return pose_tensor 

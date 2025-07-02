@@ -103,12 +103,25 @@ class App:
                         await self.conn_manager.disconnect(user_id)
                         return
                     data = await self.conn_manager.receive_json(user_id)
+                    if data is None:
+                        break
                     if data["status"] == "next_frame":
-                        info = Pipeline.Info()
                         params = await self.conn_manager.receive_json(user_id)
                         params = Pipeline.InputParams(**params)
                         params = SimpleNamespace(**params.dict())
-                        if info.input_mode == "image":
+                        
+                        # Check if we need image data based on pipeline
+                        need_image = True
+                        if self.pipeline and hasattr(self.pipeline, 'pipeline_mode'):
+                            # Need image for img2img OR for txt2img with ControlNets
+                            has_controlnets = self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config
+                            need_image = self.pipeline.pipeline_mode == "img2img" or has_controlnets
+                        elif self.uploaded_controlnet_config and 'mode' in self.uploaded_controlnet_config:
+                            # Need image for img2img OR for txt2img with ControlNets
+                            has_controlnets = 'controlnets' in self.uploaded_controlnet_config
+                            need_image = self.uploaded_controlnet_config['mode'] == "img2img" or has_controlnets
+                        
+                        if need_image:
                             image_data = await self.conn_manager.receive_bytes(user_id)
                             if len(image_data) == 0:
                                 await self.conn_manager.send_json(
@@ -116,6 +129,9 @@ class App:
                                 )
                                 continue
                             params.image = bytes_to_pil(image_data)
+                        else:
+                            params.image = None
+                        
                         await self.conn_manager.update_data(user_id, params)
 
             except Exception as e:
@@ -171,10 +187,14 @@ class App:
                         params = await self.conn_manager.get_latest_data(user_id)
                         if params is None:
                             continue
-                        image = self.pipeline.predict(params)
-                        if image is None:
+                        
+                        try:
+                            image = self.pipeline.predict(params)
+                            if image is None:
+                                continue
+                            frame = pil_to_frame(image)
+                        except Exception as e:
                             continue
-                        frame = pil_to_frame(image)
                         
                         # Update FPS counter
                         frame_time = time.time() - frame_start_time
@@ -256,6 +276,45 @@ class App:
                 current_num_inference_steps = self.uploaded_controlnet_config.get('num_inference_steps', 50)
                 current_seed = self.uploaded_controlnet_config.get('seed', 2)
             
+            # Get prompt and seed blending configuration from uploaded config or pipeline
+            prompt_blending_config = None
+            seed_blending_config = None
+            
+            # First try to get from current pipeline if available
+            if self.pipeline:
+                try:
+                    current_prompts = self.pipeline.stream.get_current_prompts()
+                    if current_prompts and len(current_prompts) > 0:
+                        prompt_blending_config = current_prompts
+                except:
+                    pass
+                    
+                try:
+                    current_seeds = self.pipeline.stream.get_current_seeds()
+                    if current_seeds and len(current_seeds) > 0:
+                        seed_blending_config = current_seeds
+                except:
+                    pass
+            
+            # If not available from pipeline, get from uploaded config and normalize
+            if not prompt_blending_config:
+                prompt_blending_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+            
+            if not seed_blending_config:
+                seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
+            
+            # Get current normalize weights settings
+            normalize_prompt_weights = True  # default
+            normalize_seed_weights = True    # default
+            
+            if self.pipeline:
+                current_normalize = self.pipeline.stream.get_normalize_weights()
+                normalize_prompt_weights = current_normalize
+                normalize_seed_weights = current_normalize
+            elif self.uploaded_controlnet_config:
+                normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+                normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+            
             return JSONResponse(
                 {
                     "info": info_schema,
@@ -271,6 +330,10 @@ class App:
                     "num_inference_steps": current_num_inference_steps,
                     "seed": current_seed,
                     "current_resolution": current_resolution,
+                    "prompt_blending": prompt_blending_config,
+                    "seed_blending": seed_blending_config,
+                    "normalize_prompt_weights": normalize_prompt_weights,
+                    "normalize_seed_weights": normalize_seed_weights,
                 }
             )
 
@@ -303,13 +366,41 @@ class App:
                 # Get acceleration from config if available
                 config_acceleration = config_data.get('acceleration', self.args.acceleration)
                 
+                # Normalize prompt and seed configurations for frontend
+                normalized_prompt_blending = self._normalize_prompt_config(config_data)
+                normalized_seed_blending = self._normalize_seed_config(config_data)
+                
+                # Debug logging
+                print(f"upload_controlnet_config: Raw prompt_blending in config: {config_data.get('prompt_blending', 'NOT FOUND')}")
+                print(f"upload_controlnet_config: Raw seed_blending in config: {config_data.get('seed_blending', 'NOT FOUND')}")
+                print(f"upload_controlnet_config: Normalized prompt blending: {normalized_prompt_blending}")
+                print(f"upload_controlnet_config: Normalized seed blending: {normalized_seed_blending}")
+                
+                # Get other streaming parameters from config
+                config_guidance_scale = config_data.get('guidance_scale', 1.1)
+                config_delta = config_data.get('delta', 0.7)
+                config_num_inference_steps = config_data.get('num_inference_steps', 50)
+                config_seed = config_data.get('seed', 2)
+                
+                # Get normalization settings
+                config_normalize_weights = config_data.get('normalize_weights', True)
+                
                 return JSONResponse({
                     "status": "success",
                     "message": "ControlNet configuration uploaded successfully",
+                    "controls_updated": True,  # Flag for frontend to update controls
                     "controlnet": self._get_controlnet_info(),
                     "config_prompt": config_prompt,
                     "t_index_list": t_index_list,
-                    "acceleration": config_acceleration
+                    "acceleration": config_acceleration,
+                    "guidance_scale": config_guidance_scale,
+                    "delta": config_delta,
+                    "num_inference_steps": config_num_inference_steps,
+                    "seed": config_seed,
+                    "prompt_blending": normalized_prompt_blending,
+                    "seed_blending": normalized_seed_blending,
+                    "normalize_prompt_weights": config_normalize_weights,
+                    "normalize_seed_weights": config_normalize_weights,
                 })
                 
             except Exception as e:
@@ -320,6 +411,62 @@ class App:
         async def get_controlnet_info():
             """Get current ControlNet configuration info"""
             return JSONResponse({"controlnet": self._get_controlnet_info()})
+
+        @self.app.get("/api/blending/current")
+        async def get_current_blending_config():
+            """Get current prompt and seed blending configurations"""
+            try:
+                # Get normalized configurations (same logic as settings endpoint)
+                prompt_blending_config = None
+                seed_blending_config = None
+                
+                # First try to get from current pipeline if available
+                if self.pipeline:
+                    try:
+                        current_prompts = self.pipeline.stream.get_current_prompts()
+                        if current_prompts and len(current_prompts) > 0:
+                            prompt_blending_config = current_prompts
+                    except:
+                        pass
+                        
+                    try:
+                        current_seeds = self.pipeline.stream.get_current_seeds()
+                        if current_seeds and len(current_seeds) > 0:
+                            seed_blending_config = current_seeds
+                    except:
+                        pass
+                
+                # If not available from pipeline, get from uploaded config and normalize
+                if not prompt_blending_config:
+                    prompt_blending_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+                
+                if not seed_blending_config:
+                    seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
+                
+                # Get normalization settings
+                normalize_prompt_weights = True
+                normalize_seed_weights = True
+                
+                if self.pipeline:
+                    current_normalize = self.pipeline.stream.get_normalize_weights()
+                    normalize_prompt_weights = current_normalize
+                    normalize_seed_weights = current_normalize
+                elif self.uploaded_controlnet_config:
+                    normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+                    normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+                
+                return JSONResponse({
+                    "prompt_blending": prompt_blending_config,
+                    "seed_blending": seed_blending_config,
+                    "normalize_prompt_weights": normalize_prompt_weights,
+                    "normalize_seed_weights": normalize_seed_weights,
+                    "has_config": self.uploaded_controlnet_config is not None,
+                    "pipeline_active": self.pipeline is not None
+                })
+                
+            except Exception as e:
+                logging.error(f"get_current_blending_config: Failed to get blending config: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get blending config: {str(e)}")
 
         @self.app.post("/api/controlnet/update-strength")
         async def update_controlnet_strength(request: Request):
@@ -539,6 +686,142 @@ class App:
             except Exception as e:
                 print(f"Error updating resolution: {e}")
                 return JSONResponse({"success": False, "detail": str(e)}, status_code=500)
+
+        @self.app.post("/api/update-normalize-prompt-weights")
+        async def update_normalize_prompt_weights(request: Request):
+            """Update normalize weights flag for prompt blending in real-time"""
+            try:
+                data = await request.json()
+                normalize = data.get("normalize")
+                
+                if normalize is None:
+                    raise HTTPException(status_code=400, detail="Missing normalize parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update normalize weights setting for prompt blending
+                # For now, use the existing single flag (this can be enhanced later with separate flags)
+                self.pipeline.stream.set_normalize_weights(bool(normalize))
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated prompt weight normalization to {normalize}"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_normalize_prompt_weights: Failed to update normalize prompt weights: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update normalize prompt weights: {str(e)}")
+
+        @self.app.post("/api/update-normalize-seed-weights")
+        async def update_normalize_seed_weights(request: Request):
+            """Update normalize weights flag for seed blending in real-time"""
+            try:
+                data = await request.json()
+                normalize = data.get("normalize")
+                
+                if normalize is None:
+                    raise HTTPException(status_code=400, detail="Missing normalize parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update normalize weights setting for seed blending
+                # For now, use the existing single flag (this can be enhanced later with separate flags)
+                self.pipeline.stream.set_normalize_weights(bool(normalize))
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated seed weight normalization to {normalize}"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_normalize_seed_weights: Failed to update normalize seed weights: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update normalize seed weights: {str(e)}")
+
+        @self.app.post("/api/prompt-blending/update")
+        async def update_prompt_blending(request: Request):
+            """Update prompt blending configuration in real-time"""
+            try:
+                data = await request.json()
+                prompt_list = data.get("prompt_list")
+                interpolation_method = data.get("interpolation_method", "slerp")
+                
+                if prompt_list is None:
+                    raise HTTPException(status_code=400, detail="Missing prompt_list parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Validate prompt_list structure
+                if not isinstance(prompt_list, list):
+                    raise HTTPException(status_code=400, detail="prompt_list must be a list")
+                
+                for item in prompt_list:
+                    if not isinstance(item, list) or len(item) != 2:
+                        raise HTTPException(status_code=400, detail="Each prompt_list item must be [prompt, weight]")
+                    if not isinstance(item[0], str) or not isinstance(item[1], (int, float)):
+                        raise HTTPException(status_code=400, detail="Each prompt_list item must be [string, number]")
+                
+                # Convert list format [[prompt, weight], ...] to tuple format [(prompt, weight), ...]
+                prompt_tuples = [(item[0], item[1]) for item in prompt_list]
+                
+                # Update prompt blending using the unified public interface
+                self.pipeline.stream.update_prompt(
+                    prompt=prompt_tuples,
+                    interpolation_method=interpolation_method
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated prompt blending with {len(prompt_list)} prompts"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_prompt_blending: Failed to update prompt blending: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update prompt blending: {str(e)}")
+
+        @self.app.post("/api/seed-blending/update")
+        async def update_seed_blending(request: Request):
+            """Update seed blending configuration in real-time"""
+            try:
+                data = await request.json()
+                seed_list = data.get("seed_list")
+                seed_interpolation_method = data.get("seed_interpolation_method", "linear")
+                
+                if seed_list is None:
+                    raise HTTPException(status_code=400, detail="Missing seed_list parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Validate seed_list structure
+                if not isinstance(seed_list, list):
+                    raise HTTPException(status_code=400, detail="seed_list must be a list")
+                
+                for item in seed_list:
+                    if not isinstance(item, list) or len(item) != 2:
+                        raise HTTPException(status_code=400, detail="Each seed_list item must be [seed, weight]")
+                    if not isinstance(item[0], int) or not isinstance(item[1], (int, float)):
+                        raise HTTPException(status_code=400, detail="Each seed_list item must be [int, number]")
+                
+                # Convert list format [[seed, weight], ...] to tuple format [(seed, weight), ...]
+                seed_tuples = [(item[0], item[1]) for item in seed_list]
+                
+                # Update seed blending using the public interface
+                self.pipeline.stream.update_seed_blending(
+                    seed_list=seed_tuples,
+                    interpolation_method=seed_interpolation_method
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated seed blending with {len(seed_list)} seeds"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_seed_blending: Failed to update seed blending: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update seed blending: {str(e)}")
 
         @self.app.get("/api/fps")
         async def get_fps():
@@ -820,6 +1103,118 @@ class App:
                     "mode": "api-only",
                     "frontend": "Run separately with 'npm run dev' in ./frontend/"
                 })
+
+    def _normalize_prompt_config(self, config_data):
+        """
+        Normalize prompt configuration to always return a list format.
+        Priority: prompt_blending.prompt_list > prompt_blending (direct list) > prompt (converted to single-item list) > default
+        """
+        if not config_data:
+            return None
+            
+        # Check for explicit prompt_blending first (highest priority)
+        if 'prompt_blending' in config_data:
+            prompt_blending = config_data['prompt_blending']
+            
+            # Handle nested structure: prompt_blending.prompt_list
+            if isinstance(prompt_blending, dict) and 'prompt_list' in prompt_blending:
+                prompt_list = prompt_blending['prompt_list']
+                if isinstance(prompt_list, list) and len(prompt_list) > 0:
+                    normalized = []
+                    for item in prompt_list:
+                        if isinstance(item, list) and len(item) == 2:
+                            normalized.append([str(item[0]), float(item[1])])
+                        elif isinstance(item, tuple) and len(item) == 2:
+                            normalized.append([str(item[0]), float(item[1])])
+                    if normalized:
+                        return normalized
+                        
+            # Handle direct list format: prompt_blending: [["text", weight], ...]
+            elif isinstance(prompt_blending, list) and len(prompt_blending) > 0:
+                normalized = []
+                for item in prompt_blending:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                if normalized:
+                    return normalized
+        
+        # Fall back to single prompt, convert to list format
+        if 'prompt' in config_data:
+            prompt = config_data['prompt']
+            if isinstance(prompt, str) and prompt.strip():
+                return [[prompt, 1.0]]  # Convert single prompt to list with weight 1.0
+            elif isinstance(prompt, list) and len(prompt) > 0:
+                # Handle case where prompt is already a list (but not in prompt_blending key)
+                normalized = []
+                for item in prompt:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                    elif isinstance(item, str):
+                        normalized.append([item, 1.0])
+                if normalized:
+                    return normalized
+        
+        return None
+
+    def _normalize_seed_config(self, config_data):
+        """
+        Normalize seed configuration to always return a list format.
+        Priority: seed_blending.seed_list > seed_blending (direct list) > seed (converted to single-item list) > default
+        """
+        if not config_data:
+            return None
+            
+        # Check for explicit seed_blending first (highest priority)
+        if 'seed_blending' in config_data:
+            seed_blending = config_data['seed_blending']
+            
+            # Handle nested structure: seed_blending.seed_list
+            if isinstance(seed_blending, dict) and 'seed_list' in seed_blending:
+                seed_list = seed_blending['seed_list']
+                if isinstance(seed_list, list) and len(seed_list) > 0:
+                    normalized = []
+                    for item in seed_list:
+                        if isinstance(item, list) and len(item) == 2:
+                            normalized.append([int(item[0]), float(item[1])])
+                        elif isinstance(item, tuple) and len(item) == 2:
+                            normalized.append([int(item[0]), float(item[1])])
+                    if normalized:
+                        return normalized
+                        
+            # Handle direct list format: seed_blending: [[seed, weight], ...]
+            elif isinstance(seed_blending, list) and len(seed_blending) > 0:
+                normalized = []
+                for item in seed_blending:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                if normalized:
+                    return normalized
+        
+        # Fall back to single seed, convert to list format
+        if 'seed' in config_data:
+            seed = config_data['seed']
+            if isinstance(seed, int):
+                return [[seed, 1.0]]  # Convert single seed to list with weight 1.0
+            elif isinstance(seed, list) and len(seed) > 0:
+                # Handle case where seed is already a list (but not in seed_blending key)
+                normalized = []
+                for item in seed:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                    elif isinstance(item, int):
+                        normalized.append([item, 1.0])
+                if normalized:
+                    return normalized
+        
+        return None
 
     def _create_default_pipeline(self):
         """Create the default pipeline (standard mode)"""
