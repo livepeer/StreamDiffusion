@@ -420,8 +420,7 @@ class StreamDiffusionWrapper:
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
     ) -> None:
         """
-        Update streaming parameters efficiently in a single call.
-
+        Update streaming parameters efficiently in a single call.        
 
         Parameters
         ----------
@@ -452,7 +451,7 @@ class StreamDiffusionWrapper:
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors, by default "linear".
         """
-        self.stream.update_stream_params(
+        new_stream = self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             delta=delta,
@@ -466,7 +465,9 @@ class StreamDiffusionWrapper:
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
         )
-        
+        # If a new stream was created (pipeline restart), update self.stream
+        if new_stream is not None:
+            self.stream = new_stream
         # Update wrapper's width/height properties if resolution changed
         if width is not None:
             self.width = width
@@ -533,14 +534,19 @@ class StreamDiffusionWrapper:
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
-            safety_checker_input = self.feature_extractor(
-                image, return_tensors="pt"
-            ).to(self.device)
-            _, has_nsfw_concept = self.safety_checker(
-                images=image_tensor.to(self.dtype),
-                clip_input=safety_checker_input.pixel_values.to(self.dtype),
+            from diffusers.pipelines.stable_diffusion.safety_checker import (
+                StableDiffusionSafetyChecker,
             )
-            image = self.nsfw_fallback_img if has_nsfw_concept[0] else image
+            from transformers.models.clip import CLIPFeatureExtractor
+
+            self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(
+                "CompVis/stable-diffusion-safety-checker"
+            ).to(device=self.device)
+            self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            )
+            # Use stream's current resolution for fallback image
+            self.nsfw_fallback_img = Image.new("RGB", (self.stream.height, self.stream.width), (0, 0, 0))
 
         return image
 
@@ -573,14 +579,19 @@ class StreamDiffusionWrapper:
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
-            safety_checker_input = self.feature_extractor(
-                image, return_tensors="pt"
-            ).to(self.device)
-            _, has_nsfw_concept = self.safety_checker(
-                images=image_tensor.to(self.dtype),
-                clip_input=safety_checker_input.pixel_values.to(self.dtype),
+            from diffusers.pipelines.stable_diffusion.safety_checker import (
+                StableDiffusionSafetyChecker,
             )
-            image = self.nsfw_fallback_img if has_nsfw_concept[0] else image
+            from transformers.models.clip import CLIPFeatureExtractor
+
+            self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(
+                "CompVis/stable-diffusion-safety-checker"
+            ).to(device=self.device)
+            self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            )
+            # Use stream's current resolution for fallback image
+            self.nsfw_fallback_img = Image.new("RGB", (self.stream.height, self.stream.width), (0, 0, 0))
 
         return image
 
@@ -598,13 +609,17 @@ class StreamDiffusionWrapper:
         torch.Tensor
             The preprocessed image.
         """
+        # Use stream's current resolution instead of wrapper's cached values
+        current_width = self.stream.width
+        current_height = self.stream.height
+        
         if isinstance(image, str):
-            image = Image.open(image).convert("RGB").resize((self.width, self.height))
+            image = Image.open(image).convert("RGB").resize((current_width, current_height))
         if isinstance(image, Image.Image):
-            image = image.convert("RGB").resize((self.width, self.height))
+            image = image.convert("RGB").resize((current_width, current_height))
 
         return self.stream.image_processor.preprocess(
-            image, self.height, self.width
+            image, current_height, current_width
         ).to(device=self.device, dtype=self.dtype)
 
     def postprocess_image(
@@ -1169,7 +1184,8 @@ class StreamDiffusionWrapper:
             self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
                 "openai/clip-vit-base-patch32"
             )
-            self.nsfw_fallback_img = Image.new("RGB", (self.height, self.width), (0, 0, 0))
+            # Use stream's current resolution for fallback image
+            self.nsfw_fallback_img = Image.new("RGB", (stream.height, stream.width), (0, 0, 0))
 
         # Apply ControlNet patch if needed
         if use_controlnet and controlnet_config:

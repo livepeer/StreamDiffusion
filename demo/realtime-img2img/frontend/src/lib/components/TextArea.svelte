@@ -4,7 +4,9 @@
   export let value: string;
   export let params: FieldProps;
   onMount(() => {
-    value = String(params?.default ?? '');
+    if (!value || value === '') {
+      value = String(params?.default ?? '');
+    }
   });
 </script>
 

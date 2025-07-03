@@ -1,6 +1,7 @@
-from typing import List, Optional, Dict, Tuple, Literal
+from typing import List, Optional, Dict, Tuple, Literal, Any
 import torch
 import torch.nn.functional as F
+import gc
 
 
 class StreamParameterUpdater:
@@ -78,13 +79,13 @@ class StreamParameterUpdater:
         interpolation_method: Literal["linear", "slerp"] = "slerp",
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
-    ) -> None:
-        """Update streaming parameters efficiently in a single call."""
-        
+    ) -> Optional[Any]:
+        """Update streaming parameters efficiently in a single call. Returns new stream if pipeline was restarted."""
+        new_stream = None
         # Handle width/height updates for dynamic resolution
         if width is not None or height is not None:
-            self._update_resolution(width, height)
-            
+            new_stream = self._update_resolution(width, height)
+        
         if num_inference_steps is not None:
             self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
             self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
@@ -97,10 +98,10 @@ class StreamParameterUpdater:
             if self.stream.cfg_type == "none" and guidance_scale > 1.0:
                 print("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
             self.stream.guidance_scale = guidance_scale
-            
+        
         if delta is not None:
             self.stream.delta = delta
-            
+        
         if seed is not None:
             self._update_seed(seed)
         
@@ -121,6 +122,7 @@ class StreamParameterUpdater:
         
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
+        return new_stream
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -501,8 +503,9 @@ class StreamParameterUpdater:
         )
 
     @torch.no_grad()
-    def _update_resolution(self, width: Optional[int], height: Optional[int]) -> None:
-        """Update stream resolution and regenerate resolution-dependent tensors."""
+    def _update_resolution(self, width: Optional[int], height: Optional[int]) -> Optional[Any]:
+        """This method complete restarts the pipeline with new params. Returns new stream if restarted."""
+        
         # Use current dimensions if only one is provided
         new_width = width if width is not None else self.stream.width
         new_height = height if height is not None else self.stream.height
@@ -519,107 +522,108 @@ class StreamParameterUpdater:
             return  # No change needed
         
         print(f"Updating resolution from {self.stream.width}x{self.stream.height} to {new_width}x{new_height}")
+        print("Restarting pipeline with new resolution...")
         
-        # Update stream dimensions
-        self.stream.width = new_width
-        self.stream.height = new_height
+        # Store current state that needs to be preserved
+        current_prompt_list = self._current_prompt_list.copy()
+        current_negative_prompt = self._current_negative_prompt
+        current_seed_list = self._current_seed_list.copy()
+        current_normalize_weights = self.normalize_weights
         
-        # Get VAE scale factor from the pipeline
-        vae_scale_factor = 8  # Default fallback
-        if hasattr(self.stream, 'pipe') and hasattr(self.stream.pipe, 'vae_scale_factor'):
-            vae_scale_factor = self.stream.pipe.vae_scale_factor
-        elif hasattr(self.stream, 'vae') and hasattr(self.stream.vae, 'vae_scale_factor'):
-            vae_scale_factor = self.stream.vae.vae_scale_factor
-        elif hasattr(self.stream, 'vae_scale_factor'):
-            vae_scale_factor = self.stream.vae_scale_factor
+        # Store current pipeline parameters
+        pipe = self.stream.pipe
+        t_index_list = self.stream.t_list
+        torch_dtype = self.stream.dtype
+        do_add_noise = self.stream.do_add_noise
+        use_denoising_batch = self.stream.use_denoising_batch
+        frame_buffer_size = self.stream.frame_bff_size
+        cfg_type = self.stream.cfg_type
         
-        # Calculate new latent dimensions
-        latent_height = new_height // vae_scale_factor
-        latent_width = new_width // vae_scale_factor
+        # Store current inference parameters
+        current_guidance_scale = getattr(self.stream, 'guidance_scale', 1.2)
+        current_delta = getattr(self.stream, 'delta', 1.0)
+        current_seed = getattr(self.stream, 'current_seed', 2)
+        current_generator = getattr(self.stream, 'generator', None)
         
-        # Update latent tensors
-        self.stream.latent_height = latent_height
-        self.stream.latent_width = latent_width
+        # Store ControlNet state if present
+        controlnet_state = None
+        if hasattr(self.stream, 'controlnets') and len(self.stream.controlnets) > 0:
+            controlnet_state = {
+                'controlnets': self.stream.controlnets.copy(),
+                'controlnet_images': self.stream.controlnet_images.copy(),
+                'controlnet_scales': self.stream.controlnet_scales.copy(),
+                'preprocessors': self.stream.preprocessors.copy()
+            }
         
-        # Regenerate resolution-dependent tensors
-        self._regenerate_resolution_tensors()
+        # Store TensorRT engine pool if present
+        controlnet_engine_pool = getattr(self.stream, 'controlnet_engine_pool', None)
         
-        # Update ControlNet inputs if using ControlNet
-        self._update_controlnet_inputs(new_width, new_height)
+        # Create new StreamDiffusion instance with new resolution
+        from streamdiffusion.pipeline import StreamDiffusion
+        new_stream = StreamDiffusion(
+            pipe=pipe,
+            t_index_list=t_index_list,
+            torch_dtype=torch_dtype,
+            width=new_width,
+            height=new_height,
+            do_add_noise=do_add_noise,
+            use_denoising_batch=use_denoising_batch,
+            frame_buffer_size=frame_buffer_size,
+            cfg_type=cfg_type,
+            normalize_weights=current_normalize_weights,
+        )
         
-        print(f"Resolution updated successfully. New latent dimensions: {latent_width}x{latent_height}")
-    
-    def _regenerate_resolution_tensors(self) -> None:
-        """Regenerate all resolution-dependent tensors after resolution change."""
-        # Regenerate init_noise with new dimensions
-        if hasattr(self.stream, 'generator') and self.stream.generator is not None:
-            self.stream.init_noise = torch.randn(
-                (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
-                generator=self.stream.generator,
-            ).to(device=self.stream.device, dtype=self.stream.dtype)
+        # Restore ControlNet state if present
+        if controlnet_state:
+            new_stream.controlnets = controlnet_state['controlnets']
+            new_stream.controlnet_images = controlnet_state['controlnet_images']
+            new_stream.controlnet_scales = controlnet_state['controlnet_scales']
+            new_stream.preprocessors = controlnet_state['preprocessors']
             
-            # Reset stock_noise to match new init_noise
-            self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+            # Update ControlNet engine pool dimensions
+            # if controlnet_engine_pool:
+                # controlnet_engine_pool.update_dimensions(new_width, new_height)
+                # new_stream.controlnet_engine_pool = controlnet_engine_pool
         
-        # Update x_t_latent_buffer if it exists
-        if hasattr(self.stream, 'x_t_latent_buffer') and self.stream.x_t_latent_buffer is not None:
-            if self.stream.denoising_steps_num > 1:
-                self.stream.x_t_latent_buffer = torch.zeros(
-                    (
-                        (self.stream.denoising_steps_num - 1) * self.stream.frame_bff_size,
-                        4,
-                        self.stream.latent_height,
-                        self.stream.latent_width,
-                    ),
-                    dtype=self.stream.dtype,
-                    device=self.stream.device,
-                )
+        # Replace the stream instance
+        self.stream = new_stream
         
-        # Clear any cached tensors that depend on resolution
-        if hasattr(self.stream, '_cached_tensors'):
-            self.stream._cached_tensors.clear()
+        # Restore prompt blending state
+        if current_prompt_list:
+            self._current_prompt_list = current_prompt_list
+            self._current_negative_prompt = current_negative_prompt
+            self._apply_prompt_blending("slerp")  # Default interpolation method
         
-        print(f"Resolution-dependent tensors regenerated for {self.stream.width}x{self.stream.height}")
+        # Restore seed blending state
+        if current_seed_list:
+            self._current_seed_list = current_seed_list
+            self._apply_seed_blending("linear")  # Default interpolation method
+        
+        # Prepare the new stream with current parameters
+        new_stream.prepare(
+            prompt="",  # Will be set by prompt blending if needed
+            negative_prompt=current_negative_prompt,
+            num_inference_steps=50,  # Default value
+            guidance_scale=current_guidance_scale,
+            delta=current_delta,
+            generator=current_generator,
+            seed=current_seed,
+        )
+        
+        print(f"Resolution updated successfully. New latent dimensions: {new_stream.latent_width}x{new_stream.latent_height}")
+        return new_stream
+
+    def _regenerate_resolution_tensors(self) -> None:
+        """This method is no longer used - resolution updates now restart the pipeline"""
+        pass
 
     def _update_controlnet_inputs(self, width: int, height: int) -> None:
-        """Update ControlNet input dimensions when resolution changes."""
-        if not hasattr(self.stream, 'pipe') or not hasattr(self.stream.pipe, 'unet'):
-            return
-        
-        # Check if we're using ControlNet
-        unet = self.stream.pipe.unet
-        if not hasattr(unet, 'config') or not hasattr(unet.config, 'addition_embed_type'):
-            return
-        
-        # If using ControlNet, we need to update the ControlNet input dimensions
-        # This is a complex operation that may require rebuilding the pipeline
-        # For now, we'll log a warning and suggest restarting the pipeline
-        print("WARNING: Resolution change with ControlNet detected.")
-        print("ControlNet inputs have specific spatial dimensions that depend on resolution.")
-        print("For best results with ControlNet, please restart the pipeline after changing resolution.")
-        
-        # Try to update ControlNet inputs if possible
-        try:
-            if hasattr(self.stream, 'controlnet_inputs'):
-                # Recalculate ControlNet input dimensions
-                self._recalculate_controlnet_inputs(width, height)
-        except Exception as e:
-            print(f"Failed to update ControlNet inputs: {e}")
-            print("Please restart the pipeline for resolution changes with ControlNet.")
-    
+        """This method is no longer used - resolution updates now restart the pipeline"""
+        pass
+
     def _recalculate_controlnet_inputs(self, width: int, height: int) -> None:
-        """Recalculate ControlNet input dimensions for the new resolution."""
-        if not hasattr(self.stream, 'controlnet_inputs'):
-            return
-        
-        # This is a placeholder for ControlNet input recalculation
-        # The actual implementation would depend on the specific ControlNet setup
-        # For now, we'll just clear the cached inputs to force recalculation
-        if hasattr(self.stream, 'controlnet_inputs'):
-            delattr(self.stream, 'controlnet_inputs')
-        
-        print(f"ControlNet inputs cleared for resolution {width}x{height}")
-        print("ControlNet inputs will be recalculated on next inference.")
+        """This method is no longer used - resolution updates now restart the pipeline"""
+        pass
 
     @torch.no_grad()
     def update_prompt_at_index(

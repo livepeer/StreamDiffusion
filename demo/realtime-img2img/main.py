@@ -45,8 +45,6 @@ class App:
         # Store current resolution for pipeline recreation
         self.new_width = 512
         self.new_height = 512
-        # Add flag for resolution changes
-        self.resolution_needs_reload = False  # Track when resolution changes require pipeline restart
         self.init_app()
 
     def init_app(self):
@@ -146,7 +144,7 @@ class App:
         @self.app.get("/api/stream/{user_id}")
         async def stream(user_id: uuid.UUID, request: Request):
             try:
-                # Create pipeline if it doesn't exist yet or needs recreation
+                # Create pipeline if it doesn't exist yet
                 if self.pipeline is None:
                     if self.uploaded_controlnet_config:
                         print("stream: Creating pipeline with ControlNet config...")
@@ -156,16 +154,12 @@ class App:
                         self.pipeline = self._create_default_pipeline()
                     print("stream: Pipeline created successfully")
                 
-                # Recreate pipeline if config changed or resolution changed
+                # Recreate pipeline if config changed (but not resolution - that's handled separately)
                 elif (self.config_needs_reload or 
-                      self.resolution_needs_reload or 
                       (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config))):
                     
                     if self.config_needs_reload:
                         print("stream: Recreating pipeline with new ControlNet config...")
-                    elif self.resolution_needs_reload:
-                        print(f"stream: Recreating pipeline with new resolution {self.new_width}x{self.new_height}...")
-                        self.pipeline = self._create_pipeline_with_config()
                     else:
                         print("stream: Upgrading to ControlNet pipeline...")
                     
@@ -175,7 +169,6 @@ class App:
                         self.pipeline = self._create_default_pipeline()
                     
                     self.config_needs_reload = False  # Reset the flag
-                    self.resolution_needs_reload = False  # Reset the flag
                     print("stream: Pipeline recreated successfully")
 
                 async def generate():
@@ -205,6 +198,9 @@ class App:
                         yield frame
                         if self.args.debug:
                             print(f"Time taken: {time.time() - frame_start_time}")
+                        
+                        # Add delay for testing - 1 frame per second
+                        # await asyncio.sleep(1.0)
 
                 return StreamingResponse(
                     generate(),
@@ -635,7 +631,7 @@ class App:
 
         @self.app.post("/api/update-resolution")
         async def update_resolution(request: Request):
-            """Update resolution (width x height) in real-time or by restarting the pipeline"""
+            """Update resolution (width x height) by creating a new pipeline"""
             try:
                 data = await request.json()
                 resolution_str = data.get('resolution')
@@ -663,106 +659,24 @@ class App:
                 
                 print(f"API: Updating resolution from {self.new_width}x{self.new_height} to {width}x{height}")
                 
-                # Try live update first
+                # Create new pipeline with new resolution
                 try:
-                    if self.pipeline and hasattr(self.pipeline.stream, 'update_stream_params'):
-                        # Check if using ControlNet
-                        using_controlnet = False
-                        if hasattr(self.pipeline.stream, 'pipe') and hasattr(self.pipeline.stream.pipe, 'unet'):
-                            unet = self.pipeline.stream.pipe.unet
-                            if hasattr(unet, 'config') and hasattr(unet.config, 'addition_embed_type'):
-                                using_controlnet = True
-                        
-                        # Check if using TensorRT acceleration (same logic as ControlNet pipeline)
-                        using_tensorrt = False
-                        if hasattr(self.pipeline.stream, 'unet'):
-                            unet = self.pipeline.stream.unet
-                            # Check if UNet is a TensorRT engine (UNet2DConditionModelEngine)
-                            if hasattr(unet, '__class__') and 'UNet2DConditionModelEngine' in str(unet.__class__):
-                                using_tensorrt = True
-                            # Also check for engine attribute or use_control attribute as fallback
-                            elif hasattr(unet, 'engine') or hasattr(unet, 'use_control'):
-                                using_tensorrt = True
-                        
-                        # If using ControlNet with TensorRT, resolution changes require restart
-                        if using_controlnet and using_tensorrt:
-                            # Mark for pipeline restart
-                            self.resolution_needs_reload = True
-                            self.new_width = width
-                            self.new_height = height
-                            
-                            return JSONResponse({
-                                "success": True,
-                                "detail": f"Resolution change requires pipeline restart. Will apply {width}x{height} on next stream start.",
-                                "method": "pipeline_restart",
-                                "warning": "ControlNet TensorRT engines require restart for resolution changes"
-                            })
-                        
-                        # Attempt live resolution update
-                        self.pipeline.stream.update_stream_params(width=width, height=height)
-                        
-                        # Update current resolution
-                        self.new_width = width
-                        self.new_height = height
-                        
-                        print(f"API: Live resolution update successful: {width}x{height}")
-                        return JSONResponse({
-                            "success": True, 
-                            "detail": f"Resolution updated to {width}x{height}",
-                            "method": "live_update"
-                        })
+                    self._update_resolution(width, height)
                     
-                except Exception as live_update_error:
-                    print(f"API: Live resolution update failed: {live_update_error}")
+                    print(f"API: Resolution update successful: {width}x{height}")
+                    return JSONResponse({
+                        "success": True,
+                        "detail": f"Resolution updated to {width}x{height}",
+                        "method": "pipeline_recreation"
+                    })
                     
-                    # Check if it's a TensorRT dimension error
-                    error_str = str(live_update_error)
-                    if ("H_64x64" in error_str or "Dimensions with name" in error_str or 
-                        "Internal Error" in error_str or "Error Code 7" in error_str or
-                        "CHECK_EQUAL" in error_str or "must be equal" in error_str):
-                        # This is a TensorRT engine dimension constraint error
-                        # Mark for pipeline restart
-                        self.resolution_needs_reload = True
-                        self.new_width = width
-                        self.new_height = height
-                        
-                        return JSONResponse({
-                            "success": True,
-                            "detail": f"Resolution change requires pipeline restart due to TensorRT engine constraints. Will apply {width}x{height} on next stream start.",
-                            "method": "pipeline_restart",
-                            "warning": "TensorRT engines require restart for resolution changes",
-                            "error": str(live_update_error)
-                        })
-                    
-                    # For other errors, try pipeline restart
-                    try:
-                        print("API: Attempting pipeline restart for resolution change...")
-                        self._restart_pipeline_with_resolution(width, height)
-                        
-                        print(f"API: Pipeline restart successful: {width}x{height}")
-                        return JSONResponse({
-                            "success": True,
-                            "detail": f"Resolution updated to {width}x{height} via pipeline restart",
-                            "method": "pipeline_restart"
-                        })
-                        
-                    except Exception as restart_error:
-                        print(f"API: Pipeline restart failed: {restart_error}")
-                        return JSONResponse({
-                            "success": False,
-                            "detail": f"Failed to update resolution: {restart_error}",
-                            "method": "failed"
-                        }, status_code=500)
-                
-                # If no stream exists, just store the resolution for next start
-                self.new_width = width
-                self.new_height = height
-                
-                return JSONResponse({
-                    "success": True,
-                    "detail": f"Resolution {width}x{height} stored for next stream start",
-                    "method": "stored"
-                })
+                except Exception as update_error:
+                    print(f"API: Resolution update failed: {update_error}")
+                    return JSONResponse({
+                        "success": False,
+                        "detail": f"Failed to update resolution: {update_error}",
+                        "method": "failed"
+                    }, status_code=500)
                 
             except Exception as e:
                 print(f"API: Resolution update error: {e}")
@@ -1387,92 +1301,54 @@ class App:
         
         return f"{simplified_width}:{simplified_height}"
 
-    def _restart_pipeline_with_resolution(self, width: int, height: int) -> None:
-        """Restart the pipeline with new resolution when live updates fail."""
-        if not self.pipeline:
-            raise RuntimeError("No pipeline to restart")
-        
-        print(f"Restarting pipeline with resolution {width}x{height}")
+    def _update_resolution(self, width: int, height: int) -> None:
+        """Create a new pipeline with the specified resolution and replace the old one."""
+        print(f"Creating new pipeline with resolution {width}x{height}")
         
         # Store current pipeline state
-        current_prompt = getattr(self.pipeline, 'current_prompt', '')
-        current_negative_prompt = getattr(self.pipeline, 'current_negative_prompt', '')
-        current_guidance_scale = getattr(self.pipeline, 'current_guidance_scale', 1.2)
-        current_num_inference_steps = getattr(self.pipeline, 'current_num_inference_steps', 50)
+        current_prompt = getattr(self.pipeline, 'prompt', '')
+        current_negative_prompt = getattr(self.pipeline, 'negative_prompt', '')
+        current_guidance_scale = getattr(self.pipeline, 'guidance_scale', 1.2)
+        current_num_inference_steps = getattr(self.pipeline, 'num_inference_steps', 50)
         
-        # Stop current stream if running
-        if hasattr(self, 'stream_active') and self.stream_active:
-            self.stream_active = False
-            print("Stopping current stream for restart...")
+        # Update current resolution BEFORE creating new pipeline
+        self.new_width = width
+        self.new_height = height
         
-        # Recreate pipeline with new resolution
-        try:
-            # Recreate the pipeline with new dimensions
-            self.pipeline = self._create_pipeline(width, height)
-            
-            # Restore pipeline state
-            if current_prompt:
-                self.pipeline.prepare(
-                    prompt=current_prompt,
-                    negative_prompt=current_negative_prompt,
-                    guidance_scale=current_guidance_scale,
-                    num_inference_steps=current_num_inference_steps
-                )
-            
-            # Update current resolution
-            self.new_width = width
-            self.new_height = height
-            
-            print(f"Pipeline restarted successfully with resolution {width}x{height}")
-            
-        except Exception as e:
-            print(f"Failed to restart pipeline: {e}")
-            raise RuntimeError(f"Pipeline restart failed: {e}")
-    
-    def _create_pipeline(self, width: int, height: int):
-        """Create a new pipeline with specified resolution."""
-        # This method should recreate the pipeline with the new resolution
-        # Implementation depends on how the pipeline was originally created
-        # For now, we'll use a simplified approach
+        # Create new pipeline with new resolution
+        if self.uploaded_controlnet_config:
+            new_pipeline = self._create_pipeline_with_config()
+        else:
+            new_pipeline = self._create_default_pipeline()
         
-        # Import the wrapper
-        from streamdiffusion import StreamDiffusionWrapper
+        # Replace old pipeline
+        old_pipeline = self.pipeline
+        self.pipeline = new_pipeline
         
-        # Create new wrapper with updated resolution
-        wrapper = StreamDiffusionWrapper(
-            model_id_or_path=self.model_id,
-            t_index_list=self.t_index_list,
-            lora_dict=self.lora_dict,
-            mode=self.mode,
-            output_type=self.output_type,
-            lcm_lora_id=self.lcm_lora_id,
-            vae_id=self.vae_id,
-            device=self.device,
-            dtype=self.dtype,
-            frame_buffer_size=self.frame_buffer_size,
-            width=width,
-            height=height,
-            warmup=self.warmup,
-            acceleration=self.acceleration,
-            do_add_noise=self.do_add_noise,
-            device_ids=self.device_ids,
-            use_lcm_lora=self.use_lcm_lora,
-            use_tiny_vae=self.use_tiny_vae,
-            enable_similar_image_filter=self.enable_similar_image_filter,
-            similar_image_filter_threshold=self.similar_image_filter_threshold,
-            similar_image_filter_max_skip_frame=self.similar_image_filter_max_skip_frame,
-            use_denoising_batch=self.use_denoising_batch,
-            cfg_type=self.cfg_type,
-            seed=self.seed,
-            use_safety_checker=self.use_safety_checker,
-            engine_dir=self.engine_dir,
-            build_engines_if_missing=self.build_engines_if_missing,
-            normalize_weights=self.normalize_weights,
-            use_controlnet=self.use_controlnet,
-            controlnet_config=self.controlnet_config,
-        )
+        # Restore pipeline state
+        if current_prompt:
+            self.pipeline.stream.prepare(
+                prompt=current_prompt,
+                negative_prompt=current_negative_prompt,
+                guidance_scale=current_guidance_scale,
+                num_inference_steps=current_num_inference_steps
+            )
+            # Also update the pipeline's stored values
+            self.pipeline.prompt = current_prompt
+            self.pipeline.negative_prompt = current_negative_prompt
+            self.pipeline.guidance_scale = current_guidance_scale
+            self.pipeline.num_inference_steps = current_num_inference_steps
+            self.pipeline.last_prompt = current_prompt
         
-        return wrapper
+        # Clean up old pipeline
+        if old_pipeline:
+            try:
+                # Clear any references to free memory
+                del old_pipeline
+            except:
+                pass
+        
+        print(f"Pipeline updated successfully to {width}x{height}")
 
 
 app = App(config).app

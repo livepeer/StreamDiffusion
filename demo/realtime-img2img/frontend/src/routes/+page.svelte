@@ -16,6 +16,7 @@
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
   import { getPipelineValues, deboucedPipelineValues, pipelineValues } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
+  import TextArea from '$lib/components/TextArea.svelte';
 
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
@@ -92,6 +93,15 @@
 
       pipelineParams = settings.input_params.properties;
       pipelineInfo = settings.info.properties;
+      
+      // Initialize prompt value in store if not already set
+      if (!($pipelineValues.prompt)) {
+        pipelineValues.update(values => ({
+          ...values,
+          prompt: pipelineParams.prompt?.default || "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
+        }));
+      }
+      
       controlnetInfo = settings.controlnet || null;
       tIndexList = settings.t_index_list || [35, 45];
       guidanceScale = settings.guidance_scale || 1.1;
@@ -533,6 +543,15 @@
               />
             </div>
           {/if}
+
+          <!-- Prompt Input -->
+          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+            <h3 class="text-md font-medium mb-3">Prompt</h3>
+            <TextArea 
+              params={pipelineParams.prompt} 
+              bind:value={$pipelineValues.prompt} 
+            />
+          </div>
 
           <!-- Resolution Picker -->
           <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
