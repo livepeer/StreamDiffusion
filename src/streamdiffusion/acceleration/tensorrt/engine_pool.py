@@ -144,10 +144,16 @@ class ControlNetEnginePool:
         try:
             print(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for dynamic 512-1024 range")
             
-            # Use dynamic dimensions instead of fixed dimensions
-            # This matches the main UNet approach for universal engines
-            opt_height = self.image_height
-            opt_width = self.image_width
+            # Use a flexible optimal resolution that allows for dynamic changes
+            # Instead of using current dimensions as optimal, use a middle value
+            # This allows the engine to handle both smaller and larger resolutions
+            min_resolution = 512
+            max_resolution = 1024
+            opt_resolution = (min_resolution + max_resolution) // 2  # 768x768 as optimal
+            
+            # Use the flexible optimal resolution instead of current dimensions
+            opt_height = opt_resolution
+            opt_width = opt_resolution
             
             if model_type.lower() in ["sdxl", "sdxl-turbo"]:
                 embedding_dim = 2048
@@ -176,6 +182,7 @@ class ControlNetEnginePool:
             print(f"ControlNetEnginePool._compile_controlnet: ONNX path: {onnx_path}")
             print(f"ControlNetEnginePool._compile_controlnet: ONNX optimized path: {onnx_opt_path}")
             print(f"ControlNetEnginePool._compile_controlnet: Engine path: {engine_path}")
+            print(f"ControlNetEnginePool._compile_controlnet: Using flexible optimal resolution: {opt_width}x{opt_height}")
             
             builder = EngineBuilder(controlnet_model, pytorch_model, device=torch.device("cuda"))
             
@@ -185,8 +192,8 @@ class ControlNetEnginePool:
                 'opt_image_height': opt_height,
                 'opt_image_width': opt_width,
                 'build_dynamic_shape': True,  # Force dynamic shapes for universal engines
-                'min_image_resolution': 512,
-                'max_image_resolution': 1024,
+                'min_image_resolution': min_resolution,
+                'max_image_resolution': max_resolution,
                 'build_static_batch': False,  # Enable dynamic batching
             }
             

@@ -452,42 +452,35 @@ class BaseControlNetPipeline:
                                    timestep: torch.Tensor,
                                    encoder_hidden_states: torch.Tensor,
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
-        """Get combined conditioning from all active ControlNets"""
+        """Get ControlNet conditioning for the current latent and timestep"""
         if not self.controlnets:
+            print("ControlNetPipeline: No ControlNets configured, returning None")
             return None, None
         
-        # Use cached active indices if available (from recent update_control_image_efficient call)
-        if hasattr(self, '_active_indices_cache') and self._active_indices_cache:
-            # Quick validation of cached indices
-            active_indices = [
-                i for i in self._active_indices_cache 
-                if i < len(self.controlnets) and 
-                   self.controlnet_scales[i] > 0
-            ]
-        else:
-            # Fallback to full calculation
-            active_indices = [
-                i for i, (controlnet, control_image, scale) in enumerate(
-                    zip(self.controlnets, self.controlnet_images, self.controlnet_scales)
-                ) if controlnet is not None and control_image is not None and scale > 0
-            ]
+        print(f"ControlNetPipeline: Processing {len(self.controlnets)} ControlNets")
+        
+        # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
+        active_indices = [
+            i for i, (controlnet, control_image, scale) in enumerate(
+                zip(self.controlnets, self.controlnet_images, self.controlnet_scales)
+            ) if controlnet is not None and control_image is not None and scale > 0
+        ]
         
         if not active_indices:
+            print("ControlNetPipeline: No active ControlNets, returning None")
             return None, None
         
-        # Pre-compute batch expansion once for all ControlNets
-        main_batch_size = x_t_latent.shape[0]
+        print(f"ControlNetPipeline: Active ControlNet indices: {active_indices}")
         
-        # Pre-compute base controlnet_kwargs once
+        # Prepare base kwargs for ControlNet calls
+        main_batch_size = x_t_latent.shape[0]
         base_kwargs = {
             'sample': x_t_latent,
             'timestep': timestep,
             'encoder_hidden_states': encoder_hidden_states,
-            'return_dict': False,
+            **kwargs
         }
-        base_kwargs.update(self._get_additional_controlnet_kwargs(**kwargs))
         
-        # Process all active ControlNets with optimized loop
         down_samples_list = []
         mid_samples_list = []
         
@@ -495,6 +488,8 @@ class BaseControlNetPipeline:
             controlnet = self.controlnets[i]
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
+            
+            print(f"ControlNetPipeline: Processing ControlNet {i} with scale {scale}")
             
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
@@ -513,65 +508,16 @@ class BaseControlNetPipeline:
             
             # Forward pass through ControlNet
             try:
+                print(f"ControlNetPipeline: Calling ControlNet {i} with input shape: {current_control_image.shape}")
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
-                
-                '''
-                # CRITICAL FIX: Validate and correct ControlNet feature dimensions
-                # Ensure ControlNet features match UNet's expected latent space dimensions
-                expected_latent_h = x_t_latent.shape[2]  # UNet latent height
-                expected_latent_w = x_t_latent.shape[3]  # UNet latent width
-                
-                # Fix down_samples dimensions
-                if down_samples:
-                    corrected_down_samples = []
-                    for j, sample in enumerate(down_samples):
-                        current_h, current_w = sample.shape[2], sample.shape[3]
-                        
-                        # Calculate expected dimensions based on UNet downsampling factors
-                        # Standard SD UNet downsampling: 1x, 1x, 1x, 2x, 2x, 2x, 4x, 4x, 4x, 8x, 8x, 8x
-                        if j < 3:  # First 3 blocks: no downsampling from latent
-                            expected_h, expected_w = expected_latent_h, expected_latent_w
-                        elif j < 6:  # Next 3 blocks: 2x downsampling from latent
-                            expected_h, expected_w = expected_latent_h // 2, expected_latent_w // 2
-                        elif j < 9:  # Next 3 blocks: 4x downsampling from latent
-                            expected_h, expected_w = expected_latent_h // 4, expected_latent_w // 4
-                        else:  # Last 3 blocks: 8x downsampling from latent
-                            expected_h, expected_w = expected_latent_h // 8, expected_latent_w // 8
-                        
-                        # Ensure minimum dimensions (avoid 0 or negative)
-                        expected_h = max(1, expected_h)
-                        expected_w = max(1, expected_w)
-                        
-                        if current_h != expected_h or current_w != expected_w:
-                            # Interpolate to correct dimensions
-                            corrected_sample = torch.nn.functional.interpolate(
-                                sample, size=(expected_h, expected_w), 
-                                mode='bilinear', align_corners=False
-                            )
-                            corrected_down_samples.append(corrected_sample)
-                        else:
-                            corrected_down_samples.append(sample)
-                    
-                    down_samples = corrected_down_samples
-                
-                # Fix mid_sample dimensions
-                if mid_sample is not None:
-                    current_h, current_w = mid_sample.shape[2], mid_sample.shape[3]
-                    expected_h, expected_w = expected_latent_h // 8, expected_latent_w // 8  # Mid block is most downsampled
-                    expected_h, expected_w = max(1, expected_h), max(1, expected_w)
-                    
-                    if current_h != expected_h or current_w != expected_w:
-                        mid_sample = torch.nn.functional.interpolate(
-                            mid_sample, size=(expected_h, expected_w),
-                            mode='bilinear', align_corners=False
-                        )
-                '''
+                print(f"ControlNetPipeline: ControlNet {i} returned - down_blocks: {len(down_samples) if down_samples else 0}, mid_block: {mid_sample is not None}")
                 
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
             except Exception as e:
-                print(f"_get_controlnet_conditioning: ControlNet {i} failed: {e}")
+                print(f"ControlNetPipeline: ControlNet {i} failed: {e}")
                 continue
+        
         # Early exit if no outputs
         if not down_samples_list:
             return None, None
@@ -614,6 +560,8 @@ class BaseControlNetPipeline:
         """Patch for TensorRT mode with ControlNet support"""
         
         def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):
+            print(f"ControlNetPipeline: TensorRT unet_step called with latent shape: {x_t_latent.shape}")
+            
             # Handle CFG expansion (same as original)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
@@ -629,9 +577,12 @@ class BaseControlNetPipeline:
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
             # Get ControlNet conditioning
+            print(f"ControlNetPipeline: Getting ControlNet conditioning for {len(self.controlnets)} ControlNets")
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
+            
+            print(f"ControlNetPipeline: ControlNet conditioning result - down_blocks: {len(down_block_res_samples) if down_block_res_samples else 0}, mid_block: {mid_block_res_sample is not None}")
             
             # Call TensorRT engine with ControlNet inputs
             model_pred = self.stream.unet(
@@ -647,6 +598,7 @@ class BaseControlNetPipeline:
         
         # Replace the method
         self.stream.unet_step = patched_unet_step_tensorrt
+        print("ControlNetPipeline: Successfully patched TensorRT unet_step method")
 
     def _patch_pytorch_mode(self):
         """Patch for PyTorch mode with ControlNet support (original implementation)"""

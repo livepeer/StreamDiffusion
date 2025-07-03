@@ -1235,12 +1235,11 @@ class StreamDiffusionWrapper:
             if not model_id:
                 continue
 
-
             preprocessor = config.get('preprocessor', None)
             conditioning_scale = config.get('conditioning_scale', 1.0)
             enabled = config.get('enabled', True)
             preprocessor_params = config.get('preprocessor_params', None)
-
+            control_image = config.get('control_image', None)  # Extract control image from config
 
             try:
                 # Pass config dictionary directly
@@ -1252,8 +1251,8 @@ class StreamDiffusionWrapper:
                     'preprocessor_params': preprocessor_params or {}
                 }
 
-
-                controlnet_pipeline.add_controlnet(cn_config)
+                # Add ControlNet with control image if provided
+                controlnet_pipeline.add_controlnet(cn_config, control_image)
                 print(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
             except Exception as e:
                 print(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")

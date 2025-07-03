@@ -24,26 +24,32 @@ class ControlNetModelEngine:
         self._input_names = None
         self._output_names = None
     
-    def _resolve_output_shapes(self, batch_size: int) -> Dict[str, Tuple[int, ...]]:
-        """Resolve dynamic output shapes from TensorRT engine"""
+    def _resolve_output_shapes(self, batch_size: int, latent_height: int, latent_width: int) -> Dict[str, Tuple[int, ...]]:
+        """Resolve dynamic output shapes from TensorRT engine with proper spatial dimensions"""
         output_shapes = {}
         
-        # Iterate through all engine tensors to find outputs
-        for idx in range(self.engine.engine.num_io_tensors):
-            name = self.engine.engine.get_tensor_name(idx)
+        # Define output channel dimensions for each block
+        # SD 1.5 ControlNet output channels
+        down_block_channels = [320, 320, 320, 320, 640, 640, 640, 1280, 1280, 1280, 1280, 1280]
+        mid_block_channels = 1280
+        
+        # Each block has different downsampling factors from the latent
+        downsampling_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]
+        
+        # Generate output shapes for down blocks
+        for i, (channels, factor) in enumerate(zip(down_block_channels, downsampling_factors)):
+            output_name = f"down_block_{i:02d}"
             
-            # Check if this is an output tensor
-            if self.engine.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT:
-                # Get the shape with dynamic dimensions
-                dynamic_shape = self.engine.engine.get_tensor_shape(name)
-                
-                # Replace -1 dimensions with actual batch size
-                resolved_shape = tuple(
-                    batch_size if dim == -1 else dim 
-                    for dim in dynamic_shape
-                )
-                
-                output_shapes[name] = resolved_shape
+            # Calculate spatial dimensions for this block
+            h = max(1, latent_height // factor)
+            w = max(1, latent_width // factor)
+            
+            output_shapes[output_name] = (batch_size, channels, h, w)
+        
+        # Generate output shape for mid block
+        mid_h = max(1, latent_height // 8)
+        mid_w = max(1, latent_width // 8)
+        output_shapes["mid_block"] = (batch_size, mid_block_channels, mid_h, mid_w)
         
         return output_shapes
 
@@ -76,8 +82,12 @@ class ControlNetModelEngine:
         shape_dict = {name: tensor.shape for name, tensor in input_dict.items()}
         
         batch_size = sample.shape[0]
-        output_shapes = self._resolve_output_shapes(batch_size)
+        latent_height = sample.shape[2]
+        latent_width = sample.shape[3]
+        output_shapes = self._resolve_output_shapes(batch_size, latent_height, latent_width)
         shape_dict.update(output_shapes)
+        
+        print(f"ControlNetEngine: Input shapes - sample: {sample.shape}, controlnet_cond: {controlnet_cond.shape}")
         
         self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
         
@@ -93,6 +103,14 @@ class ControlNetModelEngine:
             torch.cuda.current_stream().synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
+        
+        # Log output dimensions
+        print(f"ControlNetEngine: Output dimensions:")
+        for i, block in enumerate(down_blocks):
+            if block is not None:
+                print(f"  down_block_{i:02d}: {block.shape}")
+        if mid_block is not None:
+            print(f"  mid_block: {mid_block.shape}")
         
         return down_blocks, mid_block
     
@@ -111,6 +129,7 @@ class ControlNetModelEngine:
         
         return down_blocks, mid_block
     
+
 
 
 class HybridControlNet:

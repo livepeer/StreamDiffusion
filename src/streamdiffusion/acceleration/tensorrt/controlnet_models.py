@@ -48,8 +48,8 @@ class ControlNetTRT(BaseModel):
             "encoder_hidden_states": {0: "B"},
             "timestep": {0: "B"},
             "controlnet_cond": {0: "B", 2: "H_ctrl", 3: "W_ctrl"},
-            **{f"down_block_{i:02d}": {0: "B"} for i in range(12)},
-            "mid_block": {0: "B"}
+            **{f"down_block_{i:02d}": {0: "B", 2: "H", 3: "W"} for i in range(12)},
+            "mid_block": {0: "B", 2: "H", 3: "W"}
         }
     
     def get_input_profile(self, batch_size, image_height, image_width, 
@@ -59,26 +59,33 @@ class ControlNetTRT(BaseModel):
         max_batch = batch_size if static_batch else self.max_batch
         
         # Force dynamic shapes for universal engines (512-1024 range)
-        min_ctrl_h = 256
+        min_ctrl_h = 512  # Changed from 256 to 512 to match min resolution
         max_ctrl_h = 1024
-        min_ctrl_w = 256
+        min_ctrl_w = 512  # Changed from 256 to 512 to match min resolution
         max_ctrl_w = 1024
         
-        # Ensure opt dimensions are valid and within range
-        opt_ctrl_h = min(max(image_height, min_ctrl_h), max_ctrl_h)
-        opt_ctrl_w = min(max(image_width, min_ctrl_w), max_ctrl_w)
+        # Use a flexible optimal resolution that's in the middle of the range
+        # This allows the engine to handle both smaller and larger resolutions
+        opt_ctrl_h = 768  # Middle of 512-1024 range
+        opt_ctrl_w = 768  # Middle of 512-1024 range
         
-        latent_h = opt_ctrl_h // 8
-        latent_w = opt_ctrl_w // 8
+        # Calculate latent dimensions
         min_latent_h = min_ctrl_h // 8  # 64
         max_latent_h = max_ctrl_h // 8  # 128
         min_latent_w = min_ctrl_w // 8  # 64
         max_latent_w = max_ctrl_w // 8  # 128
+        opt_latent_h = opt_ctrl_h // 8  # 96
+        opt_latent_w = opt_ctrl_w // 8  # 96
         
-        return {
+        # Define output channel dimensions for each block
+        # SD 1.5 ControlNet output channels
+        down_block_channels = [320, 320, 320, 320, 640, 640, 640, 1280, 1280, 1280, 1280, 1280]
+        mid_block_channels = 1280
+        
+        profile = {
             "sample": [
                 (min_batch, self.unet_dim, min_latent_h, min_latent_w),
-                (batch_size, self.unet_dim, latent_h, latent_w),
+                (batch_size, self.unet_dim, opt_latent_h, opt_latent_w),
                 (max_batch, self.unet_dim, max_latent_h, max_latent_w),
             ],
             "timestep": [
@@ -95,6 +102,45 @@ class ControlNetTRT(BaseModel):
                 (max_batch, 3, max_ctrl_h, max_ctrl_w),
             ],
         }
+        
+        # Add output profiles for each down block with proper spatial dimensions
+        # Each block has different downsampling factors from the latent
+        downsampling_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]
+        
+        for i, (channels, factor) in enumerate(zip(down_block_channels, downsampling_factors)):
+            output_name = f"down_block_{i:02d}"
+            
+            # Calculate spatial dimensions for this block
+            min_h = max(1, min_latent_h // factor)
+            max_h = max(1, max_latent_h // factor)
+            opt_h = max(1, opt_latent_h // factor)
+            
+            min_w = max(1, min_latent_w // factor)
+            max_w = max(1, max_latent_w // factor)
+            opt_w = max(1, opt_latent_w // factor)
+            
+            profile[output_name] = [
+                (min_batch, channels, min_h, min_w),
+                (batch_size, channels, opt_h, opt_w),
+                (max_batch, channels, max_h, max_w),
+            ]
+        
+        # Add mid block output profile
+        mid_min_h = max(1, min_latent_h // 8)
+        mid_max_h = max(1, max_latent_h // 8)
+        mid_opt_h = max(1, opt_latent_h // 8)
+        
+        mid_min_w = max(1, min_latent_w // 8)
+        mid_max_w = max(1, max_latent_w // 8)
+        mid_opt_w = max(1, opt_latent_w // 8)
+        
+        profile["mid_block"] = [
+            (min_batch, mid_block_channels, mid_min_h, mid_min_w),
+            (batch_size, mid_block_channels, mid_opt_h, mid_opt_w),
+            (max_batch, mid_block_channels, mid_max_h, mid_max_w),
+        ]
+        
+        return profile
     
     def get_sample_input(self, batch_size, image_height, image_width):
         """Generate sample inputs for ONNX export"""
@@ -147,6 +193,60 @@ class ControlNetSDXLTRT(ControlNetTRT):
         
         min_batch = batch_size if static_batch else self.min_batch
         max_batch = batch_size if static_batch else self.max_batch
+        
+        # Override output profiles for SDXL (different channel dimensions)
+        # SDXL ControlNet output channels
+        down_block_channels = [320, 320, 320, 320, 640, 640, 640, 1280, 1280, 1280, 1280, 1280]
+        mid_block_channels = 1280
+        
+        # Calculate latent dimensions
+        min_ctrl_h, max_ctrl_h = 512, 1024
+        opt_ctrl_h = 768
+        min_ctrl_w, max_ctrl_w = 512, 1024
+        opt_ctrl_w = 768
+        
+        min_latent_h = min_ctrl_h // 8
+        max_latent_h = max_ctrl_h // 8
+        opt_latent_h = opt_ctrl_h // 8
+        min_latent_w = min_ctrl_w // 8
+        max_latent_w = max_ctrl_w // 8
+        opt_latent_w = opt_ctrl_w // 8
+        
+        # Add output profiles for each down block with proper spatial dimensions
+        downsampling_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]
+        
+        for i, (channels, factor) in enumerate(zip(down_block_channels, downsampling_factors)):
+            output_name = f"down_block_{i:02d}"
+            
+            # Calculate spatial dimensions for this block
+            min_h = max(1, min_latent_h // factor)
+            max_h = max(1, max_latent_h // factor)
+            opt_h = max(1, opt_latent_h // factor)
+            
+            min_w = max(1, min_latent_w // factor)
+            max_w = max(1, max_latent_w // factor)
+            opt_w = max(1, opt_latent_w // factor)
+            
+            base_profile[output_name] = [
+                (min_batch, channels, min_h, min_w),
+                (batch_size, channels, opt_h, opt_w),
+                (max_batch, channels, max_h, max_w),
+            ]
+        
+        # Add mid block output profile
+        mid_min_h = max(1, min_latent_h // 8)
+        mid_max_h = max(1, max_latent_h // 8)
+        mid_opt_h = max(1, opt_latent_h // 8)
+        
+        mid_min_w = max(1, min_latent_w // 8)
+        mid_max_w = max(1, max_latent_w // 8)
+        mid_opt_w = max(1, opt_latent_w // 8)
+        
+        base_profile["mid_block"] = [
+            (min_batch, mid_block_channels, mid_min_h, mid_min_w),
+            (batch_size, mid_block_channels, mid_opt_h, mid_opt_w),
+            (max_batch, mid_block_channels, mid_max_h, mid_max_w),
+        ]
         
         base_profile.update({
             "text_embeds": [
