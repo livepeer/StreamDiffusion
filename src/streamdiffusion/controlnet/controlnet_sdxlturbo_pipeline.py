@@ -7,7 +7,7 @@ from ..pipeline import StreamDiffusion
 from .base_controlnet_pipeline import BaseControlNetPipeline
 
 class SDXLTurboControlNetPipeline(BaseControlNetPipeline):
-    """SDXL Turbo ControlNet pipeline using StreamDiffusion"""
+    """SDXL Turbo ControlNet pipeline using StreamDiffusion with inter-frame parallelism"""
     
     def __init__(self, 
                  stream_diffusion: StreamDiffusion,
@@ -15,7 +15,7 @@ class SDXLTurboControlNetPipeline(BaseControlNetPipeline):
                  dtype: torch.dtype = torch.float16,
                  model_type: str = "SDXL Turbo"):
         """Initialize SDXL Turbo ControlNet pipeline"""
-        super().__init__(stream_diffusion, device, dtype)
+        super().__init__(stream_diffusion, device, dtype, use_pipelined_processing=True)
         self.model_type = model_type
 
     @property
