@@ -362,6 +362,28 @@ class App:
                 # Get acceleration from config if available
                 config_acceleration = config_data.get('acceleration', self.args.acceleration)
                 
+                # Get width and height from config if available
+                config_width = config_data.get('width', None)
+                config_height = config_data.get('height', None)
+                
+                # Update resolution if width/height are specified in config
+                if config_width is not None and config_height is not None:
+                    try:
+                        # Validate resolution
+                        if config_width % 64 != 0 or config_height % 64 != 0:
+                            raise HTTPException(status_code=400, detail="Resolution must be multiples of 64")
+                        
+                        if not (512 <= config_width <= 1024) or not (512 <= config_height <= 1024):
+                            raise HTTPException(status_code=400, detail="Resolution must be between 512 and 1024")
+                        
+                        # Update the resolution
+                        self.new_width = config_width
+                        self.new_height = config_height
+                        print(f"upload_controlnet_config: Updated resolution to {config_width}x{config_height}")
+                    except Exception as e:
+                        logging.error(f"upload_controlnet_config: Failed to update resolution: {e}")
+                        # Don't fail the upload, just log the error
+                
                 # Normalize prompt and seed configurations for frontend
                 normalized_prompt_blending = self._normalize_prompt_config(config_data)
                 normalized_seed_blending = self._normalize_seed_config(config_data)
@@ -381,6 +403,12 @@ class App:
                 # Get normalization settings
                 config_normalize_weights = config_data.get('normalize_weights', True)
                 
+                # Calculate current resolution string for frontend
+                current_resolution = f"{self.new_width}x{self.new_height}"
+                aspect_ratio = self._calculate_aspect_ratio(self.new_width, self.new_height)
+                if aspect_ratio:
+                    current_resolution += f" ({aspect_ratio})"
+                
                 return JSONResponse({
                     "status": "success",
                     "message": "ControlNet configuration uploaded successfully",
@@ -397,6 +425,7 @@ class App:
                     "seed_blending": normalized_seed_blending,
                     "normalize_prompt_weights": config_normalize_weights,
                     "normalize_seed_weights": config_normalize_weights,
+                    "current_resolution": current_resolution,  # Include updated resolution
                 })
                 
             except Exception as e:

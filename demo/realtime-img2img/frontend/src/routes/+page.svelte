@@ -204,11 +204,11 @@
       
       if (response.ok) {
         const result = await response.json();
-        console.log('Resolution updated:', result.width + 'x' + result.height);
+        console.log('Resolution updated successfully:', result.detail);
         
         // Show success message - no restart needed for real-time updates
-        if (result.message) {
-          warningMessage = result.message;
+        if (result.detail) {
+          warningMessage = result.detail;
           // Clear message after a few seconds
           setTimeout(() => {
             warningMessage = '';
@@ -425,6 +425,15 @@
             ...values,
             prompt: result.config_prompt
           }));
+        }
+        
+        // Update resolution if config resolution is available
+        if (result.current_resolution) {
+          pipelineValues.update(values => ({
+            ...values,
+            resolution: result.current_resolution
+          }));
+          console.log('uploadConfig: Updated resolution to:', result.current_resolution);
         }
         
         setTimeout(() => {
