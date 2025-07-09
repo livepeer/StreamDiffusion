@@ -64,18 +64,21 @@ class IPAdapterUNetWrapper(torch.nn.Module):
                 processor_class = processor.__class__.__name__
                 if 'IPAttn' in processor_class or 'IPAttnProcessor' in processor_class:
                     # Convert IPAdapter processors to float32 for ONNX consistency
+                    # This preserves the weights while updating dtype
                     updated_processors[name] = processor.to(dtype=torch.float32)
                     print(f"IPAdapterUNetWrapper: Updated processor {name} to float32")
                 else:
+                    # Keep standard processors as-is
                     updated_processors[name] = processor
             
-            # Only update if we made changes
-            if updated_processors:
-                self.unet.set_attn_processor(updated_processors)
-                print("IPAdapterUNetWrapper: Updated IPAdapter processors for ONNX compatibility")
+            # Update all processors to ensure consistency
+            self.unet.set_attn_processor(updated_processors)
+            print("IPAdapterUNetWrapper: Updated IPAdapter processors for ONNX compatibility")
                 
         except Exception as e:
             print(f"IPAdapterUNetWrapper: Error updating processor dtypes: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _install_ipadapter_processors(self):
         """

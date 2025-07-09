@@ -30,7 +30,7 @@ def main():
     original_scale = config.get('ipadapters', [{}])[0].get('scale', 1.0)
     
     # Define strength values to test
-    strength_values = [0.0, 0.5, 1.0, original_scale]
+    strength_values = [original_scale]
     
     # Load input image for img2img transformation
     input_image_path = os.path.join(CURRENT_DIR, "..", "..", "images", "inputs", "hand_up512.png")
