@@ -2,7 +2,7 @@
 # This demonstrates how to configure IPAdapter for image-to-image mode
 
 # Base model configuration
-model_id: "runwayml/stable-diffusion-v1-5"
+model_id: "C:\\_dev\\comfy\\ComfyUI\\models\\checkpoints\\perfectPhotonPerfect_perfectPhotonV21.safetensors"
 device: "cuda"
 dtype: "float16"
 width: 512
@@ -13,7 +13,7 @@ mode: "img2img"  # Changed from txt2img to img2img
 t_index_list: [16, 32, 45]  # Different t_index_list for img2img (closer to img2img examples)
 frame_buffer_size: 1
 warmup: 10
-acceleration: "tensorrt"
+acceleration: "xformers"
 use_denoising_batch: true    # img2img typically uses denoising batch
 cfg_type: "none"             # img2img uses "self" instead of "none"
 seed: 42
@@ -34,5 +34,7 @@ ipadapters:
   - ipadapter_model_path: "h94/IP-Adapter"  # Auto-downloads ip-adapter_sd15.bin
     image_encoder_path: "h94/IP-Adapter"    # Auto-downloads image_encoder
     style_image: "../../images/inputs/gold.jpg"  # Style reference image (IPAdapter conditioning)
-    scale: 0.7  # Slightly lower scale for img2img to balance with input image
+    scale: 0.0  # Slightly lower scale for img2img to balance with input image
     enabled: true
+
+# python ipadapter_img2img_config_example.py --config .\ipadapter_img2img_config_example.yaml --input-image  ..\..\..\input\hand_up512.png
