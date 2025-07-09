@@ -11,7 +11,12 @@ current_dir = Path(__file__).parent
 ipadapter_path = current_dir / "Diffusers_IPAdapter"
 sys.path.insert(0, str(ipadapter_path))
 
-from ip_adapter.ip_adapter import IPAdapter
+try:
+    from ip_adapter.ip_adapter import IPAdapter
+except ImportError:
+    print("Warning: IPAdapter not found. Please install Diffusers_IPAdapter.")
+    raise
+
 from ..pipeline import StreamDiffusion
 
 class BaseIPAdapterPipeline:
