@@ -11,12 +11,7 @@ current_dir = Path(__file__).parent
 ipadapter_path = current_dir / "Diffusers_IPAdapter"
 sys.path.insert(0, str(ipadapter_path))
 
-try:
-    from ip_adapter.ip_adapter import IPAdapter
-except ImportError:
-    print("Warning: IPAdapter not found. Please install Diffusers_IPAdapter.")
-    raise
-
+from ip_adapter.ip_adapter import IPAdapter
 from ..pipeline import StreamDiffusion
 
 class BaseIPAdapterPipeline:
@@ -238,8 +233,6 @@ class BaseIPAdapterPipeline:
             return
         
         # Get IPAdapter image embeddings only (without text)
-        # NOTE: Don't manually scale embeddings - the IPAdapter's attention processors
-        # handle scaling internally via set_scale() method
         image_prompt_embeds, negative_image_prompt_embeds = first_ipadapter.get_image_embeds(
             images=active_images
         )
@@ -260,17 +253,16 @@ class BaseIPAdapterPipeline:
             print("_update_stream_embeddings: Warning - No original prompt embeddings found")
             return
         
-        #print(f"_update_stream_embeddings: Original prompt embeds shape: {original_prompt_embeds.shape}")
-        #print(f"_update_stream_embeddings: Image prompt embeds shape: {image_prompt_embeds.shape}")
-        #print(f"_update_stream_embeddings: IPAdapter scale handled by attention processors: {self.scales[0] if self.scales else 1.0}")
-        #if original_negative_prompt_embeds is not None:
-            #print(f"_update_stream_embeddings: Original negative embeds shape: {original_negative_prompt_embeds.shape}")
-        #print(f"_update_stream_embeddings: Negative image embeds shape: {negative_image_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Original prompt embeds shape: {original_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Image prompt embeds shape: {image_prompt_embeds.shape}")
+        if original_negative_prompt_embeds is not None:
+            print(f"_update_stream_embeddings: Original negative embeds shape: {original_negative_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Negative image embeds shape: {negative_image_prompt_embeds.shape}")
         
         # Detect TensorRT mode (same pattern as ControlNet)
         is_tensorrt = hasattr(self.stream.unet, 'engine') or hasattr(self.stream, 'unet_engine')
         
-        #print(f"_update_stream_embeddings: TensorRT mode detected: {is_tensorrt}")
+        print(f"_update_stream_embeddings: TensorRT mode detected: {is_tensorrt}")
         
         # Ensure image embeddings have the same batch size as original embeddings
         batch_size = original_prompt_embeds.shape[0]
@@ -294,8 +286,8 @@ class BaseIPAdapterPipeline:
             combined_negative_prompt_embeds = torch.cat([original_prompt_embeds, negative_image_prompt_embeds], dim=1)
         
         # Update StreamDiffusion embeddings with the combined embeddings
-        #print(f"_update_stream_embeddings: Combined prompt embeds shape: {combined_prompt_embeds.shape}")
-        #print(f"_update_stream_embeddings: Combined negative embeds shape: {combined_negative_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Combined prompt embeds shape: {combined_prompt_embeds.shape}")
+        print(f"_update_stream_embeddings: Combined negative embeds shape: {combined_negative_prompt_embeds.shape}")
         
         self.stream.prompt_embeds = combined_prompt_embeds
         self.stream.negative_prompt_embeds = combined_negative_prompt_embeds
@@ -303,12 +295,12 @@ class BaseIPAdapterPipeline:
         # Update token count for attention processors
         total_tokens = combined_prompt_embeds.shape[1]
         first_ipadapter.set_tokens(image_prompt_embeds.shape[0] * first_ipadapter.num_tokens)
-        #print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * first_ipadapter.num_tokens}")
+        print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * first_ipadapter.num_tokens}")
         
-        # if is_tensorrt:
-        #     print("_update_stream_embeddings: TensorRT mode - using concatenated embeddings (same as PyTorch)")
-        # else:
-        #     print("_update_stream_embeddings: PyTorch mode - using concatenated embeddings")
+        if is_tensorrt:
+            print("_update_stream_embeddings: TensorRT mode - using concatenated embeddings (same as PyTorch)")
+        else:
+            print("_update_stream_embeddings: PyTorch mode - using concatenated embeddings")
     
     def prepare(self, *args, **kwargs):
         """Forward prepare calls to the underlying StreamDiffusion"""
