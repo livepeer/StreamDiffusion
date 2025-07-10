@@ -7,7 +7,7 @@ from PIL import Image
 # Add paths to import from parent directories
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.streamdiffusion.controlnet.config import create_wrapper_from_config, load_config
+from src.streamdiffusion.config import create_wrapper_from_config, load_config
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CURRENT_DIR, "ipadapter_img2img_config_example.yaml")
