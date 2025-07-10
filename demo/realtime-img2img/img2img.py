@@ -95,6 +95,8 @@ class Pipeline:
         self.config = None
         self.use_config = False
         self.pipeline_mode = "img2img"  # default mode
+        self.has_controlnet = False
+        self.has_ipadapter = False
 
         if args.controlnet_config:
             try:
@@ -105,6 +107,23 @@ class Pipeline:
                 # Check mode from config
                 self.pipeline_mode = self.config.get('mode', 'img2img')
                 print(f"__init__: Pipeline mode set to {self.pipeline_mode}")
+                
+                # Check what features are enabled
+                self.has_controlnet = 'controlnets' in self.config and len(self.config['controlnets']) > 0
+                self.has_ipadapter = 'ipadapters' in self.config and len(self.config['ipadapters']) > 0
+                
+                print(f"__init__: Config keys: {list(self.config.keys())}")
+                print(f"__init__: Has 'ipadapters' key: {'ipadapters' in self.config}")
+                if 'ipadapters' in self.config:
+                    print(f"__init__: IPAdapters config: {self.config['ipadapters']}")
+                    print(f"__init__: IPAdapters length: {len(self.config['ipadapters'])}")
+                
+                if self.has_controlnet:
+                    print("__init__: ControlNet detected in configuration")
+                if self.has_ipadapter:
+                    print("__init__: IPAdapter detected in configuration")
+                else:
+                    print("__init__: IPAdapter NOT detected in configuration")
                 
             except Exception as e:
                 print(f"__init__: Failed to load config file {args.controlnet_config}: {e}")
@@ -209,18 +228,24 @@ class Pipeline:
         # Handle different modes
         if self.pipeline_mode == "txt2img":
             # Text-to-image mode
-            if self.use_config and self.config and 'controlnets' in self.config:
+            if self.has_controlnet:
                 # txt2img with ControlNets: need image for control
                 self.stream.update_control_image_efficient(params.image)
                 output_image = self.stream(params.image)
+            elif self.has_ipadapter:
+                # txt2img with IPAdapter: no input image needed (style image handled separately)
+                output_image = self.stream()
             else:
                 # Pure txt2img: no image needed
                 output_image = self.stream()
         else:
             # Image-to-image mode: use original logic
-            if self.use_config and self.config and 'controlnets' in self.config:
+            if self.has_controlnet:
                 # ControlNet mode: update control image and use PIL image
                 self.stream.update_control_image_efficient(params.image)
+                output_image = self.stream(params.image)
+            elif self.has_ipadapter:
+                # IPAdapter mode: use PIL image for img2img
                 output_image = self.stream(params.image)
             else:
                 # Standard mode: use original logic with preprocessed tensor
@@ -228,3 +253,97 @@ class Pipeline:
                 output_image = self.stream(image=image_tensor)
 
         return output_image
+
+    def update_ipadapter_scale(self, scale: float) -> bool:
+        """
+        Update IPAdapter scale/strength in real-time
+        
+        Args:
+            scale: New IPAdapter scale value
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not self.has_ipadapter:
+            print("update_ipadapter_scale: IPAdapter not enabled")
+            return False
+            
+        try:
+            # Check if the stream has update_scale method (IPAdapterPipeline)
+            if hasattr(self.stream, 'update_scale'):
+                self.stream.update_scale(scale)
+                print(f"update_ipadapter_scale: Updated IPAdapter scale to {scale}")
+                return True
+            else:
+                print("update_ipadapter_scale: Stream does not support scale updates")
+                return False
+        except Exception as e:
+            print(f"update_ipadapter_scale: Failed to update scale: {e}")
+            return False
+
+    def update_ipadapter_style_image(self, style_image: Image.Image) -> bool:
+        """
+        Update IPAdapter style image in real-time
+        
+        Args:
+            style_image: New style image (PIL Image)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        print(f"update_ipadapter_style_image: Called with image size: {style_image.size}")
+        print(f"update_ipadapter_style_image: has_ipadapter: {self.has_ipadapter}")
+        print(f"update_ipadapter_style_image: stream type: {type(self.stream)}")
+        
+        if not self.has_ipadapter:
+            print("update_ipadapter_style_image: IPAdapter not enabled")
+            return False
+            
+        try:
+            # Check if the stream has update_style_image method (IPAdapterPipeline)
+            print(f"update_ipadapter_style_image: Stream has update_style_image: {hasattr(self.stream, 'update_style_image')}")
+            
+            if hasattr(self.stream, 'update_style_image'):
+                print("update_ipadapter_style_image: Calling stream.update_style_image")
+                self.stream.update_style_image(style_image)
+                print("update_ipadapter_style_image: Updated IPAdapter style image successfully")
+                return True
+            else:
+                print("update_ipadapter_style_image: Stream does not support style image updates")
+                print(f"update_ipadapter_style_image: Available stream methods: {[method for method in dir(self.stream) if not method.startswith('_')]}")
+                return False
+        except Exception as e:
+            print(f"update_ipadapter_style_image: Failed to update style image: {type(e).__name__}: {e}")
+            import traceback
+            print(f"update_ipadapter_style_image: Traceback: {traceback.format_exc()}")
+            return False
+
+    def get_ipadapter_info(self) -> dict:
+        """
+        Get current IPAdapter information
+        
+        Returns:
+            dict: IPAdapter information including scale, model info, etc.
+        """
+        info = {
+            "enabled": self.has_ipadapter,
+            "scale": 1.0,
+            "model_path": None,
+            "style_image_set": False
+        }
+        
+        if self.has_ipadapter and self.config and 'ipadapters' in self.config:
+            # Get info from first IPAdapter config
+            if len(self.config['ipadapters']) > 0:
+                ipadapter_config = self.config['ipadapters'][0]
+                info["scale"] = ipadapter_config.get('scale', 1.0)
+                info["model_path"] = ipadapter_config.get('ipadapter_model_path')
+                info["style_image_set"] = 'style_image' in ipadapter_config
+                
+        # Try to get current scale from stream if available
+        if hasattr(self.stream, 'scale'):
+            info["scale"] = self.stream.scale
+        elif hasattr(self.stream, 'ipadapter') and hasattr(self.stream.ipadapter, 'scale'):
+            info["scale"] = self.stream.ipadapter.scale
+            
+        return info
