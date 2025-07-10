@@ -908,15 +908,18 @@ class StreamDiffusionWrapper:
                     max_batch: int,
                     min_batch_size: int,
                     ipadapter_scale: Optional[float] = None,
+                    ipadapter_tokens: Optional[int] = None,
                 ):
                     maybe_path = Path(model_id_or_path)
                     base_name = maybe_path.stem if maybe_path.exists() else model_id_or_path
                     
                     prefix = f"{base_name}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}"
                     
-                    # Add IPAdapter scale to engine name when provided
+                    # Add IPAdapter parameters to engine name when provided
                     if ipadapter_scale is not None:
                         prefix += f"--ipa{ipadapter_scale}"
+                    if ipadapter_tokens is not None:
+                        prefix += f"--tokens{ipadapter_tokens}"
                     
                     prefix += f"--mode-{self.mode}"
                     return prefix
@@ -955,7 +958,14 @@ class StreamDiffusionWrapper:
                         cross_attention_dim = stream.unet.config.cross_attention_dim
                         unet_arch = {"context_dim": cross_attention_dim}
                         print(f"IPAdapter detected - enabling TensorRT IPAdapter support for {model_type}")
-                        print(f"IPAdapter: Standard IPAdapter (4 tokens), cross_attention_dim={cross_attention_dim}")
+                        
+                        # Determine IPAdapter variant from loaded instance
+                        if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                            detected_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                            variant = "Plus" if detected_tokens == 16 else "Standard"
+                            print(f"IPAdapter: {variant} IPAdapter ({detected_tokens} tokens), cross_attention_dim={cross_attention_dim}")
+                        else:
+                            print(f"IPAdapter: cross_attention_dim={cross_attention_dim}")
                     else:
                         # ControlNet mode: Enable ControlNet support for backward compatibility
                         unet_arch = extract_unet_architecture(stream.unet)
@@ -971,9 +981,16 @@ class StreamDiffusionWrapper:
                 
                 # Get IPAdapter information from pipeline if available
                 ipadapter_scale = None
+                ipadapter_tokens = None
                 if use_ipadapter_trt and ipadapter_pipeline:
                     tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
                     ipadapter_scale = tensorrt_info.get('scale', 1.0)
+                    
+                    # Read token count from loaded IPAdapter instance
+                    if hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                        ipadapter_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                    else:
+                        ipadapter_tokens = 4  # Default fallback
                 unet_path = os.path.join(
                     engine_dir,
                     create_prefix(
@@ -981,6 +998,7 @@ class StreamDiffusionWrapper:
                         max_batch=stream.trt_unet_batch_size,
                         min_batch_size=stream.trt_unet_batch_size,
                         ipadapter_scale=ipadapter_scale,
+                        ipadapter_tokens=ipadapter_tokens,
                     ),
                     "unet.engine",
                 )
@@ -995,6 +1013,7 @@ class StreamDiffusionWrapper:
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         ipadapter_scale=ipadapter_scale,
+                        ipadapter_tokens=ipadapter_tokens,
                     ),
                     "vae_encoder.engine",
                 )
@@ -1009,6 +1028,7 @@ class StreamDiffusionWrapper:
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         ipadapter_scale=ipadapter_scale,
+                        ipadapter_tokens=ipadapter_tokens,
                     ),
                     "vae_decoder.engine",
                 )
@@ -1037,13 +1057,11 @@ class StreamDiffusionWrapper:
 
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
-                    # Get IPAdapter token count for UNet model
-                    num_image_tokens = 4  # Default to standard IPAdapter
-                    if use_ipadapter_trt and ipadapter_pipeline:
-                        tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
-                        num_image_tokens = tensorrt_info.get('num_image_tokens', 4)
+                    
+                    # Get IPAdapter token count for UNet model from loaded instance
+                    num_image_tokens = 4  # Default fallback
+                    if use_ipadapter_trt and ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                        num_image_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -1063,11 +1081,10 @@ class StreamDiffusionWrapper:
                     if use_ipadapter_trt:
                         print("Compiling UNet with IPAdapter support (baked-in processors WITH WEIGHTS)")
                         
-                        # Get IPAdapter configuration for proper token count
-                        num_tokens = 4  # Default to standard IPAdapter
-                        if ipadapter_pipeline:
-                            tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
-                            num_tokens = tensorrt_info.get('num_image_tokens', 4)
+                        # Get IPAdapter token count from loaded instance
+                        num_tokens = 4  # Default fallback
+                        if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                            num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
                         
                         # Create IPAdapter-aware wrapper with baked-in processors
                         wrapped_unet = create_ipadapter_wrapper(stream.unet, num_tokens=num_tokens)
