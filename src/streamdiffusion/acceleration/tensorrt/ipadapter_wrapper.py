@@ -17,13 +17,14 @@ class IPAdapterUNetWrapper(torch.nn.Module):
     The UNet expects concatenated embeddings (text + image) as encoder_hidden_states.
     """
     
-    def __init__(self, unet: UNet2DConditionModel, cross_attention_dim: int, num_tokens: int = 4):
+    def __init__(self, unet: UNet2DConditionModel, cross_attention_dim: int, num_tokens: int = 4, install_processors: bool = True):
         super().__init__()
         self.unet = unet
         self.num_image_tokens = num_tokens  # 4 for standard, 16 for plus
         self.cross_attention_dim = cross_attention_dim  # 768 for SD1.5, 2048 for SDXL
+        self.install_processors = install_processors
         
-        print(f"IPAdapterUNetWrapper: Baking IPAdapter processors into UNet")
+        print(f"IPAdapterUNetWrapper: Baking IPAdapter processors into UNet (install_processors={install_processors})")
         print(f"IPAdapterUNetWrapper: {self.num_image_tokens} tokens, cross_attn_dim={self.cross_attention_dim}")
         
         # Convert to float32 BEFORE installing processors (to avoid resetting them)
@@ -34,10 +35,13 @@ class IPAdapterUNetWrapper(torch.nn.Module):
         if self._has_ipadapter_processors():
             print("IPAdapterUNetWrapper: Detected existing IPAdapter processors with weights - preserving them")
             self._ensure_processor_dtype_consistency()
-        else:
+        elif install_processors:
             print("IPAdapterUNetWrapper: Installing new IPAdapter processors")
             # Install IPAdapter processors AFTER dtype conversion
             self._install_ipadapter_processors()
+        else:
+            print("IPAdapterUNetWrapper: Skipping IPAdapter processor installation (install_processors=False)")
+            print("IPAdapterUNetWrapper: WARNING - UNet will not have IPAdapter functionality without processors!")
     
     def _has_ipadapter_processors(self) -> bool:
         """Check if the UNet already has IPAdapter processors installed"""
@@ -210,17 +214,18 @@ class IPAdapterUNetWrapper(torch.nn.Module):
         )
 
 
-def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4) -> IPAdapterUNetWrapper:
+def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, install_processors: bool = True) -> IPAdapterUNetWrapper:
     """
     Create an IPAdapter wrapper with automatic architecture detection and baked-in processors.
     
     Handles both cases:
     1. UNet with pre-loaded IPAdapter processors (preserves existing weights)
-    2. UNet without IPAdapter processors (installs new ones)
+    2. UNet without IPAdapter processors (installs new ones if install_processors=True)
     
     Args:
         unet: UNet2DConditionModel to wrap
         num_tokens: Number of image tokens (4 for standard, 16 for plus)
+        install_processors: Whether to install IPAdapter processors if none exist
         
     Returns:
         IPAdapterUNetWrapper with baked-in IPAdapter attention processors
@@ -256,9 +261,9 @@ def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4) ->
             print(f"create_ipadapter_wrapper: Warning - Expected {expected_dim} for {model_type}, "
                   f"but got {cross_attention_dim}")
         
-        return IPAdapterUNetWrapper(unet, cross_attention_dim, num_tokens)
+        return IPAdapterUNetWrapper(unet, cross_attention_dim, num_tokens, install_processors)
         
     except Exception as e:
         print(f"create_ipadapter_wrapper: Error during model detection: {e}")
         print(f"create_ipadapter_wrapper: Falling back to default cross_attention_dim=768, num_tokens=4")
-        return IPAdapterUNetWrapper(unet, 768, num_tokens) 
+        return IPAdapterUNetWrapper(unet, 768, num_tokens, install_processors) 

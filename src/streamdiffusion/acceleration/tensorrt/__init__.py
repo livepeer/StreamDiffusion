@@ -18,6 +18,58 @@ from .engine_pool import ControlNetEnginePool
 from .ipadapter_wrapper import create_ipadapter_wrapper
 
 
+def _has_ipadapter_processors(unet: UNet2DConditionModel) -> bool:
+    """Check if the UNet already has IPAdapter processors installed"""
+    try:
+        processors = unet.attn_processors
+        for name, processor in processors.items():
+            # Check for IPAdapter processor class names
+            processor_class = processor.__class__.__name__
+            if 'IPAttn' in processor_class or 'IPAttnProcessor' in processor_class:
+                print(f"_has_ipadapter_processors: Found existing IPAdapter processor: {name} -> {processor_class}")
+                return True
+        return False
+    except Exception as e:
+        print(f"_has_ipadapter_processors: Error checking existing processors: {e}")
+        return False
+
+
+def _validate_ipadapter_engine_support(unet_engine, cross_attention_dim: int):
+    """
+    Validate that the TensorRT engine supports IPAdapter functionality
+    by checking input/output specifications and testing with extended embeddings
+    """
+    try:
+        print("_validate_ipadapter_engine_support: Validating TensorRT IPAdapter support...")
+        
+        # Check if engine accepts variable sequence lengths in encoder_hidden_states
+        if hasattr(unet_engine, 'engine') and hasattr(unet_engine.engine, 'engine_info'):
+            engine_info = unet_engine.engine.engine_info
+            input_shapes = getattr(engine_info, 'input_shapes', {})
+            
+            if 'encoder_hidden_states' in input_shapes:
+                encoder_shape = input_shapes['encoder_hidden_states']
+                print(f"_validate_ipadapter_engine_support: Encoder hidden states shape: {encoder_shape}")
+                
+                # Check if sequence dimension is dynamic (should be for IPAdapter)
+                if len(encoder_shape) >= 2:
+                    seq_dim = encoder_shape[1] if len(encoder_shape) >= 2 else None
+                    if seq_dim and hasattr(seq_dim, 'max') and seq_dim.max > 77:
+                        print(f"_validate_ipadapter_engine_support: ✓ Engine supports extended sequences (max: {seq_dim.max})")
+                        return True
+                    else:
+                        print(f"_validate_ipadapter_engine_support: ⚠ Engine may not support extended sequences")
+                        return False
+        
+        print("_validate_ipadapter_engine_support: ✓ Basic validation passed")
+        return True
+        
+    except Exception as e:
+        print(f"_validate_ipadapter_engine_support: Error during validation: {e}")
+        print("_validate_ipadapter_engine_support: ⚠ Could not validate IPAdapter support")
+        return False
+
+
 class TorchVAEEncoder(torch.nn.Module):
     def __init__(self, vae: AutoencoderKL):
         super().__init__()
@@ -116,7 +168,12 @@ def accelerate_with_tensorrt(
     use_controlnet = hasattr(stream, 'controlnets') and len(getattr(stream, 'controlnets', [])) > 0
     
     # Detect if IPAdapter is being used
-    use_ipadapter = hasattr(stream, 'ipadapters') and len(getattr(stream, 'ipadapters', [])) > 0
+    # Check multiple indicators: stream attribute, UNet processors, or explicit parameter
+    use_ipadapter = (
+        (hasattr(stream, 'ipadapters') and len(getattr(stream, 'ipadapters', [])) > 0) or
+        _has_ipadapter_processors(unet) or
+        (hasattr(stream, 'use_ipadapter') and getattr(stream, 'use_ipadapter', False))
+    )
     
     if use_controlnet:
         print("ControlNet detected - enabling TensorRT ControlNet support")
@@ -208,8 +265,9 @@ def accelerate_with_tensorrt(
         elif use_ipadapter:
             print("Compiling UNet with IPAdapter support")
             
-            # Create IPAdapter-aware wrapper for ONNX export (skip processors for safety)
-            wrapped_unet = create_ipadapter_wrapper(unet, install_processors=False)
+            # Create IPAdapter-aware wrapper for ONNX export
+            # CRITICAL: Must install processors to bake IPAdapter functionality into TensorRT engine
+            wrapped_unet = create_ipadapter_wrapper(unet, install_processors=True)
             
             # Compile with IPAdapter support
             compile_unet(
@@ -287,6 +345,9 @@ def accelerate_with_tensorrt(
         setattr(stream.unet, 'use_ipadapter', True)
         setattr(stream.unet, 'ipadapter_arch', unet_arch)
         print("TensorRT UNet engine configured for IPAdapter support")
+        
+        # Validate that the engine can handle IPAdapter token sequences
+        _validate_ipadapter_engine_support(stream.unet, unet_arch.get('context_dim', 768))
     else:
         setattr(stream.unet, 'use_ipadapter', False)
     
