@@ -40,6 +40,11 @@ class BaseIPAdapterPipeline:
         self.style_images: List[Optional[Image.Image]] = []
         self.scales: List[float] = []
         
+        # Cache for performance optimization
+        self._last_prompt = None
+        self._last_negative_prompt = None
+        self._last_style_images = None
+        
         # No patching needed - we use direct embedding assignment like the working script
     
     def add_ipadapter(self, 
@@ -318,6 +323,12 @@ class BaseIPAdapterPipeline:
         if not self.ipadapters or not any(img is not None for img in self.style_images):
             return  # No IPAdapters or style images
         
+        # Skip if nothing changed (performance optimization)
+        if (prompt == self._last_prompt and 
+            negative_prompt == self._last_negative_prompt and 
+            self.style_images == self._last_style_images):
+            return
+        
         # Use the first IPAdapter to generate image embeddings
         first_ipadapter = self.ipadapters[0] 
         
@@ -395,6 +406,11 @@ class BaseIPAdapterPipeline:
             print("_update_stream_embeddings: TensorRT mode - using concatenated embeddings (same as PyTorch)")
         else:
             print("_update_stream_embeddings: PyTorch mode - using concatenated embeddings")
+        
+        # Update cache
+        self._last_prompt = prompt
+        self._last_negative_prompt = negative_prompt
+        self._last_style_images = self.style_images.copy()
     
     def prepare(self, *args, **kwargs):
         """Forward prepare calls to the underlying StreamDiffusion"""
