@@ -7,6 +7,7 @@
   import Button from '$lib/components/Button.svelte';
   import PipelineOptions from '$lib/components/PipelineOptions.svelte';
   import ControlNetConfig from '$lib/components/ControlNetConfig.svelte';
+  import IPAdapterConfig from '$lib/components/IPAdapterConfig.svelte';
   import BlendingControl from '$lib/components/BlendingControl.svelte';
   import Spinner from '$lib/icons/spinner.svelte';
   import Warning from '$lib/components/Warning.svelte';
@@ -17,6 +18,8 @@
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
   let controlnetInfo: any = null;
+  let ipadapterInfo: any = null;
+  let ipadapterScale: number = 1.0;
   let tIndexList: number[] = [35, 45];
   let guidanceScale: number = 1.1;
   let delta: number = 0.7;
@@ -60,6 +63,8 @@
     pipelineParams = settings.input_params.properties;
     pipelineInfo = settings.info.properties;
     controlnetInfo = settings.controlnet || null;
+    ipadapterInfo = settings.ipadapter || null;
+    ipadapterScale = settings.ipadapter?.scale || 1.0;
     tIndexList = settings.t_index_list || [35, 45];
     guidanceScale = settings.guidance_scale || 1.1;
     delta = settings.delta || 0.7;
@@ -261,6 +266,12 @@
         // Update ControlNet info
         if (result.controlnet) {
           controlnetInfo = result.controlnet;
+        }
+        
+        // Update IPAdapter info
+        if (result.ipadapter) {
+          ipadapterInfo = result.ipadapter;
+          ipadapterScale = result.ipadapter.scale || 1.0;
         }
         
         // Update streaming parameters
@@ -516,6 +527,11 @@
             on:controlnetUpdated={handleControlNetUpdate}
             on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
           ></ControlNetConfig>
+          
+          <IPAdapterConfig 
+            {ipadapterInfo} 
+            currentScale={ipadapterScale}
+          ></IPAdapterConfig>
         {/if}
       </div>
     </div>
