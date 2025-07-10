@@ -106,6 +106,7 @@ class StreamDiffusionWrapper:
         enable_pytorch_fallback: bool = False,
         # IPAdapter options
         use_ipadapter: bool = False,
+        ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -193,6 +194,7 @@ class StreamDiffusionWrapper:
         self.use_controlnet = use_controlnet
         self.enable_pytorch_fallback = enable_pytorch_fallback
         self.use_ipadapter = use_ipadapter
+        self.ipadapter_config = ipadapter_config
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -250,6 +252,7 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             enable_pytorch_fallback=enable_pytorch_fallback,
             use_ipadapter=use_ipadapter,
+            ipadapter_config=ipadapter_config,
         )
 
         # Store acceleration settings for ControlNet integration
@@ -809,6 +812,16 @@ class StreamDiffusionWrapper:
                 dtype=self.dtype,  # Use wrapper's dtype instead of stream.torch_dtype
             )
             
+            # Set the correct scale from config BEFORE TensorRT compilation
+            if hasattr(self, 'ipadapter_config') and self.ipadapter_config:
+                config = self.ipadapter_config
+                if isinstance(config, list):
+                    config = config[0]  # Use first IPAdapter config for now
+                
+                scale = config.get('scale', 1.0)
+                ipadapter.set_scale(scale)
+                print(f"_preload_ipadapter_models: Set IPAdapter scale to {scale} before TensorRT compilation")
+            
             # Store reference to pre-loaded IPAdapters for later use
             if not hasattr(stream, '_preloaded_ipadapters'):
                 stream._preloaded_ipadapters = []
@@ -853,6 +866,7 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         enable_pytorch_fallback: bool = False,
         use_ipadapter: bool = False,
+        ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -902,6 +916,10 @@ class StreamDiffusionWrapper:
             Whether to apply ControlNet patch, by default False.
         controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
             ControlNet configuration(s), by default None.
+        use_ipadapter : bool, optional
+            Whether to apply IPAdapter patch, by default False.
+        ipadapter_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
+            IPAdapter configuration(s), by default None.
 
         Returns
         -------
@@ -1011,16 +1029,19 @@ class StreamDiffusionWrapper:
                     model_id_or_path: str,
                     max_batch: int,
                     min_batch_size: int,
-                    width: int,
-                    height: int,
+                    ipadapter_scale: Optional[float] = None,
                 ):
                     maybe_path = Path(model_id_or_path)
-                    # Use dynamic engine naming to distinguish from static engines
-                    dynamic_suffix = "dyn-384-1024"
-                    if maybe_path.exists():
-                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
-                    else:
-                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
+                    base_name = maybe_path.stem if maybe_path.exists() else model_id_or_path
+                    
+                    prefix = f"{base_name}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}"
+                    
+                    # Add IPAdapter scale to engine name when provided
+                    if ipadapter_scale is not None:
+                        prefix += f"--ipa{ipadapter_scale}"
+                    
+                    prefix += f"--mode-{self.mode}"
+                    return prefix
 
                 # Detect IPAdapter and ControlNet support needed
                 use_controlnet_trt = False
@@ -1056,15 +1077,22 @@ class StreamDiffusionWrapper:
                     print(f"Architecture detection failed: {e}, compiling without special support")
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
-                engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
+                engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
+                
+                # Get actual IPAdapter scale from config if available
+                ipadapter_scale = None
+                if use_ipadapter_trt and ipadapter_config:
+                    config = ipadapter_config
+                    if isinstance(config, list):
+                        config = config[0]  # Use first IPAdapter config for now
+                    ipadapter_scale = config.get('scale', 1.0)
                 unet_path = os.path.join(
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
                         max_batch=stream.trt_unet_batch_size,
                         min_batch_size=stream.trt_unet_batch_size,
-                        width=self.width,
-                        height=self.height,
+                        ipadapter_scale=ipadapter_scale,
                     ),
                     "unet.engine",
                 )
@@ -1078,8 +1106,7 @@ class StreamDiffusionWrapper:
                         min_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
-                        width=self.width,
-                        height=self.height,
+                        ipadapter_scale=ipadapter_scale,
                     ),
                     "vae_encoder.engine",
                 )
@@ -1093,8 +1120,7 @@ class StreamDiffusionWrapper:
                         min_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
-                        width=self.width,
-                        height=self.height,
+                        ipadapter_scale=ipadapter_scale,
                     ),
                     "vae_decoder.engine",
                 )
