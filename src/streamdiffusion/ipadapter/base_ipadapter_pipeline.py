@@ -6,12 +6,9 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 
-# Add Diffusers_IPAdapter to path (now located in same directory)
-current_dir = Path(__file__).parent
-ipadapter_path = current_dir / "Diffusers_IPAdapter"
-sys.path.insert(0, str(ipadapter_path))
+# Using relative import - no sys.path modification needed
 
-from ip_adapter.ip_adapter import IPAdapter
+from .Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
 from ..pipeline import StreamDiffusion
 
 class BaseIPAdapterPipeline:
@@ -208,6 +205,103 @@ class BaseIPAdapterPipeline:
         
         # If we get here, it's neither a valid local path nor a HuggingFace ID
         raise ValueError(f"_resolve_model_path: Invalid model path: {model_path}. Must be either a local path or HuggingFace model ID.")
+
+    def preload_models_for_tensorrt(self, ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None) -> None:
+        """
+        Pre-load IPAdapter models and install processors with weights before TensorRT compilation.
+        
+        This ensures that when TensorRT compilation occurs, the UNet already has IPAdapter 
+        processors with actual model weights installed.
+        
+        Args:
+            ipadapter_config: Optional IPAdapter configuration
+        """
+        print("preload_models_for_tensorrt: Loading IPAdapter models with weights...")
+        
+        try:
+            # Use the config if provided, otherwise use default h94/IP-Adapter
+            if ipadapter_config:
+                if isinstance(ipadapter_config, list):
+                    config = ipadapter_config[0]  # Use first IPAdapter config
+                else:
+                    config = ipadapter_config
+                
+                model_path = config.get('ipadapter_model_path', 'h94/IP-Adapter')
+                encoder_path = config.get('image_encoder_path', 'h94/IP-Adapter')
+                scale = config.get('scale', 1.0)
+            else:
+                # Default configuration
+                model_path = 'h94/IP-Adapter'
+                encoder_path = 'h94/IP-Adapter'
+                scale = 1.0
+            
+            # Resolve model paths using existing resolution logic
+            resolved_ipadapter_path = self._resolve_model_path(model_path, "ipadapter")
+            resolved_encoder_path = self._resolve_model_path(encoder_path, "image_encoder")
+            
+            print(f"preload_models_for_tensorrt: Resolved IPAdapter path: {resolved_ipadapter_path}")
+            print(f"preload_models_for_tensorrt: Resolved image encoder path: {resolved_encoder_path}")
+            
+            # Create IPAdapter instance - this will install processors with weights
+            ipadapter = IPAdapter(
+                pipe=self.stream.pipe,
+                ipadapter_ckpt_path=resolved_ipadapter_path,
+                image_encoder_path=resolved_encoder_path,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            
+            # Set the correct scale from config BEFORE TensorRT compilation
+            ipadapter.set_scale(scale)
+            print(f"preload_models_for_tensorrt: Set IPAdapter scale to {scale} before TensorRT compilation")
+            
+            # Store reference to pre-loaded IPAdapters for later use
+            if not hasattr(self.stream, '_preloaded_ipadapters'):
+                self.stream._preloaded_ipadapters = []
+            self.stream._preloaded_ipadapters.append(ipadapter)
+            
+            # Add to our own collections too
+            self.ipadapters.append(ipadapter)
+            self.style_images.append(None)  # No style image during preload
+            self.scales.append(scale)
+            
+            # Mark that stream was pre-loaded with weights
+            self.stream._preloaded_with_weights = True
+            
+            print("preload_models_for_tensorrt: IPAdapter models loaded successfully with weights")
+            print("preload_models_for_tensorrt: UNet now has IPAdapter processors with weights installed")
+            
+        except Exception as e:
+            print(f"preload_models_for_tensorrt: Error loading IPAdapter models: {e}")
+            print("preload_models_for_tensorrt: Falling back to TensorRT compilation without IPAdapter weights")
+            # Mark that pre-loading failed
+            self.stream._preloaded_with_weights = False
+
+    def get_tensorrt_info(self) -> Dict[str, Any]:
+        """
+        Get information needed for TensorRT compilation.
+        
+        Returns:
+            Dictionary with TensorRT-relevant IPAdapter information
+        """
+        tensorrt_info = {
+            'has_preloaded_models': getattr(self.stream, '_preloaded_with_weights', False),
+            'num_image_tokens': 4,  # Default
+            'scale': 1.0,  # Default
+            'cross_attention_dim': None
+        }
+        
+        if self.ipadapters and len(self.ipadapters) > 0:
+            first_ipadapter = self.ipadapters[0]
+            tensorrt_info['num_image_tokens'] = getattr(first_ipadapter, 'num_tokens', 4)
+            if len(self.scales) > 0:
+                tensorrt_info['scale'] = self.scales[0]
+            
+            # Get cross attention dimension
+            if hasattr(self.stream, 'unet') and hasattr(self.stream.unet, 'config'):
+                tensorrt_info['cross_attention_dim'] = self.stream.unet.config.cross_attention_dim
+        
+        return tensorrt_info
 
     def _update_stream_embeddings(self, prompt: str = "", negative_prompt: str = "") -> None:
         """

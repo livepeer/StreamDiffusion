@@ -741,106 +741,7 @@ class StreamDiffusionWrapper:
 
         return pil_images
 
-    def _resolve_ipadapter_model_path(self, model_path: str) -> str:
-        """
-        Resolve HuggingFace model path by downloading if needed.
-        
-        Args:
-            model_path: HuggingFace model ID like "h94/IP-Adapter"
-            
-        Returns:
-            Local path to downloaded model
-        """
-        from huggingface_hub import snapshot_download
-        
-        print(f"_resolve_ipadapter_model_path: Downloading ipadapter from HuggingFace: {model_path}")
-        
-        # Download the full repository
-        repo_path = snapshot_download(repo_id=model_path)
-        
-        # For IPAdapter, we need the specific model file
-        ipadapter_path = os.path.join(repo_path, "models", "ip-adapter_sd15.bin")
-        image_encoder_path = os.path.join(repo_path, "models", "image_encoder")
-        
-        print(f"_resolve_ipadapter_model_path: IPAdapter downloaded to: {ipadapter_path}")
-        print(f"_resolve_ipadapter_model_path: Image encoder downloaded to: {image_encoder_path}")
-        
-        return ipadapter_path, image_encoder_path
 
-    def _preload_ipadapter_models(self, stream: StreamDiffusion) -> StreamDiffusion:
-        """
-        Pre-load IPAdapter models and install processors with weights before TensorRT compilation.
-        
-        This ensures that when create_ipadapter_wrapper() is called during TensorRT compilation,
-        the UNet already has IPAdapter processors with actual model weights installed.
-        
-        Args:
-            stream: StreamDiffusion instance
-            
-        Returns:
-            StreamDiffusion instance with IPAdapter processors pre-loaded
-        """
-        print("_preload_ipadapter_models: Loading IPAdapter models with weights...")
-        
-        try:
-            # Import IPAdapter here to avoid circular imports
-            import sys
-            import os
-            
-            # Add the Diffusers_IPAdapter path to sys.path
-            ipadapter_path = os.path.join(os.path.dirname(__file__), "..", "src", "streamdiffusion", "ipadapter", "Diffusers_IPAdapter")
-            if ipadapter_path not in sys.path:
-                sys.path.insert(0, ipadapter_path)
-                print(f"_preload_ipadapter_models: Adding Diffusers_IPAdapter path: {ipadapter_path}")
-            
-            # Resolve HuggingFace model paths
-            print("_preload_ipadapter_models: Resolving h94/IP-Adapter model paths...")
-            ipadapter_ckpt_path, image_encoder_path = self._resolve_ipadapter_model_path("h94/IP-Adapter")
-            
-            print(f"_preload_ipadapter_models: Resolved IPAdapter path: {ipadapter_ckpt_path}")
-            print(f"_preload_ipadapter_models: Resolved image encoder path: {image_encoder_path}")
-            
-            # Import and create IPAdapter with correct import path
-            from streamdiffusion.ipadapter.Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
-            
-            # Create IPAdapter instance - this will install processors with weights
-            ipadapter = IPAdapter(
-                pipe=stream.pipe,
-                ipadapter_ckpt_path=ipadapter_ckpt_path,
-                image_encoder_path=image_encoder_path,
-                device=stream.device,
-                dtype=self.dtype,  # Use wrapper's dtype instead of stream.torch_dtype
-            )
-            
-            # Set the correct scale from config BEFORE TensorRT compilation
-            if hasattr(self, 'ipadapter_config') and self.ipadapter_config:
-                config = self.ipadapter_config
-                if isinstance(config, list):
-                    config = config[0]  # Use first IPAdapter config for now
-                
-                scale = config.get('scale', 1.0)
-                ipadapter.set_scale(scale)
-                print(f"_preload_ipadapter_models: Set IPAdapter scale to {scale} before TensorRT compilation")
-            
-            # Store reference to pre-loaded IPAdapters for later use
-            if not hasattr(stream, '_preloaded_ipadapters'):
-                stream._preloaded_ipadapters = []
-            stream._preloaded_ipadapters.append(ipadapter)
-            
-            # Mark that stream was pre-loaded with weights
-            stream._preloaded_with_weights = True
-            
-            print("_preload_ipadapter_models: IPAdapter models loaded successfully with weights")
-            print("_preload_ipadapter_models: UNet now has IPAdapter processors with weights installed")
-            
-            return stream
-            
-        except Exception as e:
-            print(f"_preload_ipadapter_models: Error loading IPAdapter models: {e}")
-            print("_preload_ipadapter_models: Falling back to TensorRT compilation without IPAdapter weights")
-            # Mark that pre-loading failed
-            stream._preloaded_with_weights = False
-            return stream
 
     def _load_model(
         self,
@@ -1051,10 +952,22 @@ class StreamDiffusionWrapper:
                 # Use the explicit use_ipadapter parameter
                 has_ipadapter = use_ipadapter
                 
-                # Pre-load IPAdapter models BEFORE TensorRT compilation if IPAdapter is enabled
+                # Create IPAdapter pipeline and pre-load models for TensorRT if needed
+                ipadapter_pipeline = None
                 if has_ipadapter:
-                    print("_load_model: Pre-loading IPAdapter models before TensorRT compilation...")
-                    stream = self._preload_ipadapter_models(stream)
+                    print("_load_model: Creating IPAdapter pipeline for TensorRT integration...")
+                    try:
+                        from streamdiffusion.ipadapter import IPAdapterPipeline
+                        ipadapter_pipeline = IPAdapterPipeline(
+                            stream_diffusion=stream,
+                            device=self.device,
+                            dtype=self.dtype
+                        )
+                        print("_load_model: Pre-loading IPAdapter models before TensorRT compilation...")
+                        ipadapter_pipeline.preload_models_for_tensorrt(ipadapter_config)
+                    except Exception as e:
+                        print(f"_load_model: Error creating IPAdapter pipeline: {e}")
+                        has_ipadapter = False
                 
                 try:
                     model_type = detect_model_from_diffusers_unet(stream.unet)
@@ -1079,13 +992,11 @@ class StreamDiffusionWrapper:
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
                 
-                # Get actual IPAdapter scale from config if available
+                # Get IPAdapter information from pipeline if available
                 ipadapter_scale = None
-                if use_ipadapter_trt and ipadapter_config:
-                    config = ipadapter_config
-                    if isinstance(config, list):
-                        config = config[0]  # Use first IPAdapter config for now
-                    ipadapter_scale = config.get('scale', 1.0)
+                if use_ipadapter_trt and ipadapter_pipeline:
+                    tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
+                    ipadapter_scale = tensorrt_info.get('scale', 1.0)
                 unet_path = os.path.join(
                     engine_dir,
                     create_prefix(
@@ -1153,9 +1064,9 @@ class StreamDiffusionWrapper:
 
                     # Get IPAdapter token count for UNet model
                     num_image_tokens = 4  # Default to standard IPAdapter
-                    if use_ipadapter_trt and hasattr(stream, '_preloaded_ipadapters') and stream._preloaded_ipadapters:
-                        first_ipadapter = stream._preloaded_ipadapters[0]
-                        num_image_tokens = getattr(first_ipadapter, 'num_tokens', 4)
+                    if use_ipadapter_trt and ipadapter_pipeline:
+                        tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
+                        num_image_tokens = tensorrt_info.get('num_image_tokens', 4)
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -1177,9 +1088,9 @@ class StreamDiffusionWrapper:
                         
                         # Get IPAdapter configuration for proper token count
                         num_tokens = 4  # Default to standard IPAdapter
-                        if hasattr(stream, '_preloaded_ipadapters') and stream._preloaded_ipadapters:
-                            first_ipadapter = stream._preloaded_ipadapters[0]
-                            num_tokens = getattr(first_ipadapter, 'num_tokens', 4)
+                        if ipadapter_pipeline:
+                            tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
+                            num_tokens = tensorrt_info.get('num_image_tokens', 4)
                         
                         # Create IPAdapter-aware wrapper with baked-in processors
                         wrapped_unet = create_ipadapter_wrapper(stream.unet, num_tokens=num_tokens)
@@ -1462,12 +1373,12 @@ class StreamDiffusionWrapper:
 
     # ControlNet convenience methods
     def add_controlnet(self,
-                      model_id: str,
-                      preprocessor: Optional[str] = None,
-                      conditioning_scale: float = 1.0,
-                      control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
-                      enabled: bool = True,
-                      preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
+                       model_id: str,
+                       preprocessor: Optional[str] = None,
+                       conditioning_scale: float = 1.0,
+                       control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
+                       enabled: bool = True,
+                       preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
         """Forward add_controlnet call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
@@ -1480,8 +1391,6 @@ class StreamDiffusionWrapper:
             'preprocessor_params': preprocessor_params or {}
         }
         return self.stream.add_controlnet(cn_config, control_image)
-
-
 
     def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
@@ -1504,8 +1413,6 @@ class StreamDiffusionWrapper:
         
         return self.stream.get_last_processed_image(index)
 
-
-    
     def update_seed_blending(
         self, 
         seed_list: List[Tuple[int, float]], 
