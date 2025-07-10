@@ -32,10 +32,3 @@ ipadapters:
     style_image: "C:\\_dev\\comfy\\ComfyUI\\StreamDiffusion\\images\\inputs\\hand_up512.png"
     scale: 1.0
     enabled: true
-    
-  # You can add multiple IPAdapters with different models or local paths
-  # - ipadapter_model_path: "C:/path/to/ip-adapter-plus_sd15.bin"  # Local path
-  #   image_encoder_path: "h94/IP-Adapter"                         # HuggingFace ID
-  #   style_image: "../../input/another_style.png"
-  #   scale: 0.8
-  #   enabled: false 
