@@ -222,6 +222,11 @@ class BaseIPAdapterPipeline:
             
             # Set the correct scale from config BEFORE TensorRT compilation
             self.ipadapter.set_scale(scale)
+            
+            # Log detected IPAdapter type
+            detected_tokens = getattr(self.ipadapter, 'num_tokens', 4)
+            variant = "Plus" if detected_tokens == 16 else "Standard"
+            print(f"preload_models_for_tensorrt: Detected {variant} IPAdapter ({detected_tokens} tokens)")
             print(f"preload_models_for_tensorrt: Set IPAdapter scale to {scale} before TensorRT compilation")
             
             # Store reference to pre-loaded IPAdapter for later use

@@ -280,6 +280,9 @@ class UNet(BaseModel):
         # Baked-in IPAdapter configuration
         if self.use_ipadapter:
             # With baked-in processors, we extend text_maxlen to include image tokens
+            # TODO: Consider making this dynamic instead of fixed per IPAdapter variant
+            # Could use dynamic shapes: min=77 (text only), max=93 (text + 16 tokens)
+            # This would allow a single engine to handle all IPAdapter types instead of separate engines
             self.text_maxlen = text_maxlen + self.num_image_tokens
             print(f"UNet: IPAdapter enabled with baked-in processors")
             print(f"UNet: {self.num_image_tokens} tokens, embedding_dim={self.embedding_dim}")
