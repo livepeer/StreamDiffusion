@@ -5,10 +5,12 @@ This module provides an extensible IPAdapter integration for StreamDiffusion, fo
 ## Features
 
 - **Uses Existing Code**: Built on top of the proven `Diffusers_IPAdapter` implementation
-- **Extensible Architecture**: Supports multiple IPAdapters with different style images and scales
+- **Simple Architecture**: Single IPAdapter with single style image for reliable performance
 - **Configuration System**: Full integration with StreamDiffusion's YAML/JSON config system
 - **Runtime Updates**: Change style images and scales dynamically
-- **Simple API**: Clean, intuitive interface following ControlNet patterns
+- **Performance Optimized**: Caching prevents redundant computation per frame
+
+<!-- TODO: Add support for multiple IPAdapters and multiple style images in future phase -->
 
 ## Quick Start
 
@@ -32,8 +34,8 @@ ipadapter_pipeline = IPAdapterPipeline(
     dtype=torch.float16
 )
 
-# Add IPAdapter using HuggingFace model ID (auto-downloads)
-ipadapter_pipeline.add_ipadapter(
+# Set IPAdapter using HuggingFace model ID (auto-downloads)
+ipadapter_pipeline.set_ipadapter(
     ipadapter_model_path="h94/IP-Adapter",  # HuggingFace model ID
     image_encoder_path="h94/IP-Adapter",    # HuggingFace model ID
     style_image="path/to/style.png",
@@ -86,11 +88,10 @@ The main class for IPAdapter integration.
 
 #### Methods
 
-- `add_ipadapter(ipadapter_model_path, image_encoder_path, style_image=None, scale=1.0)`: Add an IPAdapter
-- `remove_ipadapter(index)`: Remove an IPAdapter by index
-- `clear_ipadapters()`: Remove all IPAdapters
-- `update_style_image(style_image, index=None)`: Update style image(s)
-- `update_scale(index, scale)`: Update conditioning scale
+- `set_ipadapter(ipadapter_model_path, image_encoder_path, style_image=None, scale=1.0)`: Set the IPAdapter
+- `clear_ipadapter()`: Remove the IPAdapter
+- `update_style_image(style_image)`: Update style image
+- `update_scale(scale)`: Update conditioning scale
 
 ### Configuration Schema
 

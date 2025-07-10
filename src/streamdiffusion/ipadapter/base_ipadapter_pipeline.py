@@ -35,41 +35,39 @@ class BaseIPAdapterPipeline:
         self.device = device
         self.dtype = dtype
         
-        # IPAdapter storage
-        self.ipadapters: List[IPAdapter] = []
-        self.style_images: List[Optional[Image.Image]] = []
-        self.scales: List[float] = []
+        # IPAdapter storage (single IPAdapter for now)
+        # TODO: Add support for multiple IPAdapters and multiple style images in future phase
+        self.ipadapter: Optional[IPAdapter] = None
+        self.style_image: Optional[Image.Image] = None
+        self.scale: float = 1.0
         
         # Cache for performance optimization
         self._last_prompt = None
         self._last_negative_prompt = None
-        self._last_style_images = None
+        self._last_style_image = None
         
         # No patching needed - we use direct embedding assignment like the working script
     
-    def add_ipadapter(self, 
+    def set_ipadapter(self, 
                      ipadapter_model_path: str,
                      image_encoder_path: str,
                      style_image: Optional[Union[str, Image.Image]] = None,
-                     scale: float = 1.0) -> int:
+                     scale: float = 1.0) -> None:
         """
-        Add an IPAdapter to the pipeline
+        Set the IPAdapter for the pipeline (replaces any existing IPAdapter)
         
         Args:
             ipadapter_model_path: HuggingFace model ID (e.g. "h94/IP-Adapter") or local path to IPAdapter weights
             image_encoder_path: HuggingFace model ID (e.g. "h94/IP-Adapter") or local path to CLIP image encoder
             style_image: Style image for conditioning (optional)
             scale: Conditioning scale
-            
-        Returns:
-            Index of the added IPAdapter
         """
         # Resolve model paths (download if HuggingFace IDs)
         resolved_ipadapter_path = self._resolve_model_path(ipadapter_model_path, "ipadapter")
         resolved_encoder_path = self._resolve_model_path(image_encoder_path, "image_encoder")
         
         # Create IPAdapter instance using existing code
-        ipadapter = IPAdapter(
+        self.ipadapter = IPAdapter(
             pipe=self.stream.pipe,
             ipadapter_ckpt_path=resolved_ipadapter_path,
             image_encoder_path=resolved_encoder_path,
@@ -78,80 +76,46 @@ class BaseIPAdapterPipeline:
         )
         
         # Process style image if provided
-        processed_image = None
         if style_image is not None:
             if isinstance(style_image, str):
-                processed_image = Image.open(style_image).convert("RGB")
+                self.style_image = Image.open(style_image).convert("RGB")
             else:
-                processed_image = style_image
-        
-        # Add to collections
-        self.ipadapters.append(ipadapter)
-        self.style_images.append(processed_image)
-        self.scales.append(scale)
-        
-        # Set the initial scale for this IPAdapter
-        ipadapter.set_scale(scale)
-        
-        return len(self.ipadapters) - 1
-    
-    def remove_ipadapter(self, index: int) -> None:
-        """
-        Remove an IPAdapter by index
-        
-        Args:
-            index: Index of the IPAdapter to remove
-        """
-        if 0 <= index < len(self.ipadapters):
-            self.ipadapters.pop(index)
-            self.style_images.pop(index)
-            self.scales.pop(index)
-            
-            # No unpatching needed
+                self.style_image = style_image
         else:
-            raise IndexError(f"IPAdapter index {index} out of range")
+            self.style_image = None
+        
+        # Set scale
+        self.scale = scale
+        self.ipadapter.set_scale(scale)
     
-    def clear_ipadapters(self) -> None:
-        """Remove all IPAdapters"""
-        self.ipadapters.clear()
-        self.style_images.clear()
-        self.scales.clear()
+    def clear_ipadapter(self) -> None:
+        """Remove the IPAdapter"""
+        self.ipadapter = None
+        self.style_image = None
+        self.scale = 1.0
     
-    def update_style_image(self, style_image: Union[str, Image.Image], index: Optional[int] = None) -> None:
+    def update_style_image(self, style_image: Union[str, Image.Image]) -> None:
         """
-        Update style image for IPAdapter(s)
+        Update style image for the IPAdapter
         
         Args:
             style_image: New style image
-            index: Optional IPAdapter index. If None, updates all IPAdapters
         """
         if isinstance(style_image, str):
-            style_image = Image.open(style_image).convert("RGB")
-        
-        if index is not None:
-            if 0 <= index < len(self.ipadapters):
-                self.style_images[index] = style_image
-            else:
-                raise IndexError(f"IPAdapter index {index} out of range")
+            self.style_image = Image.open(style_image).convert("RGB")
         else:
-            # Update all IPAdapters
-            for i in range(len(self.ipadapters)):
-                self.style_images[i] = style_image
+            self.style_image = style_image
     
-    def update_scale(self, index: int, scale: float) -> None:
+    def update_scale(self, scale: float) -> None:
         """
-        Update the conditioning scale for a specific IPAdapter
+        Update the conditioning scale for the IPAdapter
         
         Args:
-            index: Index of the IPAdapter
             scale: New conditioning scale
         """
-        if 0 <= index < len(self.ipadapters):
-            self.scales[index] = scale
-            # Update the IPAdapter's scale directly
-            self.ipadapters[index].set_scale(scale)
-        else:
-            raise IndexError(f"IPAdapter index {index} out of range")
+        if self.ipadapter is not None:
+            self.scale = scale
+            self.ipadapter.set_scale(scale)
     
     def _resolve_model_path(self, model_path: str, model_type: str) -> str:
         """
@@ -248,7 +212,7 @@ class BaseIPAdapterPipeline:
             print(f"preload_models_for_tensorrt: Resolved image encoder path: {resolved_encoder_path}")
             
             # Create IPAdapter instance - this will install processors with weights
-            ipadapter = IPAdapter(
+            self.ipadapter = IPAdapter(
                 pipe=self.stream.pipe,
                 ipadapter_ckpt_path=resolved_ipadapter_path,
                 image_encoder_path=resolved_encoder_path,
@@ -257,18 +221,17 @@ class BaseIPAdapterPipeline:
             )
             
             # Set the correct scale from config BEFORE TensorRT compilation
-            ipadapter.set_scale(scale)
+            self.ipadapter.set_scale(scale)
             print(f"preload_models_for_tensorrt: Set IPAdapter scale to {scale} before TensorRT compilation")
             
-            # Store reference to pre-loaded IPAdapters for later use
+            # Store reference to pre-loaded IPAdapter for later use
             if not hasattr(self.stream, '_preloaded_ipadapters'):
                 self.stream._preloaded_ipadapters = []
-            self.stream._preloaded_ipadapters.append(ipadapter)
+            self.stream._preloaded_ipadapters.append(self.ipadapter)
             
-            # Add to our own collections too
-            self.ipadapters.append(ipadapter)
-            self.style_images.append(None)  # No style image during preload
-            self.scales.append(scale)
+            # Set our own properties
+            self.style_image = None  # No style image during preload
+            self.scale = scale
             
             # Mark that stream was pre-loaded with weights
             self.stream._preloaded_with_weights = True
@@ -296,11 +259,9 @@ class BaseIPAdapterPipeline:
             'cross_attention_dim': None
         }
         
-        if self.ipadapters and len(self.ipadapters) > 0:
-            first_ipadapter = self.ipadapters[0]
-            tensorrt_info['num_image_tokens'] = getattr(first_ipadapter, 'num_tokens', 4)
-            if len(self.scales) > 0:
-                tensorrt_info['scale'] = self.scales[0]
+        if self.ipadapter is not None:
+            tensorrt_info['num_image_tokens'] = getattr(self.ipadapter, 'num_tokens', 4)
+            tensorrt_info['scale'] = self.scale
             
             # Get cross attention dimension
             if hasattr(self.stream, 'unet') and hasattr(self.stream.unet, 'config'):
@@ -320,26 +281,18 @@ class BaseIPAdapterPipeline:
             prompt: Text prompt  
             negative_prompt: Negative text prompt
         """
-        if not self.ipadapters or not any(img is not None for img in self.style_images):
-            return  # No IPAdapters or style images
+        if self.ipadapter is None or self.style_image is None:
+            return  # No IPAdapter or style image
         
         # Skip if nothing changed (performance optimization)
         if (prompt == self._last_prompt and 
             negative_prompt == self._last_negative_prompt and 
-            self.style_images == self._last_style_images):
+            self.style_image == self._last_style_image):
             return
         
-        # Use the first IPAdapter to generate image embeddings
-        first_ipadapter = self.ipadapters[0] 
-        
-        # Collect all style images
-        active_images = [img for img in self.style_images if img is not None]
-        if not active_images:
-            return
-        
-        # Get IPAdapter image embeddings only (without text)
-        image_prompt_embeds, negative_image_prompt_embeds = first_ipadapter.get_image_embeds(
-            images=active_images
+        # Get IPAdapter image embeddings from the single style image
+        image_prompt_embeds, negative_image_prompt_embeds = self.ipadapter.get_image_embeds(
+            images=[self.style_image]
         )
         
         # Get the original text embeddings from StreamDiffusion
@@ -399,8 +352,8 @@ class BaseIPAdapterPipeline:
         
         # Update token count for attention processors
         total_tokens = combined_prompt_embeds.shape[1]
-        first_ipadapter.set_tokens(image_prompt_embeds.shape[0] * first_ipadapter.num_tokens)
-        # print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * first_ipadapter.num_tokens}")
+        self.ipadapter.set_tokens(image_prompt_embeds.shape[0] * self.ipadapter.num_tokens)
+        # print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * self.ipadapter.num_tokens}")
         
         # if is_tensorrt:
         #     print("_update_stream_embeddings: TensorRT mode - using concatenated embeddings (same as PyTorch)")
@@ -410,7 +363,7 @@ class BaseIPAdapterPipeline:
         # Update cache
         self._last_prompt = prompt
         self._last_negative_prompt = negative_prompt
-        self._last_style_images = self.style_images.copy()
+        self._last_style_image = self.style_image
     
     def prepare(self, *args, **kwargs):
         """Forward prepare calls to the underlying StreamDiffusion"""
