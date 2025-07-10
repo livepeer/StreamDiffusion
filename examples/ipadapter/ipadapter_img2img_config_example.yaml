@@ -10,7 +10,7 @@ height: 512
 mode: "img2img"  # Changed from txt2img to img2img
 
 # StreamDiffusion parameters
-t_index_list: [16, 32, 45]  # Different t_index_list for img2img (closer to img2img examples)
+t_index_list: [25, 32, 45]  # Different t_index_list for img2img (closer to img2img examples)
 frame_buffer_size: 1
 warmup: 10
 acceleration: "tensorrt"
@@ -30,11 +30,28 @@ delta: 1  # Delta parameter for img2img
 use_controlnet: false
 # IPAdapter configuration
 ipadapters:
-  # Using HuggingFace model ID (automatic download)
-  - ipadapter_model_path: "h94/IP-Adapter"  # Auto-downloads ip-adapter_sd15.bin
-    image_encoder_path: "h94/IP-Adapter"    # Auto-downloads image_encoder
-    style_image: "../../images/inputs/gold.jpg"  # Style reference image (IPAdapter conditioning)
-    scale: 0.70  # Slightly lower scale for img2img to balance with input image
+  # Method 1: Specify exact model file path (recommended for Plus models)
+  - ipadapter_model_path: "h94/IP-Adapter/models/ip-adapter-plus_sd15.bin"
+    image_encoder_path: "h94/IP-Adapter"
+    style_image: "../../images/inputs/gold.jpg"
+    scale: 0.70
     enabled: true
+    
+  # Method 2: Use repository ID with specific filename parameter
+  # - ipadapter_model_path: "h94/IP-Adapter"
+  #   filename: "models/ip-adapter-plus_sd15.safetensors"  # Specify exact file
+  #   image_encoder_path: "h94/IP-Adapter"
+  #   style_image: "../../images/inputs/gold.jpg"
+  #   scale: 0.70
+  #   enabled: true
+    
+  # Method 3: Let auto-detection try common patterns (less reliable)
+  # - ipadapter_model_path: "h94/IP-Adapter"  # Will try Plus first, then Standard
+  #   image_encoder_path: "h94/IP-Adapter"
+  #   style_image: "../../images/inputs/gold.jpg"
+  #   scale: 0.70
+  #   enabled: true
+    
+  # This will create TensorRT engines with --tokens16 suffix for Plus models
 
 # python ipadapter_img2img_config_example.py --config .\ipadapter_img2img_config_example.yaml --input-image  ..\..\..\input\hand_up512.png

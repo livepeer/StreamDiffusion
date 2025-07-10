@@ -1082,9 +1082,12 @@ class StreamDiffusionWrapper:
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
                     
                     # Get IPAdapter token count for UNet model from loaded instance
-                    num_image_tokens = 4  # Default fallback
-                    if use_ipadapter_trt and ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                    if use_ipadapter_trt:
+                        if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
+                            raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
                         num_image_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                    else:
+                        num_image_tokens = 4  # Default fallback for non-IPAdapter mode
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -1105,9 +1108,10 @@ class StreamDiffusionWrapper:
                         print("Compiling UNet with IPAdapter support (baked-in processors WITH WEIGHTS)")
                         
                         # Get IPAdapter token count from loaded instance
-                        num_tokens = 4  # Default fallback
-                        if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
-                            num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                        if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
+                            raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
+                        
+                        num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
                         
                         # Create IPAdapter-aware wrapper with baked-in processors
                         wrapped_unet = create_ipadapter_wrapper(stream.unet, num_tokens=num_tokens)
