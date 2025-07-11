@@ -260,13 +260,10 @@ class StreamDiffusion:
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
-        encoder_output = self.pipe.encode_prompt(
-            prompt=prompt,
-            device=self.device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=False,
+        self._param_updater.update_stream_params(
+            prompt_list=[(prompt, 1.0)],
+            prompt_interpolation_method="linear"
         )
-        self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
 
     @torch.no_grad()
     def update_stream_params(
