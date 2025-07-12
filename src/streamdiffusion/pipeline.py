@@ -173,6 +173,7 @@ class StreamDiffusion:
             negative_prompt=negative_prompt,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+        print(f"[DEBUG] pipeline.prepare: Initial prompt_embeds shape: {self.prompt_embeds.shape}")
 
         if self.use_denoising_batch and self.cfg_type == "full":
             uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
@@ -185,6 +186,7 @@ class StreamDiffusion:
             self.prompt_embeds = torch.cat(
                 [uncond_prompt_embeds, self.prompt_embeds], dim=0
             )
+            print(f"[DEBUG] pipeline.prepare: After CFG concat, prompt_embeds shape: {self.prompt_embeds.shape}")
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -257,6 +259,10 @@ class StreamDiffusion:
             repeats=self.frame_bff_size if self.use_denoising_batch else 1,
             dim=0,
         )
+        print(f"[DEBUG] pipeline.prepare: Before update_prompt call, prompt_embeds shape: {self.prompt_embeds.shape}")
+        #NOTE: this is a hack to ensure that the prompt goes through the parameter updater. This will be refactored upon unifying the IPAdapter and Controlnets into a unified component system. 
+        self.update_prompt(prompt)
+        print(f"[DEBUG] pipeline.prepare: After update_prompt call, final prompt_embeds shape: {self.prompt_embeds.shape}")
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:

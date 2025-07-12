@@ -263,6 +263,13 @@ def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
                         
                         print(f"_setup_ipadapter_from_config: Configured pre-loaded IPAdapter with scale {scale}")
                         
+                        # CRITICAL: Register the IPAdapter enhancer with StreamParameterUpdater
+                        # This step was missing in the preloaded path, causing TensorRT token mismatch
+                        ipadapter_pipeline.stream._param_updater.register_embedding_enhancer(
+                            ipadapter_pipeline._enhance_embeddings_with_ipadapter,
+                            name="IPAdapter"
+                        )
+                        
                         if len(ipadapter_configs) > 1:
                             print(f"_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
             

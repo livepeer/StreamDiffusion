@@ -41,10 +41,7 @@ class BaseIPAdapterPipeline:
         self.style_image: Optional[Image.Image] = None
         self.scale: float = 1.0
         
-        # Cache for performance optimization
-        self._last_prompt = None
-        self._last_negative_prompt = None
-        self._last_style_image = None
+        # No caching needed - StreamParameterUpdater handles that
         
         # No patching needed - we use direct embedding assignment like the working script
     
@@ -65,6 +62,9 @@ class BaseIPAdapterPipeline:
             scale: Conditioning scale
             filename: Optional specific filename to download (e.g. "models/ip-adapter-plus_sd15.safetensors")
         """
+        # Clear any existing IPAdapter first
+        self.clear_ipadapter()
+        
         # Resolve model paths (download if HuggingFace IDs)
         resolved_ipadapter_path = self._resolve_model_path(ipadapter_model_path, "ipadapter", filename)
         resolved_encoder_path = self._resolve_model_path(image_encoder_path, "image_encoder")
@@ -90,9 +90,21 @@ class BaseIPAdapterPipeline:
         # Set scale
         self.scale = scale
         self.ipadapter.set_scale(scale)
+        
+        # Register IPAdapter enhancer with StreamParameterUpdater
+        self.stream._param_updater.register_embedding_enhancer(
+            self._enhance_embeddings_with_ipadapter, 
+            name="IPAdapter"
+        )
     
     def clear_ipadapter(self) -> None:
         """Remove the IPAdapter"""
+        # Unregister enhancer from StreamParameterUpdater
+        if hasattr(self, '_enhance_embeddings_with_ipadapter'):
+            self.stream._param_updater.unregister_embedding_enhancer(
+                self._enhance_embeddings_with_ipadapter
+            )
+        
         self.ipadapter = None
         self.style_image = None
         self.scale = 1.0
@@ -297,120 +309,61 @@ class BaseIPAdapterPipeline:
         
         return tensorrt_info
 
-    def _update_stream_embeddings(self, prompt: str = "", negative_prompt: str = "") -> None:
+    def _enhance_embeddings_with_ipadapter(self, prompt_embeds: torch.Tensor, negative_prompt_embeds: Optional[torch.Tensor]) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Update StreamDiffusion embeddings by integrating IPAdapter conditioning
+        Enhance embeddings with IPAdapter conditioning using the hook system.
         
-        This method properly combines IPAdapter image conditioning with StreamDiffusion's
-        existing text embeddings, maintaining compatibility with both txt2img and img2img modes.
-        Now includes TensorRT mode detection and separate embedding storage.
+        This method integrates IPAdapter image conditioning with text embeddings,
+        maintaining compatibility with both single prompts and prompt blending.
         
         Args:
-            prompt: Text prompt  
-            negative_prompt: Negative text prompt
+            prompt_embeds: Text prompt embeddings from StreamParameterUpdater
+            negative_prompt_embeds: Negative prompt embeddings (may be None)
+            
+        Returns:
+            Tuple of (enhanced_prompt_embeds, enhanced_negative_prompt_embeds)
         """
+        # If no IPAdapter or style image, return original embeddings
         if self.ipadapter is None or self.style_image is None:
-            return  # No IPAdapter or style image
+            return prompt_embeds, negative_prompt_embeds
         
-        # Skip if nothing changed (performance optimization)
-        if (prompt == self._last_prompt and 
-            negative_prompt == self._last_negative_prompt and 
-            self.style_image == self._last_style_image):
-            return
-        
-        # Get IPAdapter image embeddings from the single style image
+        # Get IPAdapter image embeddings from the style image
         image_prompt_embeds, negative_image_prompt_embeds = self.ipadapter.get_image_embeds(
             images=[self.style_image]
         )
         
-        # Get the original text embeddings from StreamDiffusion
-        # Store original embeddings on first call to prevent accumulation
-        if not hasattr(self.stream, '_original_text_prompt_embeds'):
-            self.stream._original_text_prompt_embeds = self.stream.prompt_embeds.clone()
-            self.stream._original_text_negative_prompt_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
-            if self.stream._original_text_negative_prompt_embeds is not None:
-                self.stream._original_text_negative_prompt_embeds = self.stream._original_text_negative_prompt_embeds.clone()
-        
-        # Always use the original text embeddings (not the combined ones from previous calls)
-        original_prompt_embeds = self.stream._original_text_prompt_embeds
-        original_negative_prompt_embeds = self.stream._original_text_negative_prompt_embeds
-        
-        if original_prompt_embeds is None:
-            print("_update_stream_embeddings: Warning - No original prompt embeddings found")
-            return
-        
-        # print(f"_update_stream_embeddings: Original prompt embeds shape: {original_prompt_embeds.shape}")
-        # print(f"_update_stream_embeddings: Image prompt embeds shape: {image_prompt_embeds.shape}")
-        # if original_negative_prompt_embeds is not None:
-            # print(f"_update_stream_embeddings: Original negative embeds shape: {original_negative_prompt_embeds.shape}")
-        # print(f"_update_stream_embeddings: Negative image embeds shape: {negative_image_prompt_embeds.shape}")
-        
-        # Detect TensorRT mode (same pattern as ControlNet)
-        # is_tensorrt = hasattr(self.stream.unet, 'engine') or hasattr(self.stream, 'unet_engine')
-        
-        # print(f"_update_stream_embeddings: TensorRT mode detected: {is_tensorrt}")
-        
-        # Ensure image embeddings have the same batch size as original embeddings
-        batch_size = original_prompt_embeds.shape[0]
-        
-        # Repeat image embeddings to match batch size if needed
+        # Ensure image embeddings have the same batch size as text embeddings
+        batch_size = prompt_embeds.shape[0]
         if image_prompt_embeds.shape[0] == 1 and batch_size > 1:
             image_prompt_embeds = image_prompt_embeds.repeat(batch_size, 1, 1)
             negative_image_prompt_embeds = negative_image_prompt_embeds.repeat(batch_size, 1, 1)
         
-        # For IPAdapter, both TensorRT and PyTorch modes use concatenated embeddings
-        print("_update_stream_embeddings: IPAdapter mode - concatenating embeddings (same for TensorRT and PyTorch)")
+        # Concatenate text and image embeddings along sequence dimension (dim=1)
+        # This is how IPAdapter works - text tokens + image tokens
+        enhanced_prompt_embeds = torch.cat([prompt_embeds, image_prompt_embeds], dim=1)
         
-        # Concatenate text and image embeddings along the sequence dimension (dim=1)
-        # This is how IPAdapter is designed to work - text tokens + image tokens
-        combined_prompt_embeds = torch.cat([original_prompt_embeds, image_prompt_embeds], dim=1)
-        
-        if original_negative_prompt_embeds is not None:
-            combined_negative_prompt_embeds = torch.cat([original_negative_prompt_embeds, negative_image_prompt_embeds], dim=1)
+        if negative_prompt_embeds is not None:
+            enhanced_negative_prompt_embeds = torch.cat([negative_prompt_embeds, negative_image_prompt_embeds], dim=1)
         else:
-            # If no negative embeddings, create them from positive embeddings with image conditioning
-            combined_negative_prompt_embeds = torch.cat([original_prompt_embeds, negative_image_prompt_embeds], dim=1)
-        
-        # Update StreamDiffusion embeddings with the combined embeddings
-        # print(f"_update_stream_embeddings: Combined prompt embeds shape: {combined_prompt_embeds.shape}")
-        # print(f"_update_stream_embeddings: Combined negative embeds shape: {combined_negative_prompt_embeds.shape}")
-        
-        self.stream.prompt_embeds = combined_prompt_embeds
-        self.stream.negative_prompt_embeds = combined_negative_prompt_embeds
+            # Create negative embeddings if none provided
+            enhanced_negative_prompt_embeds = torch.cat([prompt_embeds, negative_image_prompt_embeds], dim=1)
         
         # Update token count for attention processors
-        total_tokens = combined_prompt_embeds.shape[1]
         self.ipadapter.set_tokens(image_prompt_embeds.shape[0] * self.ipadapter.num_tokens)
-        # print(f"_update_stream_embeddings: Set tokens to: {image_prompt_embeds.shape[0] * self.ipadapter.num_tokens}")
         
-        # if is_tensorrt:
-        #     print("_update_stream_embeddings: TensorRT mode - using concatenated embeddings (same as PyTorch)")
-        # else:
-        #     print("_update_stream_embeddings: PyTorch mode - using concatenated embeddings")
+        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Input prompt_embeds shape: {prompt_embeds.shape}")
+        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Image embeds shape: {image_prompt_embeds.shape}")
+        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Enhanced embeddings - Text: {prompt_embeds.shape[1]} tokens, Image: {image_prompt_embeds.shape[1]} tokens, Total: {enhanced_prompt_embeds.shape[1]} tokens")
+        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Returning enhanced_prompt_embeds shape: {enhanced_prompt_embeds.shape}")
         
-        # Update cache
-        self._last_prompt = prompt
-        self._last_negative_prompt = negative_prompt
-        self._last_style_image = self.style_image
+        return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     
     def prepare(self, *args, **kwargs):
         """Forward prepare calls to the underlying StreamDiffusion"""
         return self.stream.prepare(*args, **kwargs)
     
     def __call__(self, *args, **kwargs):
-        """Forward calls to the original wrapper, updating IPAdapter embeddings first"""
-        # Extract prompt from call arguments
-        prompt = kwargs.get('prompt', '')
-        negative_prompt = kwargs.get('negative_prompt', getattr(self.stream, 'negative_prompt', ''))
-        
-        # Update stream embeddings with IPAdapter conditioning
-        try:
-            self._update_stream_embeddings(prompt, negative_prompt)
-        except Exception as e:
-            print(f"__call__: Error updating IPAdapter embeddings: {e}")
-            import traceback
-            traceback.print_exc()
-        
+        """Forward calls to the original wrapper, IPAdapter enhancement happens automatically via hook system"""
         # If we have the original wrapper, use its __call__ method (handles image= parameter correctly)
         if hasattr(self, '_original_wrapper'):
             return self._original_wrapper(*args, **kwargs)

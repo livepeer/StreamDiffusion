@@ -31,6 +31,9 @@ class StreamParameterUpdater:
         self._seed_cache: Dict[int, Dict] = {}
         self._current_seed_list: List[Tuple[int, float]] = []
         self._seed_cache_stats = CacheStats()
+        
+        # Enhancement hooks (e.g., for IPAdapter)
+        self._embedding_enhancers = []
     
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
@@ -81,6 +84,53 @@ class StreamParameterUpdater:
     def get_normalize_seed_weights(self) -> bool:
         """Get the current seed weight normalization setting."""
         return self.normalize_seed_weights
+    
+    def register_embedding_enhancer(self, enhancer_func, name: str = "unknown") -> None:
+        """
+        Register an embedding enhancer function that will be called after prompt blending.
+        
+        The enhancer function should have signature:
+        enhancer_func(prompt_embeds: torch.Tensor, negative_prompt_embeds: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
+        
+        Args:
+            enhancer_func: Function that takes (prompt_embeds, negative_prompt_embeds) and returns enhanced versions
+            name: Optional name for the enhancer (for debugging)
+        """
+        self._embedding_enhancers.append((enhancer_func, name))
+        print(f"register_embedding_enhancer: Registered '{name}' enhancer with StreamParameterUpdater")
+        
+        # IMMEDIATELY apply enhancer to existing embeddings if they exist (fixes TensorRT timing issue)
+        if hasattr(self.stream, 'prompt_embeds') and self.stream.prompt_embeds is not None:
+            print(f"register_embedding_enhancer: Applying '{name}' enhancer to existing embeddings")
+            print(f"register_embedding_enhancer: Current prompt_embeds shape: {self.stream.prompt_embeds.shape}")
+            try:
+                current_negative_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
+                enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
+                    self.stream.prompt_embeds, current_negative_embeds
+                )
+                self.stream.prompt_embeds = enhanced_prompt_embeds
+                if enhanced_negative_embeds is not None:
+                    self.stream.negative_prompt_embeds = enhanced_negative_embeds
+                print(f"register_embedding_enhancer: Enhanced prompt_embeds shape: {self.stream.prompt_embeds.shape}")
+            except Exception as e:
+                print(f"register_embedding_enhancer: Error applying '{name}' enhancer immediately: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def unregister_embedding_enhancer(self, enhancer_func) -> None:
+        """Unregister a specific embedding enhancer function."""
+        original_length = len(self._embedding_enhancers)
+        self._embedding_enhancers = [(func, name) for func, name in self._embedding_enhancers if func != enhancer_func]
+        removed_count = original_length - len(self._embedding_enhancers)
+        if removed_count > 0:
+            print(f"unregister_embedding_enhancer: Removed {removed_count} enhancer(s) from StreamParameterUpdater")
+    
+    def clear_embedding_enhancers(self) -> None:
+        """Clear all embedding enhancers."""
+        enhancer_count = len(self._embedding_enhancers)
+        self._embedding_enhancers.clear()
+        if enhancer_count > 0:
+            print(f"clear_embedding_enhancers: Removed {enhancer_count} enhancer(s) from StreamParameterUpdater")
 
     def _normalize_weights(self, weights: List[float], normalize: bool) -> torch.Tensor:
         """Generic weight normalization helper"""
@@ -306,10 +356,38 @@ class StreamParameterUpdater:
             
             # Combine with conditional embeddings
             cond_embeds = combined_embeds.repeat(batch_size, 1, 1)
-            self.stream.prompt_embeds = torch.cat([uncond_embeds, cond_embeds], dim=0)
+            final_prompt_embeds = torch.cat([uncond_embeds, cond_embeds], dim=0)
+            final_negative_embeds = None  # CFG mode combines everything into prompt_embeds
         else:
             # No CFG, just use the blended embeddings
-            self.stream.prompt_embeds = combined_embeds.repeat(self.stream.batch_size, 1, 1)
+            final_prompt_embeds = combined_embeds.repeat(self.stream.batch_size, 1, 1)
+            final_negative_embeds = None  # Will be set by enhancers if needed
+        
+        # Apply embedding enhancers (e.g., IPAdapter)
+        if self._embedding_enhancers:
+            print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: Applying {len(self._embedding_enhancers)} enhancer(s)")
+            print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: Input final_prompt_embeds shape: {final_prompt_embeds.shape}")
+            for enhancer_func, enhancer_name in self._embedding_enhancers:
+                try:
+                    enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
+                        final_prompt_embeds, final_negative_embeds
+                    )
+                    print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: After '{enhancer_name}' enhancement: {enhanced_prompt_embeds.shape}")
+                    final_prompt_embeds = enhanced_prompt_embeds
+                    if enhanced_negative_embeds is not None:
+                        final_negative_embeds = enhanced_negative_embeds
+                except Exception as e:
+                    print(f"_apply_prompt_blending: Error in enhancer '{enhancer_name}': {e}")
+                    import traceback
+                    traceback.print_exc()
+        else:
+            print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: No enhancers to apply")
+        
+        # Set final embeddings on stream
+        print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: Setting final_prompt_embeds shape: {final_prompt_embeds.shape}")
+        self.stream.prompt_embeds = final_prompt_embeds
+        if final_negative_embeds is not None:
+            self.stream.negative_prompt_embeds = final_negative_embeds
 
     def _slerp(self, embed1: torch.Tensor, embed2: torch.Tensor, t: float) -> torch.Tensor:
         """Spherical linear interpolation between two embeddings."""
