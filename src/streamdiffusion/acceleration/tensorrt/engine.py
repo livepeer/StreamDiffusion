@@ -38,6 +38,7 @@ class UNet2DConditionModelEngine:
             timestep = timestep.float()
 
         # Prepare base shape and input dictionaries
+        print(f"[DEBUG] TensorRT UNet2DConditionModelEngine: Received encoder_hidden_states shape: {encoder_hidden_states.shape}")
         shape_dict = {
             "sample": latent_model_input.shape,
             "timestep": timestep.shape,
