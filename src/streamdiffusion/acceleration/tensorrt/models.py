@@ -256,6 +256,8 @@ class UNet(BaseModel):
         unet_arch=None,
         image_height=512,
         image_width=512,
+        use_ipadapter=False,
+        num_image_tokens=4,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
@@ -272,6 +274,19 @@ class UNet(BaseModel):
         
         self.use_control = use_control
         self.unet_arch = unet_arch or {}
+        self.use_ipadapter = use_ipadapter
+        self.num_image_tokens = num_image_tokens
+        
+        # Baked-in IPAdapter configuration
+        if self.use_ipadapter:
+            # With baked-in processors, we extend text_maxlen to include image tokens
+            # TODO: Consider making this dynamic instead of fixed per IPAdapter variant
+            # Could use dynamic shapes: min=77 (text only), max=93 (text + 16 tokens)
+            # This would allow a single engine to handle all IPAdapter types instead of separate engines
+            self.text_maxlen = text_maxlen + self.num_image_tokens
+            print(f"UNet: IPAdapter enabled with baked-in processors")
+            print(f"UNet: {self.num_image_tokens} tokens, embedding_dim={self.embedding_dim}")
+            print(f"UNet: Extended text_maxlen to {self.text_maxlen} (text + image tokens)")
         
         if self.use_control and self.unet_arch:
             self.control_inputs = self.get_control(image_height, image_width)
@@ -340,8 +355,9 @@ class UNet(BaseModel):
         self._original_get_sample_input = self.get_sample_input
 
     def get_input_names(self):
-        """Get input names including ControlNet inputs"""
+        """Get input names including ControlNet inputs (IPAdapter is baked-in)"""
         base_names = ["sample", "timestep", "encoder_hidden_states"]
+        # Note: IPAdapter no longer needs separate inputs - processors are baked-in
         if self.use_control and self.control_inputs:
             control_names = sorted(self.control_inputs.keys())
             return base_names + control_names
@@ -354,9 +370,11 @@ class UNet(BaseModel):
         base_axes = {
             "sample": {0: "2B", 2: "H", 3: "W"},
             "timestep": {0: "2B"},
-            "encoder_hidden_states": {0: "2B"},
+            "encoder_hidden_states": {0: "2B"},  # Now includes concatenated text+image tokens
             "latent": {0: "2B", 2: "H", 3: "W"},
         }
+        
+        # Note: IPAdapter tokens are now concatenated in encoder_hidden_states
         
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
@@ -423,6 +441,8 @@ class UNet(BaseModel):
             ],
         }
         
+        # Note: IPAdapter tokens are now included in encoder_hidden_states via extended text_maxlen
+        
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
             # Each control input has its own specific spatial resolution based on UNet architecture
@@ -461,6 +481,8 @@ class UNet(BaseModel):
             "latent": (2 * batch_size, 4, latent_height, latent_width),
         }
         
+        # Note: IPAdapter tokens are now included in encoder_hidden_states via extended text_maxlen
+        
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
             for name, shape_spec in self.control_inputs.items():
@@ -495,6 +517,9 @@ class UNet(BaseModel):
             torch.ones((2 * export_batch_size,), dtype=torch.float32, device=self.device),
             torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
+        
+        # Note: IPAdapter tokens are now included in encoder_hidden_states via extended text_maxlen
+        # No separate image_embeddings input needed with baked-in processors
         
         if self.use_control and self.control_inputs:
             control_inputs = []

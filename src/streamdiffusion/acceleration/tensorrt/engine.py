@@ -7,7 +7,10 @@ from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTinyOutput
 from diffusers.models.autoencoders.autoencoder_kl import DecoderOutput
 from polygraphy import cuda
 
-from .utilities import Engine
+try:
+    from .utilities import Engine
+except ImportError:
+    from utilities import Engine
 
 
 class UNet2DConditionModelEngine:
@@ -37,6 +40,7 @@ class UNet2DConditionModelEngine:
         print(f"UNetEngine: Main input shapes - latent: {latent_model_input.shape}, timestep: {timestep.shape}, encoder: {encoder_hidden_states.shape}")
 
         # Prepare base shape and input dictionaries
+        print(f"[DEBUG] TensorRT UNet2DConditionModelEngine: Received encoder_hidden_states shape: {encoder_hidden_states.shape}")
         shape_dict = {
             "sample": latent_model_input.shape,
             "timestep": timestep.shape,
@@ -49,6 +53,9 @@ class UNet2DConditionModelEngine:
             "timestep": timestep,
             "encoder_hidden_states": encoder_hidden_states,
         }
+
+        # Note: IPAdapter embeddings are now baked into encoder_hidden_states
+        # No separate image_embeddings handling needed
 
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:

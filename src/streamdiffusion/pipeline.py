@@ -26,7 +26,8 @@ class StreamDiffusion:
         use_denoising_batch: bool = True,
         frame_buffer_size: int = 1,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
-        normalize_weights: bool = True,
+        normalize_prompt_weights: bool = True,
+        normalize_seed_weights: bool = True,
     ) -> None:
         self.device = pipe.device
         self.dtype = torch_dtype
@@ -79,7 +80,7 @@ class StreamDiffusion:
         self.inference_time_ema = 0
         
         # Initialize parameter updater
-        self._param_updater = StreamParameterUpdater(self, normalize_weights)
+        self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
 
     def load_lcm_lora(
         self,
@@ -172,6 +173,7 @@ class StreamDiffusion:
             negative_prompt=negative_prompt,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+        print(f"[DEBUG] pipeline.prepare: Initial prompt_embeds shape: {self.prompt_embeds.shape}")
 
         if self.use_denoising_batch and self.cfg_type == "full":
             uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
@@ -184,6 +186,7 @@ class StreamDiffusion:
             self.prompt_embeds = torch.cat(
                 [uncond_prompt_embeds, self.prompt_embeds], dim=0
             )
+            print(f"[DEBUG] pipeline.prepare: After CFG concat, prompt_embeds shape: {self.prompt_embeds.shape}")
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -256,16 +259,17 @@ class StreamDiffusion:
             repeats=self.frame_bff_size if self.use_denoising_batch else 1,
             dim=0,
         )
+        print(f"[DEBUG] pipeline.prepare: Before update_prompt call, prompt_embeds shape: {self.prompt_embeds.shape}")
+        #NOTE: this is a hack to ensure that the prompt goes through the parameter updater. This will be refactored upon unifying the IPAdapter and Controlnets into a unified component system. 
+        self.update_prompt(prompt)
+        print(f"[DEBUG] pipeline.prepare: After update_prompt call, final prompt_embeds shape: {self.prompt_embeds.shape}")
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
-        encoder_output = self.pipe.encode_prompt(
-            prompt=prompt,
-            device=self.device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=False,
+        self._param_updater.update_stream_params(
+            prompt_list=[(prompt, 1.0)],
+            prompt_interpolation_method="linear"
         )
-        self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
 
     @torch.no_grad()
     def update_stream_params(
@@ -280,7 +284,7 @@ class StreamDiffusion:
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         # New seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
@@ -308,7 +312,7 @@ class StreamDiffusion:
             List of prompts with weights for blending.
         negative_prompt : Optional[str]
             The negative prompt to apply to all blended prompts.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings.
         seed_list : Optional[List[Tuple[int, float]]]
             List of seeds with weights for blending.
@@ -325,18 +329,26 @@ class StreamDiffusion:
             height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
-            interpolation_method=interpolation_method,
+            prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
         )
 
-    def set_normalize_weights(self, normalize: bool) -> None:
-        """Set whether to normalize weights in prompt and seed blending operations."""
-        self._param_updater.set_normalize_weights(normalize)
+    def set_normalize_prompt_weights(self, normalize: bool) -> None:
+        """Set whether to normalize prompt weights in blending operations."""
+        self._param_updater.set_normalize_prompt_weights(normalize)
+
+    def set_normalize_seed_weights(self, normalize: bool) -> None:
+        """Set whether to normalize seed weights in blending operations."""
+        self._param_updater.set_normalize_seed_weights(normalize)
         
-    def get_normalize_weights(self) -> bool:
-        """Get the current weight normalization setting."""
-        return self._param_updater.get_normalize_weights()
+    def get_normalize_prompt_weights(self) -> bool:
+        """Get the current prompt weight normalization setting."""
+        return self._param_updater.get_normalize_prompt_weights()
+
+    def get_normalize_seed_weights(self) -> bool:
+        """Get the current seed weight normalization setting."""
+        return self._param_updater.get_normalize_seed_weights()
 
 
 
@@ -389,11 +401,20 @@ class StreamDiffusion:
         else:
             x_t_latent_plus_uc = x_t_latent
 
+        # Prepare kwargs for UNet call
+        unet_kwargs = {
+            "encoder_hidden_states": self.prompt_embeds,
+            "return_dict": False,
+        }
+        
+        # Note: IPAdapter embeddings are now baked into UNet via attention processors
+        # Both TensorRT and PyTorch modes use the same concatenated embeddings in encoder_hidden_states
+        # No special handling needed for separate image_embeddings
+                
         model_pred = self.unet(
             x_t_latent_plus_uc,
             t_list,
-            encoder_hidden_states=self.prompt_embeds,
-            return_dict=False,
+            **unet_kwargs
         )[0]
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):

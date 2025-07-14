@@ -59,7 +59,8 @@ class StreamDiffusionWrapper:
     ```
     
     ## Weight Management:
-    - All weights are normalized by default (sum to 1.0) unless normalize_weights=False
+    - Prompt weights are normalized by default (sum to 1.0) unless normalize_prompt_weights=False
+    - Seed weights are normalized by default (sum to 1.0) unless normalize_seed_weights=False
     - Use update_prompt_weights([0.8, 0.2]) to change weights without re-encoding prompts
     - Use update_seed_weights([0.3, 0.7]) to change weights without regenerating noise
     
@@ -97,10 +98,14 @@ class StreamDiffusionWrapper:
         use_safety_checker: bool = False,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
-        normalize_weights: bool = True,
+        normalize_prompt_weights: bool = True,
+        normalize_seed_weights: bool = True,
         # ControlNet options
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # IPAdapter options
+        use_ipadapter: bool = False,
+        ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -167,9 +172,12 @@ class StreamDiffusionWrapper:
             The seed, by default 2.
         use_safety_checker : bool, optional
             Whether to use safety checker or not, by default False.
-        normalize_weights : bool, optional
-            Whether to normalize weights in prompt and seed blending to sum to 1,
-            by default True. When False, weights > 1 will amplify embeddings/noise.
+        normalize_prompt_weights : bool, optional
+            Whether to normalize prompt weights in blending to sum to 1,
+            by default True. When False, weights > 1 will amplify embeddings.
+        normalize_seed_weights : bool, optional
+            Whether to normalize seed weights in blending to sum to 1,
+            by default True. When False, weights > 1 will amplify noise.
         use_controlnet : bool, optional
             Whether to enable ControlNet support, by default False.
         controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
@@ -179,6 +187,8 @@ class StreamDiffusionWrapper:
         """
         self.sd_turbo = "turbo" in model_id_or_path
         self.use_controlnet = use_controlnet
+        self.use_ipadapter = use_ipadapter
+        self.ipadapter_config = ipadapter_config
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -230,9 +240,12 @@ class StreamDiffusionWrapper:
             seed=seed,
             engine_dir=engine_dir,
             build_engines_if_missing=build_engines_if_missing,
-            normalize_weights=normalize_weights,
+            normalize_prompt_weights=normalize_prompt_weights,
+            normalize_seed_weights=normalize_seed_weights,
             use_controlnet=use_controlnet,
             controlnet_config=controlnet_config,
+            use_ipadapter=use_ipadapter,
+            ipadapter_config=ipadapter_config,
         )
 
         # Store acceleration settings for ControlNet integration
@@ -257,7 +270,7 @@ class StreamDiffusionWrapper:
         guidance_scale: float = 1.2,
         delta: float = 1.0,
         # Blending-specific parameters (only used when prompt is a list)
-        interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
     ) -> None:
@@ -281,7 +294,7 @@ class StreamDiffusionWrapper:
             The guidance scale to use, by default 1.2.
         delta : float, optional
             The delta multiplier of virtual residual noise, by default 1.0.
-        interpolation_method : Literal["linear", "slerp"], optional
+        prompt_interpolation_method : Literal["linear", "slerp"], optional
             Method for interpolating between prompt embeddings (only used for prompt blending), 
             by default "slerp".
         seed_list : Optional[List[Tuple[int, float]]], optional
@@ -328,7 +341,7 @@ class StreamDiffusionWrapper:
             self.stream.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
-                interpolation_method=interpolation_method,
+                prompt_interpolation_method=prompt_interpolation_method,
                 seed_list=seed_list,
                 seed_interpolation_method=seed_interpolation_method,
             )
@@ -340,7 +353,7 @@ class StreamDiffusionWrapper:
         self, 
         prompt: Union[str, List[Tuple[str, float]]], 
         negative_prompt: str = "",
-        interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         clear_blending: bool = True,
         warn_about_conflicts: bool = True
     ) -> None:
@@ -358,7 +371,7 @@ class StreamDiffusionWrapper:
             - Blending: [("cat", 0.7), ("dog", 0.3)]
         negative_prompt : str, optional
             The negative prompt (used with blending), by default "".
-        interpolation_method : Literal["linear", "slerp"], optional
+        prompt_interpolation_method : Literal["linear", "slerp"], optional
             Method for interpolating between prompt embeddings (used with blending), by default "slerp".
         clear_blending : bool, optional
             Whether to clear existing blending when switching to single prompt, by default True.
@@ -396,7 +409,7 @@ class StreamDiffusionWrapper:
             self.stream.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
-                interpolation_method=interpolation_method,
+                prompt_interpolation_method=prompt_interpolation_method,
             )
         
         else:
@@ -414,7 +427,7 @@ class StreamDiffusionWrapper:
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         # New seed blending parameters  
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
@@ -443,7 +456,7 @@ class StreamDiffusionWrapper:
             Example: [("cat", 0.7), ("dog", 0.3)]
         negative_prompt : Optional[str]
             The negative prompt to apply to all blended prompts.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings, by default "slerp".
         seed_list : Optional[List[Tuple[int, float]]]
             List of seeds with weights for blending. Each tuple contains (seed_value, weight).
@@ -461,7 +474,7 @@ class StreamDiffusionWrapper:
             height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
-            interpolation_method=interpolation_method,
+            prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
         )
@@ -474,13 +487,21 @@ class StreamDiffusionWrapper:
         if height is not None:
             self.height = height
 
-    def set_normalize_weights(self, normalize: bool) -> None:
-        """Set whether to normalize weights in prompt and seed blending operations."""
-        self.stream.set_normalize_weights(normalize)
+    def set_normalize_prompt_weights(self, normalize: bool) -> None:
+        """Set whether to normalize prompt weights in blending operations."""
+        self.stream.set_normalize_prompt_weights(normalize)
+
+    def set_normalize_seed_weights(self, normalize: bool) -> None:
+        """Set whether to normalize seed weights in blending operations."""
+        self.stream.set_normalize_seed_weights(normalize)
         
-    def get_normalize_weights(self) -> bool:
-        """Get the current weight normalization setting."""
-        return self.stream.get_normalize_weights()
+    def get_normalize_prompt_weights(self) -> bool:
+        """Get the current prompt weight normalization setting."""
+        return self.stream.get_normalize_prompt_weights()
+
+    def get_normalize_seed_weights(self) -> bool:
+        """Get the current seed weight normalization setting."""
+        return self.stream.get_normalize_seed_weights()
 
     def __call__(
         self,
@@ -727,6 +748,8 @@ class StreamDiffusionWrapper:
 
         return pil_images
 
+
+
     def _load_model(
         self,
         model_id_or_path: str,
@@ -745,9 +768,12 @@ class StreamDiffusionWrapper:
         seed: int = 2,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
-        normalize_weights: bool = True,
+        normalize_prompt_weights: bool = True,
+        normalize_seed_weights: bool = True,
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        use_ipadapter: bool = False,
+        ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -797,6 +823,10 @@ class StreamDiffusionWrapper:
             Whether to apply ControlNet patch, by default False.
         controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
             ControlNet configuration(s), by default None.
+        use_ipadapter : bool, optional
+            Whether to apply IPAdapter patch, by default False.
+        ipadapter_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
+            IPAdapter configuration(s), by default None.
 
         Returns
         -------
@@ -844,7 +874,8 @@ class StreamDiffusionWrapper:
             frame_buffer_size=self.frame_buffer_size,
             use_denoising_batch=self.use_denoising_batch,
             cfg_type=cfg_type,
-            normalize_weights=normalize_weights,
+            normalize_prompt_weights=normalize_prompt_weights,
+            normalize_seed_weights=normalize_seed_weights,
         )
         if not self.sd_turbo:
             if use_lcm_lora:
@@ -899,47 +930,104 @@ class StreamDiffusionWrapper:
                     validate_architecture
                 )
                 from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_wrapper
+                from streamdiffusion.acceleration.tensorrt.ipadapter_wrapper import create_ipadapter_wrapper
 
                 def create_prefix(
                     model_id_or_path: str,
                     max_batch: int,
                     min_batch_size: int,
-                    width: int,
-                    height: int,
+                    ipadapter_scale: Optional[float] = None,
+                    ipadapter_tokens: Optional[int] = None,
                 ):
                     maybe_path = Path(model_id_or_path)
-                    # Use dynamic engine naming to distinguish from static engines
-                    dynamic_suffix = "dyn-512-1024"
-                    if maybe_path.exists():
-                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
-                    else:
-                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
+                    base_name = maybe_path.stem if maybe_path.exists() else model_id_or_path
+                    
+                    prefix = f"{base_name}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}"
+                    
+                    # Add IPAdapter parameters to engine name when provided
+                    if ipadapter_scale is not None:
+                        prefix += f"--ipa{ipadapter_scale}"
+                    if ipadapter_tokens is not None:
+                        prefix += f"--tokens{ipadapter_tokens}"
+                    
+                    prefix += f"--mode-{self.mode}--dyn-512-1024"
+                    return prefix
 
-                # Always enable ControlNet TensorRT support to create universal engines
+                # Detect IPAdapter and ControlNet support needed
                 use_controlnet_trt = False
+                use_ipadapter_trt = False
                 unet_arch = {}
                 
-                if acceleration == "tensorrt":
+                # Use the explicit use_ipadapter parameter
+                has_ipadapter = use_ipadapter
+                
+                # Create IPAdapter pipeline and pre-load models for TensorRT if needed
+                ipadapter_pipeline = None
+                if has_ipadapter:
+                    print("_load_model: Creating IPAdapter pipeline for TensorRT integration...")
                     try:
-                        model_type = detect_model_from_diffusers_unet(stream.unet)
+                        from streamdiffusion.ipadapter import IPAdapterPipeline
+                        ipadapter_pipeline = IPAdapterPipeline(
+                            stream_diffusion=stream,
+                            device=self.device,
+                            dtype=self.dtype
+                        )
+                        print("_load_model: Pre-loading IPAdapter models before TensorRT compilation...")
+                        ipadapter_pipeline.preload_models_for_tensorrt(ipadapter_config)
+                    except Exception as e:
+                        print(f"_load_model: Error creating IPAdapter pipeline: {e}")
+                        has_ipadapter = False
+                
+                try:
+                    model_type = detect_model_from_diffusers_unet(stream.unet)
+                    
+                    if has_ipadapter:
+                        # IPAdapter mode: Only enable IPAdapter support
+                        use_ipadapter_trt = True
+                        cross_attention_dim = stream.unet.config.cross_attention_dim
+                        unet_arch = {"context_dim": cross_attention_dim}
+                        print(f"IPAdapter detected - enabling TensorRT IPAdapter support for {model_type}")
+                        
+                        # Determine IPAdapter variant from loaded instance
+                        if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                            detected_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                            variant = "Plus" if detected_tokens == 16 else "Standard"
+                            print(f"IPAdapter: {variant} IPAdapter ({detected_tokens} tokens), cross_attention_dim={cross_attention_dim}")
+                        else:
+                            print(f"IPAdapter: cross_attention_dim={cross_attention_dim}")
+                    else:
+                        # ControlNet mode: Enable ControlNet support for backward compatibility
                         unet_arch = extract_unet_architecture(stream.unet)
                         unet_arch = validate_architecture(unet_arch, model_type)
                         use_controlnet_trt = True
-                        print(f"Building universal TensorRT engines with ControlNet support for {model_type}")
-                    except Exception as e:
-                        print(f"ControlNet architecture detection failed: {e}, building engines without ControlNet support")
-                        use_controlnet_trt = False
+                        print(f"Enabling TensorRT ControlNet support for {model_type}")
+                        
+                except Exception as e:
+                    print(f"Architecture detection failed: {e}, compiling without special support")
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
-                engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
+                engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
+                
+                # Get IPAdapter information from pipeline if available
+                ipadapter_scale = None
+                ipadapter_tokens = None
+                if use_ipadapter_trt and ipadapter_pipeline:
+                    tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
+                    ipadapter_scale = tensorrt_info.get('scale', 1.0)
+                    
+                    # Read token count from loaded IPAdapter instance
+                    if hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
+                        ipadapter_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                    else:
+                        ipadapter_tokens = 4  # Default fallback
                 unet_path = os.path.join(
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
                         max_batch=stream.trt_unet_batch_size,
                         min_batch_size=stream.trt_unet_batch_size,
-                        width=self.width,
-                        height=self.height,
+                        ipadapter_scale=ipadapter_scale,
+                        ipadapter_tokens=ipadapter_tokens,
                     ),
                     "unet.engine",
                 )
@@ -953,8 +1041,8 @@ class StreamDiffusionWrapper:
                         min_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
-                        width=self.width,
-                        height=self.height,
+                        ipadapter_scale=ipadapter_scale,
+                        ipadapter_tokens=ipadapter_tokens,
                     ),
                     "vae_encoder.engine",
                 )
@@ -968,8 +1056,8 @@ class StreamDiffusionWrapper:
                         min_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
-                        width=self.width,
-                        height=self.height,
+                        ipadapter_scale=ipadapter_scale,
+                        ipadapter_tokens=ipadapter_tokens,
                     ),
                     "vae_decoder.engine",
                 )
@@ -998,12 +1086,14 @@ class StreamDiffusionWrapper:
 
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
-
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
+                    
+                    # Get IPAdapter token count for UNet model from loaded instance
+                    if use_ipadapter_trt:
+                        if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
+                            raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
+                        num_image_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                    else:
+                        num_image_tokens = 4  # Default fallback for non-IPAdapter mode
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -1013,13 +1103,34 @@ class StreamDiffusionWrapper:
                         unet_dim=stream.unet.config.in_channels,
                         use_control=use_controlnet_trt,
                         unet_arch=unet_arch if use_controlnet_trt else None,
+                        use_ipadapter=use_ipadapter_trt,
+                        num_image_tokens=num_image_tokens,
                         image_height=self.height,
                         image_width=self.width,
                     )
 
-
-                    # Use ControlNet wrapper if ControlNet support is enabled
-                    if use_controlnet_trt:
+                    # Use appropriate wrapper based on mode
+                    if use_ipadapter_trt:
+                        print("Compiling UNet with IPAdapter support (baked-in processors WITH WEIGHTS)")
+                        
+                        # Get IPAdapter token count from loaded instance
+                        if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
+                            raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
+                        
+                        num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                        
+                        # Create IPAdapter-aware wrapper with baked-in processors
+                        wrapped_unet = create_ipadapter_wrapper(stream.unet, num_tokens=num_tokens)
+                        compile_unet(
+                            wrapped_unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
+                        )
+                    elif use_controlnet_trt:
+                        print("Compiling UNet with ControlNet support")
                         control_input_names = unet_model.get_input_names()
                         wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
                         compile_unet(
@@ -1038,6 +1149,7 @@ class StreamDiffusionWrapper:
                             },
                         )
                     else:
+                        print("Compiling UNet without special support")
                         compile_unet(
                             stream.unet,
                             unet_model,
@@ -1123,14 +1235,21 @@ class StreamDiffusionWrapper:
                 stream.unet = UNet2DConditionModelEngine(
                     unet_path, cuda_stream, use_cuda_graph=False
                 )
-
-                # Always set ControlNet support to True for universal TensorRT engines
-                # This allows the engine to accept dummy inputs when no ControlNets are used
-                stream.unet.use_control = True
-                if use_controlnet_trt and unet_arch:
-                    stream.unet.unet_arch = unet_arch
-                    stream.unet.unet_arch = unet_arch
-
+                
+                # Store metadata on the engine for runtime use
+                if use_controlnet_trt:
+                    setattr(stream.unet, 'use_control', True)
+                    setattr(stream.unet, 'unet_arch', unet_arch)
+                    setattr(stream.unet, 'use_ipadapter', False)
+                    print("TensorRT UNet engine configured for ControlNet support")
+                elif use_ipadapter_trt:
+                    setattr(stream.unet, 'use_control', False)
+                    setattr(stream.unet, 'use_ipadapter', True)
+                    setattr(stream.unet, 'ipadapter_arch', unet_arch)
+                    print("TensorRT UNet engine configured for IPAdapter support")
+                else:
+                    setattr(stream.unet, 'use_control', False)
+                    setattr(stream.unet, 'use_ipadapter', False)
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,
@@ -1279,12 +1398,12 @@ class StreamDiffusionWrapper:
 
     # ControlNet convenience methods
     def add_controlnet(self,
-                      model_id: str,
-                      preprocessor: Optional[str] = None,
-                      conditioning_scale: float = 1.0,
-                      control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
-                      enabled: bool = True,
-                      preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
+                       model_id: str,
+                       preprocessor: Optional[str] = None,
+                       conditioning_scale: float = 1.0,
+                       control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
+                       enabled: bool = True,
+                       preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
         """Forward add_controlnet call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
@@ -1297,8 +1416,6 @@ class StreamDiffusionWrapper:
             'preprocessor_params': preprocessor_params or {}
         }
         return self.stream.add_controlnet(cn_config, control_image)
-
-
 
     def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
@@ -1321,8 +1438,6 @@ class StreamDiffusionWrapper:
         
         return self.stream.get_last_processed_image(index)
 
-
-    
     def update_seed_blending(
         self, 
         seed_list: List[Tuple[int, float]], 
@@ -1347,7 +1462,7 @@ class StreamDiffusionWrapper:
     def update_prompt_weights(
         self, 
         prompt_weights: List[float],
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Update weights for current prompt list without re-encoding prompts.
@@ -1356,10 +1471,10 @@ class StreamDiffusionWrapper:
         ----------
         prompt_weights : List[float]
             New weights for the current prompt list.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings, by default "slerp".
         """
-        self.stream._param_updater.update_prompt_weights(prompt_weights, interpolation_method)
+        self.stream._param_updater.update_prompt_weights(prompt_weights, prompt_interpolation_method)
     
     def update_seed_weights(
         self, 
@@ -1419,7 +1534,7 @@ class StreamDiffusionWrapper:
         self, 
         index: int, 
         new_prompt: str,
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Update a specific prompt by index without changing other prompts.
@@ -1430,16 +1545,16 @@ class StreamDiffusionWrapper:
             Index of the prompt to update.
         new_prompt : str
             New prompt text.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings, by default "slerp".
         """
-        self.stream._param_updater.update_prompt_at_index(index, new_prompt, interpolation_method)
+        self.stream._param_updater.update_prompt_at_index(index, new_prompt, prompt_interpolation_method)
     
     def add_prompt(
         self, 
         prompt: str, 
         weight: float = 1.0,
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Add a new prompt to the current blending configuration.
@@ -1450,15 +1565,15 @@ class StreamDiffusionWrapper:
             Prompt text to add.
         weight : float
             Weight for the new prompt, by default 1.0.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings, by default "slerp".
         """
-        self.stream._param_updater.add_prompt(prompt, weight, interpolation_method)
+        self.stream._param_updater.add_prompt(prompt, weight, prompt_interpolation_method)
     
     def remove_prompt_at_index(
         self, 
         index: int,
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Remove a prompt from the current blending configuration by index.
@@ -1467,10 +1582,10 @@ class StreamDiffusionWrapper:
         ----------
         index : int
             Index of the prompt to remove.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between remaining prompt embeddings, by default "slerp".
         """
-        self.stream._param_updater.remove_prompt_at_index(index, interpolation_method)
+        self.stream._param_updater.remove_prompt_at_index(index, prompt_interpolation_method)
     
     def update_seed_at_index(
         self, 
