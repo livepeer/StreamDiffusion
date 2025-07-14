@@ -1,4 +1,5 @@
 import torch
+import traceback
 from typing import List, Optional, Union, Dict, Any, Tuple
 from PIL import Image
 import numpy as np
@@ -262,6 +263,9 @@ class BaseControlNetPipeline:
             return controlnet
             
         except Exception as e:
+            print(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
+            print(f"Full stack trace for model loading failure:")
+            print(traceback.format_exc())
             raise ValueError(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
     
 
@@ -367,8 +371,9 @@ class BaseControlNetPipeline:
             'sample': x_t_latent,
             'timestep': timestep,
             'encoder_hidden_states': encoder_hidden_states,
-            **kwargs
+            'return_dict': False,
         }
+        base_kwargs.update(self._get_additional_controlnet_kwargs(**kwargs))
         
         down_samples_list = []
         mid_samples_list = []
@@ -405,6 +410,8 @@ class BaseControlNetPipeline:
                 mid_samples_list.append(mid_sample)
             except Exception as e:
                 print(f"ControlNetPipeline: ControlNet {i} failed: {e}")
+                print(f"ControlNetPipeline: Full stack trace for ControlNet {i}:")
+                print(traceback.format_exc())
                 continue
         
         # Early exit if no outputs
