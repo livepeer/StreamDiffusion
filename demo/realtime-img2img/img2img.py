@@ -48,12 +48,6 @@ class Pipeline:
         page_content: str = page_content
 
     class InputParams(BaseModel):
-        prompt: str = Field(
-            default_prompt,
-            title="Prompt",
-            field="textarea",
-            id="prompt",
-        )
         # negative_prompt: str = Field(
         #     default_negative_prompt,
         #     title="Negative Prompt",
@@ -218,8 +212,7 @@ class Pipeline:
             # Create wrapper using config system
             self.stream = create_wrapper_from_config(self.config, **overrides)
 
-            # Store config values for later use
-            self.prompt = self.config.get('prompt', default_prompt)
+            # Store config values for later use (excluding prompt which is handled via blending)
             self.negative_prompt = self.config.get('negative_prompt', default_negative_prompt)
             self.guidance_scale = self.config.get('guidance_scale', 1.2)
             self.num_inference_steps = self.config.get('num_inference_steps', 50)
@@ -252,34 +245,28 @@ class Pipeline:
                 engine_dir=args.engine_dir,
             )
 
-            # Store default values for later use
-            self.prompt = default_prompt
+            # Store default values for later use (excluding prompt which is handled via blending)
             self.negative_prompt = default_negative_prompt
             self.guidance_scale = 1.2
             self.num_inference_steps = 50
 
-            # Prepare pipeline with default prompts
+            # Initial preparation without prompt (will be set via blending interface)
             self.stream.prepare(
-                prompt=self.prompt,
+                prompt=default_prompt,  # Temporary initial prompt 
                 negative_prompt=self.negative_prompt,
                 num_inference_steps=self.num_inference_steps,
                 guidance_scale=self.guidance_scale,
             )
 
-        self.last_prompt = self.prompt
+        # Initialize pipeline parameters
+        self.seed = 2
+        self.guidance_scale = 1.1
+        self.num_inference_steps = 50
+        self.negative_prompt = default_negative_prompt
+
+        # Model and acceleration setup
 
     def predict(self, params: "Pipeline.InputParams") -> Image.Image:
-        # Update prompt if it has changed
-        if hasattr(params, 'prompt') and params.prompt != self.last_prompt:
-            self.last_prompt = params.prompt
-            # Update the pipeline with new prompt
-            self.stream.prepare(
-                prompt=params.prompt,
-                negative_prompt=self.negative_prompt,
-                num_inference_steps=self.num_inference_steps,
-                guidance_scale=self.guidance_scale,
-            )
-
         # Handle different modes
         if self.pipeline_mode == "txt2img":
             # Text-to-image mode
@@ -299,6 +286,6 @@ class Pipeline:
             else:
                 # Standard mode: use original logic with preprocessed tensor
                 image_tensor = self.stream.preprocess_image(params.image)
-                output_image = self.stream(image=image_tensor, prompt=params.prompt)
+                output_image = self.stream(image=image_tensor)
 
         return output_image

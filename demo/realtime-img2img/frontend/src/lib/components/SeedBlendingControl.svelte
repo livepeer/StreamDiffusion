@@ -102,9 +102,30 @@
       if (!response.ok) {
         const result = await response.json();
         console.error('updateBlending: Failed to update seed blending:', result.detail);
+      } else {
+        console.log('updateBlending: Successfully updated seed blending');
+        // Refresh the blending config to get the current weights from the backend
+        await refreshCurrentWeights();
       }
     } catch (error) {
       console.error('updateBlending: Update failed:', error);
+    }
+  }
+
+  async function refreshCurrentWeights() {
+    try {
+      const response = await fetch('/api/blending/current');
+      const data = await response.json();
+      
+      if (data.seed_blending && Array.isArray(data.seed_blending)) {
+        console.log('refreshCurrentWeights: Received updated seed weights:', data.seed_blending);
+        // Update the local seedList with the weights from the backend
+        seedList = [...data.seed_blending];
+        // Trigger reactivity
+        seedList = seedList;
+      }
+    } catch (error) {
+      console.error('refreshCurrentWeights: Failed to refresh seed weights:', error);
     }
   }
 </script>

@@ -449,9 +449,12 @@ class App:
                 if self.pipeline:
                     try:
                         current_prompts = self.pipeline.stream.get_current_prompts()
+                        print(f"get_current_blending_config: Retrieved current prompts from pipeline: {current_prompts}")
                         if current_prompts and len(current_prompts) > 0:
                             prompt_blending_config = current_prompts
-                    except:
+                            print(f"get_current_blending_config: Using pipeline prompts: {prompt_blending_config}")
+                    except Exception as e:
+                        print(f"get_current_blending_config: Error getting current prompts: {e}")
                         pass
                         
                     try:
@@ -774,6 +777,10 @@ class App:
                 prompt_list = data.get("prompt_list")
                 interpolation_method = data.get("interpolation_method", "slerp")
                 
+                print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
+                print(f"update_prompt_blending: prompt_list = {prompt_list}")
+                print(f"update_prompt_blending: interpolation_method = {interpolation_method}")
+                
                 if prompt_list is None:
                     raise HTTPException(status_code=400, detail="Missing prompt_list parameter")
                 
@@ -793,11 +800,15 @@ class App:
                 # Convert list format [[prompt, weight], ...] to tuple format [(prompt, weight), ...]
                 prompt_tuples = [(item[0], item[1]) for item in prompt_list]
                 
+                print(f"update_prompt_blending: Calling pipeline.stream.update_prompt with {len(prompt_tuples)} prompts")
+                
                 # Update prompt blending using the unified public interface
                 self.pipeline.stream.update_prompt(
-                    prompt=prompt_tuples,
+                    prompt_tuples,  # Pass as first positional argument
                     interpolation_method=interpolation_method
                 )
+                
+                print(f"update_prompt_blending: Successfully updated prompt blending")
                 
                 return JSONResponse({
                     "status": "success",
@@ -805,6 +816,7 @@ class App:
                 })
                 
             except Exception as e:
+                print(f"update_prompt_blending: Error: {e}")
                 logging.error(f"update_prompt_blending: Failed to update prompt blending: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update prompt blending: {str(e)}")
 
@@ -1247,7 +1259,13 @@ class App:
         """Create the default pipeline (standard mode)"""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch_dtype = torch.float16
-        return Pipeline(self.args, device, torch_dtype, width=self.new_width, height=self.new_height)
+        pipeline = Pipeline(self.args, device, torch_dtype, width=self.new_width, height=self.new_height)
+        
+        # Initialize with default prompt blending (single prompt with weight 1.0)
+        default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
+        pipeline.stream.update_prompt([(default_prompt, 1.0)], interpolation_method="slerp")
+        
+        return pipeline
 
     def _create_pipeline_with_config(self, controlnet_config_path=None):
         """Create a new pipeline with optional ControlNet configuration"""
@@ -1274,6 +1292,17 @@ class App:
             new_args = self.args
         
         new_pipeline = Pipeline(new_args, device, torch_dtype, width=self.new_width, height=self.new_height)
+        
+        # Initialize prompt blending from config
+        normalized_prompt_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+        if normalized_prompt_config:
+            # Convert to tuple format and set up prompt blending
+            prompt_tuples = [(item[0], item[1]) for item in normalized_prompt_config]
+            new_pipeline.stream.update_prompt(prompt_tuples, interpolation_method="slerp")
+        else:
+            # Fallback to default single prompt
+            default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
+            new_pipeline.stream.update_prompt([(default_prompt, 1.0)], interpolation_method="slerp")
         
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
