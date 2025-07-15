@@ -4,25 +4,33 @@
 
   export let promptBlendingConfig: any = null;
   export let normalizePromptWeights: boolean = true;
+  export let currentPrompt: string = '';
 
   const dispatch = createEventDispatcher();
 
   let promptList: Array<[string, number]> = [];
   let interpolationMethod = 'slerp';
+  let initialized = false;
 
-  $: if (promptBlendingConfig && Array.isArray(promptBlendingConfig)) {
-    // Handle normalized config format from backend [[prompt, weight], ...]
-    promptList = [...promptBlendingConfig];
-    console.log('PromptBlendingControl: Updated from config:', promptList);
-  } else if (promptBlendingConfig && promptBlendingConfig.prompt_list) {
-    // Handle legacy format with prompt_list property
-    promptList = [...promptBlendingConfig.prompt_list];
-    interpolationMethod = promptBlendingConfig.interpolation_method || 'slerp';
-    console.log('PromptBlendingControl: Updated from legacy config:', promptList);
-  } else {
-    // Initialize with single prompt if no blending config
-    if (promptList.length === 0) {
-      promptList = [['a beautiful landscape', 1.0]];
+  // Reactive logic to update promptList when config or currentPrompt changes
+  $: {
+    if (promptBlendingConfig && Array.isArray(promptBlendingConfig)) {
+      // Handle normalized config format from backend [[prompt, weight], ...]
+      promptList = [...promptBlendingConfig];
+      initialized = true;
+      console.log('PromptBlendingControl: Updated from config:', promptList);
+    } else if (promptBlendingConfig && promptBlendingConfig.prompt_list) {
+      // Handle legacy format with prompt_list property
+      promptList = [...promptBlendingConfig.prompt_list];
+      interpolationMethod = promptBlendingConfig.interpolation_method || 'slerp';
+      initialized = true;
+      console.log('PromptBlendingControl: Updated from legacy config:', promptList);
+    } else if (!initialized) {
+      // Initialize with current prompt if no blending config and not yet initialized
+      const initPrompt = currentPrompt && currentPrompt.trim() ? currentPrompt : 'a beautiful landscape';
+      promptList = [[initPrompt, 1.0]];
+      initialized = true;
+      console.log('PromptBlendingControl: Initialized with current prompt:', initPrompt);
     }
   }
 
@@ -105,7 +113,7 @@
 
 <div class="space-y-4">
   <div class="flex items-center justify-between">
-    <h3 class="text-lg font-semibold">Prompt Blending</h3>
+    <h3 class="text-lg font-semibold">Prompt Configuration</h3>
     <div class="flex gap-2">
       <Button on:click={addPrompt} classList="text-sm">
         + Add Prompt
@@ -144,7 +152,7 @@
     </div>
 
     <!-- Prompt List -->
-    {#each promptList as [prompt, weight], index}
+    {#each promptList as [prompt, weight], index (`${index}-${prompt}`)}
       <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-3">
         <div class="flex items-center justify-between">
           <span class="text-sm font-medium">Prompt {index + 1}</span>

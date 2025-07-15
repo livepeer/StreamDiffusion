@@ -57,7 +57,7 @@
   }
   
   // Panel state management
-  let showPromptBlending: boolean = false;
+  let showPromptBlending: boolean = true; // Default to expanded since it's the primary prompt interface
   let showSeedBlending: boolean = false;
   let showResolutionPicker: boolean = true; // Default to expanded
   let leftPanelCollapsed: boolean = false;
@@ -116,12 +116,16 @@
       maxQueueSize = settings.max_queue_size;
       pageContent = settings.page_content;
       
+      console.log('getSettings: promptBlendingConfig:', promptBlendingConfig);
+      console.log('getSettings: current prompt in store:', $pipelineValues.prompt);
+      
       // Update prompt in store if config prompt is available
       if (settings.config_prompt) {
         pipelineValues.update(values => ({
           ...values,
           prompt: settings.config_prompt
         }));
+        console.log('getSettings: Updated prompt from config_prompt:', settings.config_prompt);
       }
       
       // Set initial resolution value if available
@@ -553,15 +557,6 @@
             </div>
           {/if}
 
-          <!-- Prompt Input -->
-          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-            <h3 class="text-md font-medium mb-3">Prompt</h3>
-            <TextArea 
-              params={pipelineParams.prompt} 
-              bind:value={$pipelineValues.prompt} 
-            />
-          </div>
-
           <!-- Resolution Picker -->
           <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
             <button 
@@ -578,18 +573,18 @@
             {/if}
           </div>
 
-          <!-- Prompt Blending -->
+          <!-- Prompt -->
           <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
             <button 
               on:click={() => showPromptBlending = !showPromptBlending}
               class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
             >
-              <h3 class="text-md font-medium">Prompt Blending</h3>
+              <h3 class="text-md font-medium">Prompt</h3>
               <span class="text-sm">{showPromptBlending ? '−' : '+'}</span>
             </button>
             {#if showPromptBlending}
               <div class="p-4 pt-0">
-                <PromptBlendingControl {promptBlendingConfig} {normalizePromptWeights} />
+                <PromptBlendingControl {promptBlendingConfig} {normalizePromptWeights} currentPrompt={$pipelineValues.prompt} />
               </div>
             {/if}
           </div>
