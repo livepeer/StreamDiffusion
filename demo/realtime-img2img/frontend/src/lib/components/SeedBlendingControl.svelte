@@ -9,51 +9,71 @@
 
   let seedList: Array<[number, number]> = [];
   let seedInterpolationMethod = 'linear';
+  let initialized = false;
+  let lastConfigHash = '';
 
-  $: if (seedBlendingConfig && Array.isArray(seedBlendingConfig)) {
-    // Handle normalized config format from backend [[seed, weight], ...]
-    seedList = [...seedBlendingConfig];
-    console.log('SeedBlendingControl: Updated from config:', seedList);
-  } else if (seedBlendingConfig && seedBlendingConfig.seed_list) {
-    // Handle legacy format with seed_list property
-    seedList = [...seedBlendingConfig.seed_list];
-    seedInterpolationMethod = seedBlendingConfig.seed_interpolation_method || 'linear';
-    console.log('SeedBlendingControl: Updated from legacy config:', seedList);
-  } else {
-    // Initialize with single seed if no blending config
-    if (seedList.length === 0) {
-      seedList = [[2, 1.0]];
+  // Helper function to create a simple hash of the config for comparison
+  function getConfigHash(config: any): string {
+    return JSON.stringify(config);
+  }
+
+  // Reactive logic to update seedList when config actually changes
+  $: {
+    const currentConfigHash = getConfigHash(seedBlendingConfig);
+    
+    if (currentConfigHash !== lastConfigHash) {
+      lastConfigHash = currentConfigHash;
+      
+      if (seedBlendingConfig && Array.isArray(seedBlendingConfig)) {
+        // Handle normalized config format from backend [[seed, weight], ...]
+        seedList = [...seedBlendingConfig];
+        initialized = true;
+        console.log('SeedBlendingControl: Updated from config:', seedList);
+      } else if (seedBlendingConfig && seedBlendingConfig.seed_list) {
+        // Handle legacy format with seed_list property
+        seedList = [...seedBlendingConfig.seed_list];
+        seedInterpolationMethod = seedBlendingConfig.seed_interpolation_method || 'linear';
+        initialized = true;
+        console.log('SeedBlendingControl: Updated from legacy config:', seedList);
+      } else if (!initialized) {
+        // Initialize with single seed if no blending config and not yet initialized
+        seedList = [[2, 1.0]];
+        initialized = true;
+        console.log('SeedBlendingControl: Initialized with default seed');
+      }
     }
   }
 
   function addSeed() {
     const newSeed = Math.floor(Math.random() * 999999) + 1;
     seedList = [...seedList, [newSeed, 0.5]];
-    updateBlending();
+    console.log('SeedBlendingControl: Added seed, new list:', seedList);
+    updateBlendingWithoutRefresh();
   }
 
   function removeSeed(index: number) {
     if (seedList.length > 1) {
       seedList = seedList.filter((_, i) => i !== index);
-      updateBlending();
+      console.log('SeedBlendingControl: Removed seed, new list:', seedList);
+      updateBlendingWithoutRefresh();
     }
   }
 
   function updateSeedValue(index: number, value: number) {
     seedList[index][0] = value;
     seedList = [...seedList];
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   function updateSeedWeight(index: number, value: number) {
     seedList[index][1] = value;
     seedList = [...seedList];
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   function updateSeedInterpolationMethod(value: string) {
     seedInterpolationMethod = value;
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   async function updateNormalizeWeights(normalize: boolean) {
@@ -79,7 +99,7 @@
     const total = seedList.reduce((sum, [, weight]) => sum + weight, 0);
     if (total > 0) {
       seedList = seedList.map(([seed, weight]) => [seed, weight / total]);
-      updateBlending();
+      updateBlendingWithoutRefresh();
     }
   }
 
@@ -112,6 +132,29 @@
     }
   }
 
+  async function updateBlendingWithoutRefresh() {
+    try {
+      const response = await fetch('/api/seed-blending/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seed_list: seedList,
+          seed_interpolation_method: seedInterpolationMethod
+        })
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateBlendingWithoutRefresh: Failed to update seed blending:', result.detail);
+      } else {
+        console.log('updateBlendingWithoutRefresh: Successfully updated seed blending');
+        // Don't refresh weights to avoid overwriting local add/remove changes
+      }
+    } catch (error) {
+      console.error('updateBlendingWithoutRefresh: Update failed:', error);
+    }
+  }
+
   async function refreshCurrentWeights() {
     try {
       const response = await fetch('/api/blending/current');
@@ -119,10 +162,10 @@
       
       if (data.seed_blending && Array.isArray(data.seed_blending)) {
         console.log('refreshCurrentWeights: Received updated seed weights:', data.seed_blending);
-        // Update the local seedList with the weights from the backend
+        // Update the local seedList directly without triggering the reactive config update
         seedList = [...data.seed_blending];
-        // Trigger reactivity
-        seedList = seedList;
+        // Update the hash to prevent the reactive statement from overriding this change
+        lastConfigHash = getConfigHash(data.seed_blending);
       }
     } catch (error) {
       console.error('refreshCurrentWeights: Failed to refresh seed weights:', error);
@@ -190,8 +233,8 @@
         <div class="flex items-center gap-2">
           <input
             type="number"
-            bind:value={seed}
-            on:input={() => updateSeedValue(index, seed)}
+            bind:value={seedList[index][0]}
+            on:input={() => updateSeedValue(index, seedList[index][0])}
             min="1"
             max="999999"
             class="flex-1 p-2 border rounded dark:bg-gray-600 dark:border-gray-500"
@@ -207,8 +250,8 @@
             min="0"
             max="2"
             step="0.01"
-            bind:value={weight}
-            on:input={() => updateSeedWeight(index, weight)}
+            bind:value={seedList[index][1]}
+            on:input={() => updateSeedWeight(index, seedList[index][1])}
             class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
           />
           <div class="flex justify-between text-xs text-gray-500">

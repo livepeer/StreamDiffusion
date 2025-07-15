@@ -49,14 +49,14 @@
   function addPrompt() {
     promptList = [...promptList, ['new prompt', 0.5]];
     console.log('PromptBlendingControl: Added prompt, new list:', promptList);
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   function removePrompt(index: number) {
     if (promptList.length > 1) {
       promptList = promptList.filter((_, i) => i !== index);
       console.log('PromptBlendingControl: Removed prompt, new list:', promptList);
-      updateBlending();
+      updateBlendingWithoutRefresh();
     }
   }
 
@@ -64,20 +64,20 @@
     console.log(`updatePromptText: Updating prompt ${index} to: "${value}"`);
     promptList[index][0] = value;
     promptList = [...promptList];
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   function updatePromptWeight(index: number, value: number) {
     console.log(`updatePromptWeight: Updating weight ${index} to: ${value}`);
     promptList[index][1] = value;
     promptList = [...promptList];
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   function updateInterpolationMethod(value: string) {
     console.log(`updateInterpolationMethod: Updating method to: ${value}`);
     interpolationMethod = value;
-    updateBlending();
+    updateBlendingWithoutRefresh();
   }
 
   async function updateNormalizeWeights(normalize: boolean) {
@@ -105,7 +105,7 @@
     const total = promptList.reduce((sum, [, weight]) => sum + weight, 0);
     if (total > 0) {
       promptList = promptList.map(([prompt, weight]) => [prompt, weight / total]);
-      updateBlending();
+      updateBlendingWithoutRefresh();
     }
   }
 
@@ -135,6 +135,34 @@
       }
     } catch (error) {
       console.error('updateBlending: Update failed:', error);
+    }
+  }
+
+  async function updateBlendingWithoutRefresh() {
+    console.log('updateBlendingWithoutRefresh: Sending update to backend:', {
+      prompt_list: promptList,
+      interpolation_method: interpolationMethod
+    });
+    
+    try {
+      const response = await fetch('/api/prompt-blending/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt_list: promptList,
+          interpolation_method: interpolationMethod
+        })
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateBlendingWithoutRefresh: Failed to update prompt blending:', result.detail);
+      } else {
+        console.log('updateBlendingWithoutRefresh: Successfully updated prompt blending');
+        // Don't refresh weights to avoid overwriting local add/remove changes
+      }
+    } catch (error) {
+      console.error('updateBlendingWithoutRefresh: Update failed:', error);
     }
   }
 
