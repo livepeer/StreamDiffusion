@@ -1,8 +1,10 @@
 import gc
 import os
+from typing import *
 
 import torch
 from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers.models.controlnet import ControlNetModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
     retrieve_latents,
 )
@@ -10,8 +12,8 @@ from polygraphy import cuda
 
 from ...pipeline import StreamDiffusion
 from .builder import EngineBuilder, create_onnx_path
-from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
-from .models import VAE, BaseModel, UNet, VAEEncoder
+from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine, UNet2DConditionModelEngineSDXL
+from .models import VAE, BaseModel, UNet, VAEEncoder, UNetSDXL
 from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
 from .controlnet_wrapper import create_controlnet_wrapper
 from .engine_pool import ControlNetEnginePool
@@ -114,12 +116,14 @@ def accelerate_with_tensorrt(
     # Detect if ControlNet is being used
     use_controlnet = hasattr(stream, 'controlnets') and len(getattr(stream, 'controlnets', [])) > 0
     
+    model_type = detect_model_from_diffusers_unet(unet)
+    is_sdxl = "xl" in model_type.lower()
+    
     if use_controlnet:
         print("ControlNet detected - enabling TensorRT ControlNet support")
         
         # Detect model architecture
         try:
-            model_type = detect_model_from_diffusers_unet(unet)
             unet_arch = extract_unet_architecture(unet)
             unet_arch = validate_architecture(unet_arch, model_type)
             
@@ -143,16 +147,28 @@ def accelerate_with_tensorrt(
     vae_decoder_engine_path = f"{engine_dir}/vae_decoder.engine"
 
     # Create UNet model with ControlNet support if needed
-    unet_model = UNet(
-        fp16=True,
-        device=stream.device,
-        max_batch_size=max_batch_size,
-        min_batch_size=min_batch_size,
-        embedding_dim=text_encoder.config.hidden_size,
-        unet_dim=unet.config.in_channels,
-        use_control=use_controlnet,
-        unet_arch=unet_arch if use_controlnet else None,
-    )
+    if is_sdxl:
+        unet_model = UNetSDXL(
+            fp16=True,
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+            embedding_dim=text_encoder.config.hidden_size,
+            unet_dim=unet.config.in_channels,
+            use_control=use_controlnet,
+            unet_arch=unet_arch if use_controlnet else None,
+        )
+    else:
+        unet_model = UNet(
+            fp16=True,
+            device=stream.device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+            embedding_dim=text_encoder.config.hidden_size,
+            unet_dim=unet.config.in_channels,
+            use_control=use_controlnet,
+            unet_arch=unet_arch if use_controlnet else None,
+        )
     
     vae_decoder_model = VAE(
         device=stream.device,
@@ -223,7 +239,10 @@ def accelerate_with_tensorrt(
     cuda_stream = cuda.Stream()
 
     # Create TensorRT engine with ControlNet awareness
-    stream.unet = UNet2DConditionModelEngine(unet_engine_path, cuda_stream, use_cuda_graph=use_cuda_graph)
+    if is_sdxl:
+        stream.unet = UNet2DConditionModelEngineSDXL(unet_engine_path, cuda_stream, use_cuda_graph=use_cuda_graph)
+    else:
+        stream.unet = UNet2DConditionModelEngine(unet_engine_path, cuda_stream, use_cuda_graph=use_cuda_graph)
     
     # Store ControlNet metadata on the engine for runtime use
     if use_controlnet:

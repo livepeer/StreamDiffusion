@@ -292,6 +292,50 @@ class UNet2DConditionModelEngine:
         pass
 
 
+class UNet2DConditionModelEngineSDXL(UNet2DConditionModelEngine):
+    def __call__(
+        self,
+        latent_model_input: torch.Tensor,
+        timestep: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        text_embeds: torch.Tensor,
+        time_ids: torch.Tensor,
+        down_block_additional_residuals: Optional[List[torch.Tensor]] = None,
+        mid_block_additional_residual: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> Any:
+        
+        if timestep.dtype != torch.float32:
+            timestep = timestep.float()
+
+        shape_dict = {
+            "sample": latent_model_input.shape,
+            "timestep": timestep.shape,
+            "encoder_hidden_states": encoder_hidden_states.shape,
+            "text_embeds": text_embeds.shape,
+            "time_ids": time_ids.shape,
+            "latent": latent_model_input.shape,
+        }
+        
+        input_dict = {
+            "sample": latent_model_input,
+            "timestep": timestep,
+            "encoder_hidden_states": encoder_hidden_states,
+            "text_embeds": text_embeds,
+            "time_ids": time_ids,
+        }
+
+        self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
+        
+        outputs = self.engine.infer(
+            input_dict,
+            self.stream,
+            use_cuda_graph=self.use_cuda_graph,
+        )
+        
+        return UNet2DConditionOutput(sample=outputs["latent"])
+
+
 class AutoencoderKLEngine:
     def __init__(
         self,

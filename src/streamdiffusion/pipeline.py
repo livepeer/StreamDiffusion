@@ -13,6 +13,9 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class StreamDiffusion:
     def __init__(
@@ -80,6 +83,46 @@ class StreamDiffusion:
         
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_weights)
+        
+        # SDXL conditioning setup
+        self.is_sdxl = hasattr(self.pipe, 'text_encoder_2')
+        self.add_text_embeds = None
+        self.add_time_ids = None
+        
+        if self.is_sdxl:
+            logger.info("SDXL model detected - setting up additional conditioning")
+            # Initialize default time_ids for SDXL
+            self._setup_sdxl_time_ids()
+
+    def _setup_sdxl_time_ids(self):
+        """Setup default time_ids for SDXL models"""
+        # Default values: original_size + crops_coords_top_left + target_size
+        original_size = (self.height, self.width)
+        crops_coords_top_left = (0, 0)  # No cropping
+        target_size = (self.height, self.width)
+        
+        add_time_ids = list(original_size + crops_coords_top_left + target_size)
+        self.add_time_ids = torch.tensor([add_time_ids], dtype=self.dtype, device=self.device)
+        
+        logger.debug(f"SDXL time_ids setup: {add_time_ids}")
+
+    def _get_added_cond_kwargs(self, batch_size: int = None) -> dict:
+        """Get SDXL-specific added_cond_kwargs for UNet calls"""
+        if not self.is_sdxl:
+            return {}
+            
+        if batch_size is None:
+            text_embeds = self.add_text_embeds
+            time_ids = self.add_time_ids
+        else:
+            # Handle different batch sizes for specific calls
+            text_embeds = self.add_text_embeds[:batch_size] if self.add_text_embeds is not None else None
+            time_ids = self.add_time_ids[:batch_size] if self.add_time_ids is not None else None
+            
+        return {
+            'text_embeds': text_embeds,
+            'time_ids': time_ids
+        }
 
     def load_lcm_lora(
         self,
@@ -172,6 +215,31 @@ class StreamDiffusion:
             negative_prompt=negative_prompt,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+
+        # Handle SDXL additional embeddings
+        if self.is_sdxl:
+            pooled_prompt_embeds = encoder_output[2]
+            if self.guidance_scale > 1.0 and len(encoder_output) > 3:
+                negative_pooled_prompt_embeds = encoder_output[3]
+                self.add_text_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
+                if self.use_denoising_batch:
+                    self.add_text_embeds = self.add_text_embeds.repeat(self.batch_size // 2, 1)
+                else:
+                    self.add_text_embeds = self.add_text_embeds.repeat(self.frame_bff_size, 1)
+            else:
+                if self.use_denoising_batch:
+                    self.add_text_embeds = pooled_prompt_embeds.repeat(self.batch_size, 1)
+                else:
+                    self.add_text_embeds = pooled_prompt_embeds.repeat(self.frame_bff_size, 1)
+            
+            # Setup time_ids for current batch size
+            if self.use_denoising_batch:
+                self.add_time_ids = self.add_time_ids.repeat(self.batch_size, 1)
+            else:
+                self.add_time_ids = self.add_time_ids.repeat(self.frame_bff_size, 1)
+            
+            logger.debug(f"SDXL pooled embeddings shape: {self.add_text_embeds.shape}")
+            logger.debug(f"SDXL time_ids shape: {self.add_time_ids.shape}")
 
         if self.use_denoising_batch and self.cfg_type == "full":
             uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
@@ -266,6 +334,15 @@ class StreamDiffusion:
             do_classifier_free_guidance=False,
         )
         self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+        
+        # Handle SDXL additional embeddings for prompt updates
+        if self.is_sdxl:
+            pooled_prompt_embeds = encoder_output[2]
+            if self.use_denoising_batch:
+                self.add_text_embeds = pooled_prompt_embeds.repeat(self.batch_size, 1)
+            else:
+                self.add_text_embeds = pooled_prompt_embeds.repeat(self.frame_bff_size, 1)
+            logger.debug(f"Updated SDXL pooled embeddings shape: {self.add_text_embeds.shape}")
 
     @torch.no_grad()
     def update_stream_params(
@@ -389,10 +466,14 @@ class StreamDiffusion:
         else:
             x_t_latent_plus_uc = x_t_latent
 
+        # Get SDXL conditioning if needed
+        added_cond_kwargs = self._get_added_cond_kwargs(batch_size=x_t_latent_plus_uc.shape[0])
+        
         model_pred = self.unet(
             x_t_latent_plus_uc,
             t_list,
             encoder_hidden_states=self.prompt_embeds,
+            added_cond_kwargs=added_cond_kwargs if added_cond_kwargs else None,
             return_dict=False,
         )[0]
 
@@ -563,10 +644,14 @@ class StreamDiffusion:
             device=self.device,
             dtype=self.dtype,
         )
+        # Get SDXL conditioning if needed
+        added_cond_kwargs = self._get_added_cond_kwargs(batch_size=x_t_latent.shape[0])
+        
         model_pred = self.unet(
             x_t_latent,
             self.sub_timesteps_tensor,
             encoder_hidden_states=self.prompt_embeds,
+            added_cond_kwargs=added_cond_kwargs if added_cond_kwargs else None,
             return_dict=False,
         )[0]
         x_0_pred_out = (

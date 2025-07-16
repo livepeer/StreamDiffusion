@@ -525,6 +525,80 @@ class UNet(BaseModel):
         return tuple(base_inputs)
 
 
+class UNetSDXL(UNet):
+    def __init__(self, *args, **kwargs):
+        super(UNetSDXL, self).__init__(*args, embedding_dim=2048, text_maxlen=77, **kwargs)
+        self.name = "UNetSDXL"
+
+    def get_input_names(self):
+        base_names = ["sample", "timestep", "encoder_hidden_states", "text_embeds", "time_ids"]
+        if self.use_control:
+            return base_names + sorted(self.control_inputs.keys())
+        return base_names
+
+    def get_dynamic_axes(self):
+        base_axes = {
+            "sample": {0: "2B", 2: "H", 3: "W"},
+            "timestep": {0: "2B"},
+            "encoder_hidden_states": {0: "2B"},
+            "text_embeds": {0: "2B"},
+            "time_ids": {0: "2B"},
+            "latent": {0: "2B", 2: "H", 3: "W"},
+        }
+        if self.use_control:
+            for name, shape_spec in self.control_inputs.items():
+                height = shape_spec["height"]
+                width = shape_spec["width"]
+                spatial_suffix = f"{height}x{width}"
+                base_axes[name] = {0: "2B", 2: f"H_{spatial_suffix}", 3: f"W_{spatial_suffix}"}
+        return base_axes
+
+    def get_input_profile(self, batch_size, image_height, image_width, static_batch, static_shape):
+        profile = super().get_input_profile(batch_size, image_height, image_width, static_batch, static_shape)
+        
+        min_batch, max_batch, _, _, _, _, _, _, _, _ = self.get_minmax_dims(
+            batch_size, image_height, image_width, static_batch, static_shape
+        )
+        
+        profile.update({
+            "text_embeds": [
+                (min_batch * 2, 1280),
+                (batch_size * 2, 1280),
+                (max_batch * 2, 1280),
+            ],
+            "time_ids": [
+                (min_batch * 2, 6),
+                (batch_size * 2, 6),
+                (max_batch * 2, 6),
+            ]
+        })
+        return profile
+
+    def get_shape_dict(self, batch_size, image_height, image_width):
+        shape_dict = super().get_shape_dict(batch_size, image_height, image_width)
+        shape_dict.update({
+            "text_embeds": (2 * batch_size, 1280),
+            "time_ids": (2 * batch_size, 6),
+        })
+        return shape_dict
+
+    def get_sample_input(self, batch_size, image_height, image_width):
+        base_inputs = super().get_sample_input(batch_size, image_height, image_width)
+        dtype = torch.float16 if self.fp16 else torch.float32
+        
+        # Unpack tuple from base class
+        sample, timestep, encoder_hidden_states, *control_args = base_inputs
+        
+        export_batch_size = sample.shape[0] // 2
+
+        sdxl_inputs = (
+            torch.randn(export_batch_size * 2, 1280, dtype=dtype, device=self.device),
+            torch.randn(export_batch_size * 2, 6, dtype=dtype, device=self.device),
+        )
+        
+        return (sample, timestep, encoder_hidden_states) + sdxl_inputs + tuple(control_args)
+
+
 class VAE(BaseModel):
     def __init__(self, device, max_batch, min_batch_size=1):
         super(VAE, self).__init__(
