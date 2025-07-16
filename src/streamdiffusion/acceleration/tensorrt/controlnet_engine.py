@@ -3,10 +3,14 @@
 import torch
 import tensorrt as trt
 import traceback
+import logging
 from typing import List, Optional, Tuple, Dict, Any
 from polygraphy import cuda
 
 from .utilities import Engine
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 
 class ControlNetModelEngine:
@@ -87,7 +91,7 @@ class ControlNetModelEngine:
         output_shapes = self._resolve_output_shapes(batch_size, latent_height, latent_width)
         shape_dict.update(output_shapes)
         
-        print(f"ControlNetEngine: Input shapes - sample: {sample.shape}, controlnet_cond: {controlnet_cond.shape}")
+        logger.debug(f"ControlNetEngine: Input shapes - sample: {sample.shape}, controlnet_cond: {controlnet_cond.shape}")
         
         self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
         
@@ -105,12 +109,12 @@ class ControlNetModelEngine:
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
         
         # Log output dimensions
-        print(f"ControlNetEngine: Output dimensions:")
+        logger.debug(f"ControlNetEngine: Output dimensions:")
         for i, block in enumerate(down_blocks):
             if block is not None:
-                print(f"  down_block_{i:02d}: {block.shape}")
+                logger.debug(f"  down_block_{i:02d}: {block.shape}")
         if mid_block is not None:
-            print(f"  mid_block: {mid_block.shape}")
+            logger.debug(f"  mid_block: {mid_block.shape}")
         
         return down_blocks, mid_block
     
@@ -157,11 +161,15 @@ class HybridControlNet:
         """Attempt to load TensorRT engine"""
         try:
             if self.engine_path and self.stream:
+                logger.info(f"Loading TensorRT ControlNet engine: {self.engine_path}")
                 self.trt_engine = ControlNetModelEngine(self.engine_path, self.stream)
                 self.use_tensorrt = True
+                logger.info(f"Successfully loaded TensorRT ControlNet engine for {self.model_id}")
                 return True
         except Exception as e:
             self.fallback_reason = f"TensorRT engine load failed: {e}"
+            logger.warning(f"Failed to load TensorRT ControlNet engine for {self.model_id}: {e}")
+            logger.debug(f"TensorRT ControlNet engine load failure details:", exc_info=True)
         
         return False
     
@@ -173,24 +181,33 @@ class HybridControlNet:
             except Exception as e:
                 self.use_tensorrt = False
                 self.fallback_reason = f"Runtime error: {e}"
+                logger.warning(f"TensorRT ControlNet runtime error for {self.model_id}, falling back to PyTorch: {e}")
+                logger.debug(f"TensorRT ControlNet runtime error details:", exc_info=True)
         
         if self.pytorch_model is None:
+            logger.error(f"No PyTorch fallback available for ControlNet {self.model_id}")
             raise RuntimeError(f"No PyTorch fallback available for ControlNet {self.model_id}")
         
+        logger.debug(f"Using PyTorch ControlNet for {self.model_id}")
         return self._call_pytorch_model(*args, **kwargs)
     
     def _call_pytorch_model(self, *args, **kwargs) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """Call PyTorch ControlNet model with proper output formatting"""
+        logger.debug(f"Executing PyTorch ControlNet model for {self.model_id}")
         result = self.pytorch_model(*args, **kwargs)
         
         if isinstance(result, tuple) and len(result) == 2:
+            logger.debug(f"PyTorch ControlNet returned standard tuple format")
             return result
         elif hasattr(result, 'down_block_res_samples') and hasattr(result, 'mid_block_res_sample'):
+            logger.debug(f"PyTorch ControlNet returned attribute-based format")
             return result.down_block_res_samples, result.mid_block_res_sample
         else:
             if isinstance(result, (list, tuple)) and len(result) >= 13:
+                logger.debug(f"PyTorch ControlNet returned list format with {len(result)} elements")
                 return list(result[:12]), result[12]
             else:
+                logger.error(f"Unexpected PyTorch ControlNet output format for {self.model_id}: {type(result)}")
                 raise ValueError(f"Unexpected PyTorch ControlNet output format: {type(result)}")
     
     @property

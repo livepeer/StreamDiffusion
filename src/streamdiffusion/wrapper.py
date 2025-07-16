@@ -1,6 +1,7 @@
 import gc
 import os
 import traceback
+import logging
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union, Any, Tuple
 
@@ -20,6 +21,9 @@ from .image_utils import postprocess_image
 torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 
 class StreamDiffusionWrapper:
@@ -370,11 +374,11 @@ class StreamDiffusionWrapper:
             # Single prompt mode
             current_prompts = self.stream._param_updater.get_current_prompts()
             if current_prompts and len(current_prompts) > 1 and warn_about_conflicts:
-                print("update_prompt: WARNING: Active prompt blending detected!")
-                print(f"  Current blended prompts: {len(current_prompts)} prompts")
-                print("  Switching to single prompt mode.")
+                logger.warning("update_prompt: Active prompt blending detected!")
+                logger.warning(f"  Current blended prompts: {len(current_prompts)} prompts")
+                logger.warning("  Switching to single prompt mode.")
                 if clear_blending:
-                    print("  Clearing prompt blending cache...")
+                    logger.info("  Clearing prompt blending cache...")
             
             if clear_blending:
                 # Clear the blending caches to avoid conflicts
@@ -390,7 +394,7 @@ class StreamDiffusionWrapper:
                 
             current_prompts = self.stream._param_updater.get_current_prompts()
             if len(current_prompts) <= 1 and warn_about_conflicts:
-                print("update_prompt: Switching from single prompt to prompt blending mode.")
+                logger.info("update_prompt: Switching from single prompt to prompt blending mode.")
             
             # Apply prompt blending
             self.stream.update_stream_params(
@@ -817,19 +821,26 @@ class StreamDiffusionWrapper:
         for method, method_name in loading_methods:
             try:
                 pipe = method(model_id_or_path).to(device=self.device, dtype=self.dtype)
-                print(f"_load_model: Successfully loaded using {method_name}")
+                logger.info(f"_load_model: Successfully loaded using {method_name}")
                 break
             except Exception as e:
                 continue
         
         if pipe is None:
             traceback.print_exc()
-            print("_load_model: All loading methods failed. Model doesn't exist or is incompatible.")
+            logger.error("_load_model: All loading methods failed. Model doesn't exist or is incompatible.")
             exit()
 
         # Use existing model detection instead of guessing from config
         model_type = detect_model_from_diffusers_unet(pipe.unet)
         is_sdxl = model_type == "SDXL"
+        
+        logger.debug(f"_load_model: Detected model type: {model_type}")
+        logger.debug(f"_load_model: Model ID: {model_id_or_path}")
+        logger.debug(f"_load_model: Is SDXL: {is_sdxl}")
+        logger.debug(f"_load_model: Is SD-Turbo: {self.sd_turbo}")
+        logger.debug(f"_load_model: UNet config - in_channels: {pipe.unet.config.in_channels}, block_out_channels: {pipe.unet.config.block_out_channels}")
+        logger.debug(f"_load_model: UNet config - cross_attention_dim: {pipe.unet.config.cross_attention_dim}")
         
         # Store model info for later use (after TensorRT conversion)
         self._detected_model_type = model_type
@@ -925,9 +936,9 @@ class StreamDiffusionWrapper:
                         unet_arch = extract_unet_architecture(stream.unet)
                         unet_arch = validate_architecture(unet_arch, model_type)
                         use_controlnet_trt = True
-                        print(f"Building universal TensorRT engines with ControlNet support for {model_type}")
+                        logger.info(f"Building universal TensorRT engines with ControlNet support for {model_type}")
                     except Exception as e:
-                        print(f"ControlNet architecture detection failed: {e}, building engines without ControlNet support")
+                        logger.warning(f"ControlNet architecture detection failed: {e}, building engines without ControlNet support")
                         use_controlnet_trt = False
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
@@ -995,15 +1006,17 @@ class StreamDiffusionWrapper:
                         error_msg += f"\nTo build engines, set build_engines_if_missing=True or run the build script manually."
                         raise RuntimeError(error_msg)
 
+                logger.debug(f"TensorRT acceleration: unet_path = {unet_path}")
+                logger.debug(f"TensorRT acceleration: vae_decoder_path = {vae_decoder_path}")
+                logger.debug(f"TensorRT acceleration: vae_encoder_path = {vae_encoder_path}")
+                logger.debug(f"TensorRT acceleration: use_controlnet_trt = {use_controlnet_trt}")
+                logger.debug(f"TensorRT acceleration: batch_size = {self.batch_size}")
+                logger.debug(f"TensorRT acceleration: mode = {self.mode}")
+                logger.debug(f"TensorRT acceleration: frame_bff_size = {stream.frame_bff_size}")
 
                 if not os.path.exists(unet_path):
+                    logger.info(f"UNet engine not found, compiling: {unet_path}")
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
-
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -1016,12 +1029,23 @@ class StreamDiffusionWrapper:
                         image_height=self.height,
                         image_width=self.width,
                     )
-
+                    
+                    logger.debug(f"UNet model config:")
+                    logger.debug(f"  - max_batch: {self.batch_size}")
+                    logger.debug(f"  - min_batch_size: {self.batch_size if self.mode == 'txt2img' else stream.frame_bff_size}")
+                    logger.debug(f"  - embedding_dim: {stream.text_encoder.config.hidden_size}")
+                    logger.debug(f"  - unet_dim: {stream.unet.config.in_channels}")
+                    logger.debug(f"  - use_control: {use_controlnet_trt}")
+                    logger.debug(f"  - device: {stream.device}")
+                    logger.debug(f"  - width: {self.width}, height: {self.height}")
 
                     # Use ControlNet wrapper if ControlNet support is enabled
                     if use_controlnet_trt:
+                        logger.debug(f"Creating ControlNet-aware UNet wrapper for ONNX export")
                         control_input_names = unet_model.get_input_names()
+                        logger.debug(f"ControlNet input names: {control_input_names}")
                         wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
+                        logger.debug(f"Compiling UNet with ControlNet wrapper")
                         compile_unet(
                             wrapped_unet,
                             unet_model,
@@ -1038,6 +1062,7 @@ class StreamDiffusionWrapper:
                             },
                         )
                     else:
+                        logger.debug(f"Compiling UNet without ControlNet support")
                         compile_unet(
                             stream.unet,
                             unet_model,
@@ -1053,6 +1078,9 @@ class StreamDiffusionWrapper:
                                 'max_image_resolution': 1024,
                             },
                         )
+                    logger.info(f"UNet compilation completed")
+                else:
+                    logger.info(f"UNet engine found, skipping compilation: {unet_path}")
 
                 if not os.path.exists(vae_decoder_path):
                     os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
@@ -1066,6 +1094,7 @@ class StreamDiffusionWrapper:
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                     )
+                    logger.debug(f"VAE Decoder path conversion: {type(vae_decoder_path)} -> {str(vae_decoder_path)}")
                     compile_vae_decoder(
                         stream.vae,
                         vae_decoder_model,
@@ -1097,6 +1126,7 @@ class StreamDiffusionWrapper:
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                     )
+                    logger.debug(f"VAE Encoder path conversion: {type(vae_encoder_path)} -> {str(vae_encoder_path)}")
                     compile_vae_encoder(
                         vae_encoder,
                         vae_encoder_model,
@@ -1120,6 +1150,7 @@ class StreamDiffusionWrapper:
                 vae_config = stream.vae.config
                 vae_dtype = stream.vae.dtype
 
+                logger.info(f"Loading TensorRT UNet engine: {unet_path}")
                 stream.unet = UNet2DConditionModelEngine(
                     unet_path, cuda_stream, use_cuda_graph=False
                 )
@@ -1127,10 +1158,17 @@ class StreamDiffusionWrapper:
                 # Always set ControlNet support to True for universal TensorRT engines
                 # This allows the engine to accept dummy inputs when no ControlNets are used
                 stream.unet.use_control = True
+                logger.debug(f"Set stream.unet.use_control = True")
+                
                 if use_controlnet_trt and unet_arch:
                     stream.unet.unet_arch = unet_arch
+                    logger.debug(f"Set stream.unet.unet_arch with {len(unet_arch)} parameters")
                     stream.unet.unet_arch = unet_arch
 
+                logger.info(f"Loading TensorRT VAE engines:")
+                logger.debug(f"  - Encoder: {vae_encoder_path}")  
+                logger.debug(f"  - Decoder: {vae_decoder_path}")
+                logger.debug(f"  - Scale factor: {stream.pipe.vae_scale_factor}")
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,
@@ -1143,6 +1181,13 @@ class StreamDiffusionWrapper:
                 stream.vae.config = vae_config
                 stream.vae.dtype = vae_dtype
 
+                logger.info(f"TensorRT acceleration setup completed successfully")
+                logger.debug(f"Final engine configuration:")
+                logger.debug(f"  - UNet engine path: {unet_path}")
+                logger.debug(f"  - UNet use_control: {stream.unet.use_control}")
+                logger.debug(f"  - VAE config: {vae_config}")
+                logger.debug(f"  - VAE dtype: {vae_dtype}")
+
                 gc.collect()
                 torch.cuda.empty_cache()
 
@@ -1154,7 +1199,7 @@ class StreamDiffusionWrapper:
                 stream = accelerate_with_stable_fast(stream)
         except Exception:
             traceback.print_exc()
-            print("Acceleration has failed. Falling back to normal mode.")
+            logger.error("Acceleration has failed. Falling back to normal mode.")
             # TODO: Make pytorch fallback configurable
             raise NotImplementedError("Acceleration has failed. Automatic pytorch inference fallback temporarily disabled.")
 
@@ -1235,10 +1280,10 @@ class StreamDiffusionWrapper:
             controlnet_pipeline._use_tensorrt = True
             # Also set on stream where ControlNet pipeline expects to find it
             stream.controlnet_engine_pool = controlnet_pool
-            print("Initialized ControlNet TensorRT engine pool")
+            logger.info("Initialized ControlNet TensorRT engine pool")
         else:
             controlnet_pipeline._use_tensorrt = False
-            print("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
+            logger.info("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
 
 
         # Setup ControlNets from config
@@ -1269,9 +1314,9 @@ class StreamDiffusionWrapper:
 
                 # Add ControlNet with control image if provided
                 controlnet_pipeline.add_controlnet(cn_config, control_image)
-                print(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
+                logger.info(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
             except Exception as e:
-                print(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
+                logger.error(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
                 import traceback
                 traceback.print_exc()
 
