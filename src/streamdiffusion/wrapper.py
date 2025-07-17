@@ -25,45 +25,45 @@ torch.backends.cudnn.allow_tf32 = True
 class StreamDiffusionWrapper:
     """
     StreamDiffusionWrapper for real-time image generation.
-    
+
     This wrapper provides a unified interface for both single prompts and prompt blending:
-    
+
     ## Unified Interface:
     ```python
     # Single prompt
     wrapper.prepare("a beautiful cat")
-    
+
     # Prompt blending
     wrapper.prepare([("cat", 0.7), ("dog", 0.3)])
-    
-    # Prompt + seed blending  
+
+    # Prompt + seed blending
     wrapper.prepare(
         prompt=[("style1", 0.6), ("style2", 0.4)],
         seed_list=[(123, 0.8), (456, 0.2)]
     )
     ```
-    
+
     ## Runtime Updates:
     ```python
     # Update single prompt
     wrapper.update_prompt("new prompt")
-    
+
     # Update prompt blending
     wrapper.update_prompt([("new1", 0.5), ("new2", 0.5)])
-    
+
     # Update combined parameters
     wrapper.update_stream_params(
         prompt_list=[("bird", 0.6), ("fish", 0.4)],
         seed_list=[(789, 0.3), (101, 0.7)]
     )
     ```
-    
+
     ## Weight Management:
     - Prompt weights are normalized by default (sum to 1.0) unless normalize_prompt_weights=False
     - Seed weights are normalized by default (sum to 1.0) unless normalize_seed_weights=False
     - Use update_prompt_weights([0.8, 0.2]) to change weights without re-encoding prompts
     - Use update_seed_weights([0.3, 0.7]) to change weights without regenerating noise
-    
+
     ## Cache Management:
     - Prompt embeddings and seed noise tensors are automatically cached for performance
     - Use get_cache_info() to inspect cache statistics
@@ -288,14 +288,14 @@ class StreamDiffusionWrapper:
         delta : float, optional
             The delta multiplier of virtual residual noise, by default 1.0.
         prompt_interpolation_method : Literal["linear", "slerp"], optional
-            Method for interpolating between prompt embeddings (only used for prompt blending), 
+            Method for interpolating between prompt embeddings (only used for prompt blending),
             by default "slerp".
         seed_list : Optional[List[Tuple[int, float]]], optional
             List of seeds with weights for blending, by default None.
         seed_interpolation_method : Literal["linear", "slerp"], optional
             Method for interpolating between seed noise tensors, by default "linear".
         """
-        
+
 
         # Handle both single prompt and prompt blending
         if isinstance(prompt, str):
@@ -307,19 +307,19 @@ class StreamDiffusionWrapper:
                 guidance_scale=guidance_scale,
                 delta=delta,
             )
-            
+
             # Apply seed blending if provided
             if seed_list is not None:
                 self.stream.update_stream_params(
                     seed_list=seed_list,
                     seed_interpolation_method=seed_interpolation_method,
                 )
-        
+
         elif isinstance(prompt, list):
             # Prompt blending mode
             if not prompt:
                 raise ValueError("prepare: prompt list cannot be empty")
-            
+
             # Prepare with first prompt to initialize the pipeline
             first_prompt = prompt[0][0]
             self.stream.prepare(
@@ -329,7 +329,7 @@ class StreamDiffusionWrapper:
                 guidance_scale=guidance_scale,
                 delta=delta,
             )
-            
+
             # Then apply prompt blending (and seed blending if provided)
             self.stream.update_stream_params(
                 prompt_list=prompt,
@@ -338,13 +338,13 @@ class StreamDiffusionWrapper:
                 seed_list=seed_list,
                 seed_interpolation_method=seed_interpolation_method,
             )
-        
+
         else:
             raise TypeError(f"prepare: prompt must be str or List[Tuple[str, float]], got {type(prompt)}")
 
     def update_prompt(
-        self, 
-        prompt: Union[str, List[Tuple[str, float]]], 
+        self,
+        prompt: Union[str, List[Tuple[str, float]]],
         negative_prompt: str = "",
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         clear_blending: bool = True,
@@ -352,9 +352,9 @@ class StreamDiffusionWrapper:
     ) -> None:
         """
         Update to a new prompt or prompt blending configuration.
-        
+
         Supports both single prompts and prompt blending based on the prompt parameter type.
-        
+
         Parameters
         ----------
         prompt : Union[str, List[Tuple[str, float]]]
@@ -381,30 +381,30 @@ class StreamDiffusionWrapper:
                 print("  Switching to single prompt mode.")
                 if clear_blending:
                     print("  Clearing prompt blending cache...")
-            
+
             if clear_blending:
                 # Clear the blending caches to avoid conflicts
                 self.stream._param_updater.clear_caches()
-            
+
             # Use the legacy single prompt update
             self.stream.update_prompt(prompt)
-        
+
         elif isinstance(prompt, list):
             # Prompt blending mode
             if not prompt:
                 raise ValueError("update_prompt: prompt list cannot be empty")
-                
+
             current_prompts = self.stream._param_updater.get_current_prompts()
             if len(current_prompts) <= 1 and warn_about_conflicts:
                 print("update_prompt: Switching from single prompt to prompt blending mode.")
-            
+
             # Apply prompt blending
             self.stream.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
                 prompt_interpolation_method=prompt_interpolation_method,
             )
-        
+
         else:
             raise TypeError(f"update_prompt: prompt must be str or List[Tuple[str, float]], got {type(prompt)}")
 
@@ -415,18 +415,16 @@ class StreamDiffusionWrapper:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        # New seed blending parameters  
+        # New seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
     ) -> None:
         """
-        Update streaming parameters efficiently in a single call.        
+        Update streaming parameters efficiently in a single call.
 
         Parameters
         ----------
@@ -440,10 +438,6 @@ class StreamDiffusionWrapper:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
-        width : Optional[int]
-            The image width (must be multiple of 64, between 384-1024).
-        height : Optional[int]
-            The image height (must be multiple of 64, between 384-1024).
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending. Each tuple contains (prompt_text, weight).
             Example: [("cat", 0.7), ("dog", 0.3)]
@@ -457,28 +451,19 @@ class StreamDiffusionWrapper:
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors, by default "linear".
         """
-        new_stream = self.stream._param_updater.update_stream_params(
+        self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
-            width=width,
-            height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
             prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
         )
-        # If a new stream was created (pipeline restart), update self.stream
-        if new_stream is not None:
-            self.stream = new_stream
-        # Update wrapper's width/height properties if resolution changed
-        if width is not None:
-            self.width = width
-        if height is not None:
-            self.height = height
+
 
     def set_normalize_prompt_weights(self, normalize: bool) -> None:
         """Set whether to normalize prompt weights in blending operations."""
@@ -487,7 +472,7 @@ class StreamDiffusionWrapper:
     def set_normalize_seed_weights(self, normalize: bool) -> None:
         """Set whether to normalize seed weights in blending operations."""
         self.stream.set_normalize_seed_weights(normalize)
-        
+
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self.stream.get_normalize_prompt_weights()
@@ -626,7 +611,7 @@ class StreamDiffusionWrapper:
         # Use stream's current resolution instead of wrapper's cached values
         current_width = self.stream.width
         current_height = self.stream.height
-        
+
         if isinstance(image, str):
             image = Image.open(image).convert("RGB").resize((current_width, current_height))
         if isinstance(image, Image.Image):
@@ -821,7 +806,7 @@ class StreamDiffusionWrapper:
 
         # Try different loading methods in order - prioritize AutoPipeline for safety
         from diffusers import StableDiffusionXLPipeline, AutoPipelineForText2Image
-        
+
         loading_methods = [
             (AutoPipelineForText2Image.from_pretrained, "AutoPipeline from_pretrained"),
             (StableDiffusionPipeline.from_single_file, "SD from_single_file"),
@@ -836,7 +821,7 @@ class StreamDiffusionWrapper:
                 break
             except Exception as e:
                 continue
-        
+
         if pipe is None:
             traceback.print_exc()
             print("_load_model: All loading methods failed. Model doesn't exist or is incompatible.")
@@ -845,7 +830,7 @@ class StreamDiffusionWrapper:
         # Use existing model detection instead of guessing from config
         model_type = detect_model_from_diffusers_unet(pipe.unet)
         is_sdxl = model_type == "SDXL"
-        
+
         # Store model info for later use (after TensorRT conversion)
         self._detected_model_type = model_type
 
@@ -934,7 +919,7 @@ class StreamDiffusionWrapper:
                 # Always enable ControlNet TensorRT support to create universal engines
                 use_controlnet_trt = False
                 unet_arch = {}
-                
+
                 if acceleration == "tensorrt":
                     try:
                         model_type = detect_model_from_diffusers_unet(stream.unet)
@@ -1231,7 +1216,7 @@ class StreamDiffusionWrapper:
 
         # Check if we should use TensorRT ControlNet acceleration
         use_controlnet_tensorrt = (acceleration == "tensorrt")
-        
+
         # Set the detected model type to avoid re-detection from TensorRT engine
         controlnet_pipeline._detected_model_type = model_type
 
@@ -1320,33 +1305,33 @@ class StreamDiffusionWrapper:
         """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-        
+
         self.stream.update_control_image_efficient(control_image, index=index)
 
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("update_controlnet_scale: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-        
+
         self.stream.update_controlnet_scale(index, scale)
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("get_last_processed_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-        
+
         return self.stream.get_last_processed_image(index)
 
 
-    
+
     def update_seed_blending(
-        self, 
-        seed_list: List[Tuple[int, float]], 
+        self,
+        seed_list: List[Tuple[int, float]],
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """
         Update seed blending with multiple weighted seeds.
-        
+
         Parameters
         ----------
         seed_list : List[Tuple[int, float]]
@@ -1359,15 +1344,15 @@ class StreamDiffusionWrapper:
             seed_list=seed_list,
             seed_interpolation_method=interpolation_method
         )
-    
+
     def update_prompt_weights(
-        self, 
+        self,
         prompt_weights: List[float],
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Update weights for current prompt list without re-encoding prompts.
-        
+
         Parameters
         ----------
         prompt_weights : List[float]
@@ -1376,15 +1361,15 @@ class StreamDiffusionWrapper:
             Method for interpolating between prompt embeddings, by default "slerp".
         """
         self.stream._param_updater.update_prompt_weights(prompt_weights, prompt_interpolation_method)
-    
+
     def update_seed_weights(
-        self, 
+        self,
         seed_weights: List[float],
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """
         Update weights for current seed list without regenerating noise.
-        
+
         Parameters
         ----------
         seed_weights : List[float]
@@ -1397,49 +1382,49 @@ class StreamDiffusionWrapper:
     def get_current_prompts(self) -> List[Tuple[str, float]]:
         """
         Get the current prompt list with weights.
-        
+
         Returns
         -------
         List[Tuple[str, float]]
             Current prompt list with weights.
         """
         return self.stream._param_updater.get_current_prompts()
-    
+
     def get_current_seeds(self) -> List[Tuple[int, float]]:
         """
         Get the current seed list with weights.
-        
+
         Returns
         -------
         List[Tuple[int, float]]
             Current seed list with weights.
         """
         return self.stream._param_updater.get_current_seeds()
-    
+
     def get_cache_info(self) -> Dict:
         """
         Get cache statistics for prompt and seed blending.
-        
+
         Returns
         -------
         Dict
             Cache information including hits, misses, and cache sizes.
         """
         return self.stream._param_updater.get_cache_info()
-    
+
     def clear_caches(self) -> None:
         """Clear all cached prompt embeddings and seed noise tensors."""
         self.stream._param_updater.clear_caches()
 
     def update_prompt_at_index(
-        self, 
-        index: int, 
+        self,
+        index: int,
         new_prompt: str,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Update a specific prompt by index without changing other prompts.
-        
+
         Parameters
         ----------
         index : int
@@ -1450,16 +1435,16 @@ class StreamDiffusionWrapper:
             Method for interpolating between prompt embeddings, by default "slerp".
         """
         self.stream._param_updater.update_prompt_at_index(index, new_prompt, prompt_interpolation_method)
-    
+
     def add_prompt(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
         weight: float = 1.0,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Add a new prompt to the current blending configuration.
-        
+
         Parameters
         ----------
         prompt : str
@@ -1470,15 +1455,15 @@ class StreamDiffusionWrapper:
             Method for interpolating between prompt embeddings, by default "slerp".
         """
         self.stream._param_updater.add_prompt(prompt, weight, prompt_interpolation_method)
-    
+
     def remove_prompt_at_index(
-        self, 
+        self,
         index: int,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """
         Remove a prompt from the current blending configuration by index.
-        
+
         Parameters
         ----------
         index : int
@@ -1487,16 +1472,16 @@ class StreamDiffusionWrapper:
             Method for interpolating between remaining prompt embeddings, by default "slerp".
         """
         self.stream._param_updater.remove_prompt_at_index(index, prompt_interpolation_method)
-    
+
     def update_seed_at_index(
-        self, 
-        index: int, 
+        self,
+        index: int,
         new_seed: int,
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """
         Update a specific seed by index without changing other seeds.
-        
+
         Parameters
         ----------
         index : int
@@ -1507,16 +1492,16 @@ class StreamDiffusionWrapper:
             Method for interpolating between seed noise tensors, by default "linear".
         """
         self.stream._param_updater.update_seed_at_index(index, new_seed, interpolation_method)
-    
+
     def add_seed(
-        self, 
-        seed: int, 
+        self,
+        seed: int,
         weight: float = 1.0,
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """
         Add a new seed to the current blending configuration.
-        
+
         Parameters
         ----------
         seed : int
@@ -1527,15 +1512,15 @@ class StreamDiffusionWrapper:
             Method for interpolating between seed noise tensors, by default "linear".
         """
         self.stream._param_updater.add_seed(seed, weight, interpolation_method)
-    
+
     def remove_seed_at_index(
-        self, 
+        self,
         index: int,
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """
         Remove a seed from the current blending configuration by index.
-        
+
         Parameters
         ----------
         index : int

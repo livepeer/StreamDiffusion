@@ -78,7 +78,7 @@ class StreamDiffusion:
         self.vae = pipe.vae
 
         self.inference_time_ema = 0
-        
+
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
 
@@ -273,8 +273,6 @@ class StreamDiffusion:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
@@ -285,7 +283,7 @@ class StreamDiffusion:
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
-        
+
         Parameters
         ----------
         num_inference_steps : Optional[int]
@@ -298,10 +296,6 @@ class StreamDiffusion:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
-        width : Optional[int]
-            The image width (must be multiple of 64, between 384-1024).
-        height : Optional[int]
-            The image height (must be multiple of 64, between 384-1024).
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending.
         negative_prompt : Optional[str]
@@ -319,8 +313,6 @@ class StreamDiffusion:
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
-            width=width,
-            height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
             prompt_interpolation_method=prompt_interpolation_method,
@@ -335,7 +327,7 @@ class StreamDiffusion:
     def set_normalize_seed_weights(self, normalize: bool) -> None:
         """Set whether to normalize seed weights in blending operations."""
         self._param_updater.set_normalize_seed_weights(normalize)
-        
+
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self._param_updater.get_normalize_prompt_weights()
