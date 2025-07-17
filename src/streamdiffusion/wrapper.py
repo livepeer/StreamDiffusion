@@ -415,13 +415,15 @@ class StreamDiffusionWrapper:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        # New prompt blending parameters
+        # Prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        # New seed blending parameters  
+        normalize_prompt_weights: Optional[bool] = None,
+        # Seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        normalize_seed_weights: Optional[bool] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -446,11 +448,17 @@ class StreamDiffusionWrapper:
             The negative prompt to apply to all blended prompts.
         prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings, by default "slerp".
+        normalize_prompt_weights : Optional[bool]
+            Whether to normalize prompt weights in blending to sum to 1, by default None (no change).
+            When False, weights > 1 will amplify embeddings.
         seed_list : Optional[List[Tuple[int, float]]]
             List of seeds with weights for blending. Each tuple contains (seed_value, weight).
             Example: [(123, 0.6), (456, 0.4)]
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors, by default "linear".
+        normalize_seed_weights : Optional[bool]
+            Whether to normalize seed weights in blending to sum to 1, by default None (no change).
+            When False, weights > 1 will amplify noise.
         """
         self.stream.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -463,16 +471,10 @@ class StreamDiffusionWrapper:
             prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
+            normalize_prompt_weights=normalize_prompt_weights,
+            normalize_seed_weights=normalize_seed_weights,
         )
 
-    def set_normalize_prompt_weights(self, normalize: bool) -> None:
-        """Set whether to normalize prompt weights in blending operations."""
-        self.stream.set_normalize_prompt_weights(normalize)
-
-    def set_normalize_seed_weights(self, normalize: bool) -> None:
-        """Set whether to normalize seed weights in blending operations."""
-        self.stream.set_normalize_seed_weights(normalize)
-        
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self.stream.get_normalize_prompt_weights()

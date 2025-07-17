@@ -754,7 +754,7 @@ class App:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
                 # Update normalize weights setting for prompt blending
-                self.pipeline.stream.set_normalize_prompt_weights(bool(normalize))
+                self.pipeline.stream.update_stream_params(normalize_prompt_weights=bool(normalize))
                 
                 return JSONResponse({
                     "status": "success",
@@ -779,7 +779,7 @@ class App:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
                 # Update normalize weights setting for seed blending
-                self.pipeline.stream.set_normalize_seed_weights(bool(normalize))
+                self.pipeline.stream.update_stream_params(normalize_seed_weights=bool(normalize))
                 
                 return JSONResponse({
                     "status": "success",

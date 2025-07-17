@@ -64,16 +64,6 @@ class StreamParameterUpdater:
         self._current_seed_list.clear()
         self._seed_cache_stats = CacheStats()
 
-    def set_normalize_prompt_weights(self, normalize: bool) -> None:
-        """Set whether to normalize prompt weights in blending operations."""
-        self.normalize_prompt_weights = normalize
-        print(f"set_normalize_prompt_weights: Prompt weight normalization set to {normalize}")
-
-    def set_normalize_seed_weights(self, normalize: bool) -> None:
-        """Set whether to normalize seed weights in blending operations."""
-        self.normalize_seed_weights = normalize
-        print(f"set_normalize_seed_weights: Seed weight normalization set to {normalize}")
-        
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self.normalize_prompt_weights
@@ -122,8 +112,10 @@ class StreamParameterUpdater:
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
+        normalize_prompt_weights: Optional[bool] = None,
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        normalize_seed_weights: Optional[bool] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
         
@@ -146,6 +138,14 @@ class StreamParameterUpdater:
         if seed is not None:
             self._update_seed(seed)
         
+        if normalize_prompt_weights is not None:
+            self.normalize_prompt_weights = normalize_prompt_weights
+            print(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
+
+        if normalize_seed_weights is not None:
+            self.normalize_seed_weights = normalize_seed_weights
+            print(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
+
         # Handle prompt blending if prompt_list is provided
         if prompt_list is not None:
             self._update_blended_prompts(
