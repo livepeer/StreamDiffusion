@@ -26,7 +26,8 @@ class StreamDiffusion:
         use_denoising_batch: bool = True,
         frame_buffer_size: int = 1,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
-        normalize_weights: bool = True,
+        normalize_prompt_weights: bool = True,
+        normalize_seed_weights: bool = True,
     ) -> None:
         self.device = pipe.device
         self.dtype = torch_dtype
@@ -79,7 +80,7 @@ class StreamDiffusion:
         self.inference_time_ema = 0
         
         # Initialize parameter updater
-        self._param_updater = StreamParameterUpdater(self, normalize_weights)
+        self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
 
     def load_lcm_lora(
         self,
@@ -259,13 +260,10 @@ class StreamDiffusion:
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
-        encoder_output = self.pipe.encode_prompt(
-            prompt=prompt,
-            device=self.device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=False,
+        self._param_updater.update_stream_params(
+            prompt_list=[(prompt, 1.0)],
+            prompt_interpolation_method="linear"
         )
-        self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
 
     @torch.no_grad()
     def update_stream_params(
@@ -280,7 +278,7 @@ class StreamDiffusion:
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         # New seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
@@ -308,7 +306,7 @@ class StreamDiffusion:
             List of prompts with weights for blending.
         negative_prompt : Optional[str]
             The negative prompt to apply to all blended prompts.
-        interpolation_method : Literal["linear", "slerp"]
+        prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings.
         seed_list : Optional[List[Tuple[int, float]]]
             List of seeds with weights for blending.
@@ -325,18 +323,26 @@ class StreamDiffusion:
             height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
-            interpolation_method=interpolation_method,
+            prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
         )
 
-    def set_normalize_weights(self, normalize: bool) -> None:
-        """Set whether to normalize weights in prompt and seed blending operations."""
-        self._param_updater.set_normalize_weights(normalize)
+    def set_normalize_prompt_weights(self, normalize: bool) -> None:
+        """Set whether to normalize prompt weights in blending operations."""
+        self._param_updater.set_normalize_prompt_weights(normalize)
+
+    def set_normalize_seed_weights(self, normalize: bool) -> None:
+        """Set whether to normalize seed weights in blending operations."""
+        self._param_updater.set_normalize_seed_weights(normalize)
         
-    def get_normalize_weights(self) -> bool:
-        """Get the current weight normalization setting."""
-        return self._param_updater.get_normalize_weights()
+    def get_normalize_prompt_weights(self) -> bool:
+        """Get the current prompt weight normalization setting."""
+        return self._param_updater.get_normalize_prompt_weights()
+
+    def get_normalize_seed_weights(self) -> bool:
+        """Get the current seed weight normalization setting."""
+        return self._param_updater.get_normalize_seed_weights()
 
 
 

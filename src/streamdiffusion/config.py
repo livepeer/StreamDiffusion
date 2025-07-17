@@ -72,7 +72,7 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
         prepare_params_with_blending = {k: v for k, v in prepare_params.items() 
                                        if k not in ['prompt_blending', 'seed_blending']}
         prepare_params_with_blending['prompt'] = blend_config.get('prompt_list', [])
-        prepare_params_with_blending['interpolation_method'] = blend_config.get('interpolation_method', 'slerp')
+        prepare_params_with_blending['prompt_interpolation_method'] = blend_config.get('interpolation_method', 'slerp')
         
         # Add seed blending if configured
         if 'seed_blending' in final_config:
@@ -130,7 +130,8 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'seed': config.get('seed', 2),
         'use_safety_checker': config.get('use_safety_checker', False),
         'engine_dir': config.get('engine_dir', 'engines'),
-        'normalize_weights': config.get('normalize_weights', True),
+        'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
+        'normalize_seed_weights': config.get('normalize_seed_weights', True),
     }
 
 
@@ -197,7 +198,7 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 def create_prompt_blending_config(
     base_config: Dict[str, Any],
     prompt_list: List[Tuple[str, float]],
-    interpolation_method: str = "slerp",
+    prompt_interpolation_method: str = "slerp",
     enable_caching: bool = True
 ) -> Dict[str, Any]:
     """Create a configuration with prompt blending settings"""
@@ -205,7 +206,7 @@ def create_prompt_blending_config(
     
     config['prompt_blending'] = {
         'prompt_list': prompt_list,
-        'interpolation_method': interpolation_method,
+        'interpolation_method': prompt_interpolation_method,
         'enable_caching': enable_caching
     }
     
@@ -230,11 +231,15 @@ def create_seed_blending_config(
 
 def set_normalize_weights_config(
     base_config: Dict[str, Any],
-    normalize_weights: bool = True
+    normalize_prompt_weights: bool = True,
+    normalize_seed_weights: bool = True
 ) -> Dict[str, Any]:
-    """Create a configuration with normalize_weights setting"""
+    """Create a configuration with separate normalize weight settings"""
     config = base_config.copy()
-    config['normalize_weights'] = normalize_weights
+    
+    config['normalize_prompt_weights'] = normalize_prompt_weights
+    config['normalize_seed_weights'] = normalize_seed_weights
+    
     return config
 
 def _parse_dtype(dtype_str: str) -> Any:
@@ -329,8 +334,13 @@ def _validate_config(config: Dict[str, Any]) -> None:
         if interpolation_method not in ['linear', 'slerp']:
             raise ValueError("_validate_config: seed blending interpolation_method must be 'linear' or 'slerp'")
 
-    # Validate normalize_weights if present
-    if 'normalize_weights' in config:
-        normalize_weights = config['normalize_weights']
-        if not isinstance(normalize_weights, bool):
-            raise ValueError("_validate_config: 'normalize_weights' must be a boolean value")
+    # Validate separate normalize settings if present
+    if 'normalize_prompt_weights' in config:
+        normalize_prompt_weights = config['normalize_prompt_weights']
+        if not isinstance(normalize_prompt_weights, bool):
+            raise ValueError("_validate_config: 'normalize_prompt_weights' must be a boolean value")
+    
+    if 'normalize_seed_weights' in config:
+        normalize_seed_weights = config['normalize_seed_weights']
+        if not isinstance(normalize_seed_weights, bool):
+            raise ValueError("_validate_config: 'normalize_seed_weights' must be a boolean value")

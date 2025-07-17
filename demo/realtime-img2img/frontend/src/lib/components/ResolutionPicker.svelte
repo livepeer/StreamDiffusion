@@ -44,11 +44,6 @@
         <span class="text-xs text-gray-500 dark:text-gray-400">
           {currentResolution.width}×{currentResolution.height}
         </span>
-        <!-- Aspect ratio preview -->
-        <div 
-          class="w-8 h-6 border border-gray-300 dark:border-gray-600 rounded-sm bg-gray-100 dark:bg-gray-800"
-          style="aspect-ratio: {currentResolution.aspectRatio}"
-        ></div>
       </div>
     {/if}
   </div>

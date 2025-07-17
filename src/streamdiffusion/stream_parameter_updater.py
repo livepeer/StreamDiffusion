@@ -1,43 +1,55 @@
-from typing import List, Optional, Dict, Tuple, Literal, Any
+from typing import List, Optional, Dict, Tuple, Literal, Any, Callable
 import torch
 import torch.nn.functional as F
 import gc
 
 
+class CacheStats:
+    """Helper class to track cache statistics"""
+    def __init__(self):
+        self.hits = 0
+        self.misses = 0
+    
+    def record_hit(self):
+        self.hits += 1
+    
+    def record_miss(self):
+        self.misses += 1
+
+
 class StreamParameterUpdater:
-    def __init__(self, stream_diffusion, normalize_weights: bool = True):
+    def __init__(self, stream_diffusion, normalize_prompt_weights: bool = True, normalize_seed_weights: bool = True):
         self.stream = stream_diffusion
-        self.normalize_weights = normalize_weights
+        self.normalize_prompt_weights = normalize_prompt_weights
+        self.normalize_seed_weights = normalize_seed_weights
         # Prompt blending caches
         self._prompt_cache: Dict[int, Dict] = {}
         self._current_prompt_list: List[Tuple[str, float]] = []
         self._current_negative_prompt: str = ""
-        self._cache_hits = 0
-        self._cache_misses = 0
+        self._prompt_cache_stats = CacheStats()
         
         # Seed blending caches  
         self._seed_cache: Dict[int, Dict] = {}
         self._current_seed_list: List[Tuple[int, float]] = []
-        self._seed_cache_hits = 0
-        self._seed_cache_misses = 0
+        self._seed_cache_stats = CacheStats()
     
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
-        total_requests = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total_requests if total_requests > 0 else 0
+        total_requests = self._prompt_cache_stats.hits + self._prompt_cache_stats.misses
+        hit_rate = self._prompt_cache_stats.hits / total_requests if total_requests > 0 else 0
         
-        total_seed_requests = self._seed_cache_hits + self._seed_cache_misses
-        seed_hit_rate = self._seed_cache_hits / total_seed_requests if total_seed_requests > 0 else 0
+        total_seed_requests = self._seed_cache_stats.hits + self._seed_cache_stats.misses
+        seed_hit_rate = self._seed_cache_stats.hits / total_seed_requests if total_seed_requests > 0 else 0
         
         return {
             "cached_prompts": len(self._prompt_cache),
-            "cache_hits": self._cache_hits,
-            "cache_misses": self._cache_misses,
+            "cache_hits": self._prompt_cache_stats.hits,
+            "cache_misses": self._prompt_cache_stats.misses,
             "hit_rate": f"{hit_rate:.2%}",
             "current_prompts": len(self._current_prompt_list),
             "cached_seeds": len(self._seed_cache),
-            "seed_cache_hits": self._seed_cache_hits,
-            "seed_cache_misses": self._seed_cache_misses,
+            "seed_cache_hits": self._seed_cache_stats.hits,
+            "seed_cache_misses": self._seed_cache_stats.misses,
             "seed_hit_rate": f"{seed_hit_rate:.2%}",
             "current_seeds": len(self._current_seed_list)
         }
@@ -47,22 +59,58 @@ class StreamParameterUpdater:
         self._prompt_cache.clear()
         self._current_prompt_list.clear()
         self._current_negative_prompt = ""
-        self._cache_hits = 0
-        self._cache_misses = 0
+        self._prompt_cache_stats = CacheStats()
         
         self._seed_cache.clear()
         self._current_seed_list.clear()
-        self._seed_cache_hits = 0
-        self._seed_cache_misses = 0
+        self._seed_cache_stats = CacheStats()
 
-    def set_normalize_weights(self, normalize: bool) -> None:
-        """Set whether to normalize weights in blending operations."""
-        self.normalize_weights = normalize
-        print(f"set_normalize_weights: Weight normalization set to {normalize}")
+    def set_normalize_prompt_weights(self, normalize: bool) -> None:
+        """Set whether to normalize prompt weights in blending operations."""
+        self.normalize_prompt_weights = normalize
+        print(f"set_normalize_prompt_weights: Prompt weight normalization set to {normalize}")
+
+    def set_normalize_seed_weights(self, normalize: bool) -> None:
+        """Set whether to normalize seed weights in blending operations."""
+        self.normalize_seed_weights = normalize
+        print(f"set_normalize_seed_weights: Seed weight normalization set to {normalize}")
         
-    def get_normalize_weights(self) -> bool:
-        """Get the current weight normalization setting."""
-        return self.normalize_weights
+    def get_normalize_prompt_weights(self) -> bool:
+        """Get the current prompt weight normalization setting."""
+        return self.normalize_prompt_weights
+
+    def get_normalize_seed_weights(self) -> bool:
+        """Get the current seed weight normalization setting."""
+        return self.normalize_seed_weights
+
+    def _normalize_weights(self, weights: List[float], normalize: bool) -> torch.Tensor:
+        """Generic weight normalization helper"""
+        weights_tensor = torch.tensor(weights, device=self.stream.device, dtype=self.stream.dtype)
+        if normalize:
+            weights_tensor = weights_tensor / weights_tensor.sum()
+        return weights_tensor
+
+    def _validate_index(self, index: int, item_list: List, operation_name: str) -> bool:
+        """Generic index validation helper"""
+        if not item_list:
+            print(f"{operation_name}: Warning: No current item list")
+            return False
+            
+        if index < 0 or index >= len(item_list):
+            print(f"{operation_name}: Warning: Index {index} out of range (0-{len(item_list)-1})")
+            return False
+        
+        return True
+
+    def _reindex_cache(self, cache: Dict[int, Dict], removed_index: int) -> Dict[int, Dict]:
+        """Generic cache reindexing helper after item removal"""
+        new_cache = {}
+        for cache_idx, cache_data in cache.items():
+            if cache_idx < removed_index:
+                new_cache[cache_idx] = cache_data
+            elif cache_idx > removed_index:
+                new_cache[cache_idx - 1] = cache_data
+        return new_cache
 
     @torch.no_grad()
     def update_stream_params(
@@ -76,7 +124,7 @@ class StreamParameterUpdater:
         height: Optional[int] = None,
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
-        interpolation_method: Literal["linear", "slerp"] = "slerp",
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
     ) -> Optional[Any]:
@@ -110,7 +158,7 @@ class StreamParameterUpdater:
             self._update_blended_prompts(
                 prompt_list=prompt_list,
                 negative_prompt=negative_prompt or self._current_negative_prompt,
-                interpolation_method=interpolation_method
+                prompt_interpolation_method=prompt_interpolation_method
             )
         
         # Handle seed blending if seed_list is provided
@@ -128,7 +176,7 @@ class StreamParameterUpdater:
     def update_prompt_weights(
         self, 
         prompt_weights: List[float],
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """Update weights for current prompt list without re-encoding prompts."""
         if not self._current_prompt_list:
@@ -147,7 +195,7 @@ class StreamParameterUpdater:
         self._current_prompt_list = updated_prompt_list
         
         # Recompute blended embeddings with new weights
-        self._apply_prompt_blending(interpolation_method)
+        self._apply_prompt_blending(prompt_interpolation_method)
 
     @torch.no_grad()
     def update_seed_weights(
@@ -179,7 +227,7 @@ class StreamParameterUpdater:
         self,
         prompt_list: List[Tuple[str, float]],
         negative_prompt: str = "",
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """Update prompt embeddings using multiple weighted prompts."""
         # Store current state
@@ -190,7 +238,7 @@ class StreamParameterUpdater:
         self._cache_prompt_embeddings(prompt_list, negative_prompt)
         
         # Apply blending
-        self._apply_prompt_blending(interpolation_method)
+        self._apply_prompt_blending(prompt_interpolation_method)
 
     def _cache_prompt_embeddings(
         self, 
@@ -201,7 +249,7 @@ class StreamParameterUpdater:
         for idx, (prompt_text, weight) in enumerate(prompt_list):
             if idx not in self._prompt_cache or self._prompt_cache[idx]['text'] != prompt_text:
                 # Cache miss - encode the prompt
-                self._cache_misses += 1
+                self._prompt_cache_stats.record_miss()
                 encoder_output = self.stream.pipe.encode_prompt(
                     prompt=prompt_text,
                     device=self.stream.device,
@@ -215,9 +263,9 @@ class StreamParameterUpdater:
                 }
             else:
                 # Cache hit
-                self._cache_hits += 1
+                self._prompt_cache_stats.record_hit()
 
-    def _apply_prompt_blending(self, interpolation_method: Literal["linear", "slerp"]) -> None:
+    def _apply_prompt_blending(self, prompt_interpolation_method: Literal["linear", "slerp"]) -> None:
         """Apply weighted blending of cached prompt embeddings."""
         if not self._current_prompt_list:
             return
@@ -235,12 +283,10 @@ class StreamParameterUpdater:
             return
         
         # Normalize weights
-        weights = torch.tensor(weights, device=self.stream.device, dtype=self.stream.dtype)
-        if self.normalize_weights:
-            weights = weights / weights.sum()
+        weights = self._normalize_weights(weights, self.normalize_prompt_weights)
         
         # Apply interpolation
-        if interpolation_method == "slerp" and len(embeddings) == 2:
+        if prompt_interpolation_method == "slerp" and len(embeddings) == 2:
             # Spherical linear interpolation for 2 prompts
             embed1, embed2 = embeddings[0], embeddings[1]
             t = weights[1].item()  # Use second weight as interpolation factor
@@ -327,7 +373,7 @@ class StreamParameterUpdater:
         for idx, (seed_value, weight) in enumerate(seed_list):
             if idx not in self._seed_cache or self._seed_cache[idx]['seed'] != seed_value:
                 # Cache miss - generate noise for the seed
-                self._seed_cache_misses += 1
+                self._seed_cache_stats.record_miss()
                 generator = torch.Generator(device=self.stream.device)
                 generator.manual_seed(seed_value)
                 
@@ -344,7 +390,7 @@ class StreamParameterUpdater:
                 }
             else:
                 # Cache hit
-                self._seed_cache_hits += 1
+                self._seed_cache_stats.record_hit()
 
     def _apply_seed_blending(self, interpolation_method: Literal["linear", "slerp"]) -> None:
         """Apply weighted blending of cached seed noise tensors."""
@@ -364,9 +410,7 @@ class StreamParameterUpdater:
             return
         
         # Normalize weights
-        weights = torch.tensor(weights, device=self.stream.device, dtype=self.stream.dtype)
-        if self.normalize_weights:
-            weights = weights / weights.sum()
+        weights = self._normalize_weights(weights, self.normalize_seed_weights)
         
         # Apply interpolation
         if interpolation_method == "slerp" and len(noise_tensors) == 2:
@@ -630,15 +674,10 @@ class StreamParameterUpdater:
         self, 
         index: int, 
         new_prompt: str,
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """Update a single prompt at the specified index without re-encoding others."""
-        if not self._current_prompt_list:
-            print("update_prompt_at_index: Warning: No current prompt list")
-            return
-            
-        if index < 0 or index >= len(self._current_prompt_list):
-            print(f"update_prompt_at_index: Warning: Index {index} out of range (0-{len(self._current_prompt_list)-1})")
+        if not self._validate_index(index, self._current_prompt_list, "update_prompt_at_index"):
             return
         
         # Update the prompt text while keeping the weight
@@ -662,10 +701,10 @@ class StreamParameterUpdater:
             if existing_cache_key is not None:
                 # Reuse existing cached embedding
                 self._prompt_cache[index] = self._prompt_cache[existing_cache_key].copy()
-                self._cache_hits += 1
+                self._prompt_cache_stats.record_hit()
             else:
                 # Encode new prompt
-                self._cache_misses += 1
+                self._prompt_cache_stats.record_miss()
                 encoder_output = self.stream.pipe.encode_prompt(
                     prompt=new_prompt,
                     device=self.stream.device,
@@ -679,7 +718,7 @@ class StreamParameterUpdater:
                 }
         
         # Recompute blended embeddings with updated prompt
-        self._apply_prompt_blending(interpolation_method)
+        self._apply_prompt_blending(prompt_interpolation_method)
 
     @torch.no_grad()
     def get_current_prompts(self) -> List[Tuple[str, float]]:
@@ -691,7 +730,7 @@ class StreamParameterUpdater:
         self, 
         prompt: str, 
         weight: float = 1.0,
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """Add a new prompt to the current list."""
         new_index = len(self._current_prompt_list)
@@ -711,24 +750,19 @@ class StreamParameterUpdater:
             'embed': encoder_output[0],
             'text': prompt
         }
-        self._cache_misses += 1
+        self._prompt_cache_stats.record_miss()
         
         # Recompute blended embeddings
-        self._apply_prompt_blending(interpolation_method)
+        self._apply_prompt_blending(prompt_interpolation_method)
 
     @torch.no_grad()
     def remove_prompt_at_index(
         self, 
         index: int,
-        interpolation_method: Literal["linear", "slerp"] = "slerp"
+        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
     ) -> None:
         """Remove a prompt at the specified index."""
-        if not self._current_prompt_list:
-            print("remove_prompt_at_index: Warning: No current prompt list")
-            return
-            
-        if index < 0 or index >= len(self._current_prompt_list):
-            print(f"remove_prompt_at_index: Warning: Index {index} out of range")
+        if not self._validate_index(index, self._current_prompt_list, "remove_prompt_at_index"):
             return
         
         if len(self._current_prompt_list) <= 1:
@@ -744,16 +778,10 @@ class StreamParameterUpdater:
             del self._prompt_cache[index]
         
         # Shift cache indices down
-        new_cache = {}
-        for cache_idx, cache_data in self._prompt_cache.items():
-            if cache_idx < index:
-                new_cache[cache_idx] = cache_data
-            elif cache_idx > index:
-                new_cache[cache_idx - 1] = cache_data
-        self._prompt_cache = new_cache
+        self._prompt_cache = self._reindex_cache(self._prompt_cache, index)
         
         # Recompute blended embeddings
-        self._apply_prompt_blending(interpolation_method)
+        self._apply_prompt_blending(prompt_interpolation_method)
 
     @torch.no_grad()
     def update_seed_at_index(
@@ -763,12 +791,7 @@ class StreamParameterUpdater:
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """Update a single seed at the specified index without regenerating others."""
-        if not self._current_seed_list:
-            print("update_seed_at_index: Warning: No current seed list")
-            return
-            
-        if index < 0 or index >= len(self._current_seed_list):
-            print(f"update_seed_at_index: Warning: Index {index} out of range (0-{len(self._current_seed_list)-1})")
+        if not self._validate_index(index, self._current_seed_list, "update_seed_at_index"):
             return
         
         # Update the seed value while keeping the weight
@@ -792,10 +815,10 @@ class StreamParameterUpdater:
             if existing_cache_key is not None:
                 # Reuse existing cached noise
                 self._seed_cache[index] = self._seed_cache[existing_cache_key].copy()
-                self._seed_cache_hits += 1
+                self._seed_cache_stats.record_hit()
             else:
                 # Generate new noise
-                self._seed_cache_misses += 1
+                self._seed_cache_stats.record_miss()
                 generator = torch.Generator(device=self.stream.device)
                 generator.manual_seed(new_seed)
                 
@@ -847,7 +870,7 @@ class StreamParameterUpdater:
             'noise': noise,
             'seed': seed
         }
-        self._seed_cache_misses += 1
+        self._seed_cache_stats.record_miss()
         
         # Recompute blended noise
         self._apply_seed_blending(interpolation_method)
@@ -859,12 +882,7 @@ class StreamParameterUpdater:
         interpolation_method: Literal["linear", "slerp"] = "linear"
     ) -> None:
         """Remove a seed at the specified index."""
-        if not self._current_seed_list:
-            print("remove_seed_at_index: Warning: No current seed list")
-            return
-            
-        if index < 0 or index >= len(self._current_seed_list):
-            print(f"remove_seed_at_index: Warning: Index {index} out of range")
+        if not self._validate_index(index, self._current_seed_list, "remove_seed_at_index"):
             return
         
         if len(self._current_seed_list) <= 1:
@@ -880,13 +898,7 @@ class StreamParameterUpdater:
             del self._seed_cache[index]
         
         # Shift cache indices down
-        new_cache = {}
-        for cache_idx, cache_data in self._seed_cache.items():
-            if cache_idx < index:
-                new_cache[cache_idx] = cache_data
-            elif cache_idx > index:
-                new_cache[cache_idx - 1] = cache_data
-        self._seed_cache = new_cache
+        self._seed_cache = self._reindex_cache(self._seed_cache, index)
         
         # Recompute blended noise
         self._apply_seed_blending(interpolation_method)
