@@ -359,8 +359,10 @@ class BaseIPAdapterPipeline:
         return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     
     def prepare(self, *args, **kwargs):
-        """Forward prepare calls to the underlying StreamDiffusion"""
-        return self.stream.prepare(*args, **kwargs)
+        """Forward prepare calls to the underlying StreamDiffusion"""        
+        return self._original_wrapper.prepare(*args, **kwargs)
+        
+     
     
     def __call__(self, *args, **kwargs):
         """Forward calls to the original wrapper, IPAdapter enhancement happens automatically via hook system"""
