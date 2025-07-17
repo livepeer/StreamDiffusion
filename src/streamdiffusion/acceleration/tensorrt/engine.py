@@ -64,8 +64,6 @@ class UNet2DConditionModelEngine:
             # Check if this engine was compiled with ControlNet support but no conditioning is provided
             # In that case, we need to provide dummy zero tensors for the expected ControlNet inputs
             if self.use_control:
-                print("UNetEngine: No ControlNet inputs provided, using dummy inputs")
-                
                 # Check if we need to regenerate dummy inputs due to dimension change
                 current_latent_height = latent_model_input.shape[2]
                 current_latent_width = latent_model_input.shape[3]
@@ -75,7 +73,6 @@ class UNet2DConditionModelEngine:
                     not hasattr(self, '_cached_latent_dims') or
                     self._cached_latent_dims != (current_latent_height, current_latent_width)):
                     
-                    print(f"UNetEngine: Regenerating dummy inputs for latent dimensions {current_latent_height}x{current_latent_width}")
                     self._cached_dummy_controlnet_inputs = self._generate_dummy_controlnet_specs(latent_model_input)
                     self._cached_latent_dims = (current_latent_height, current_latent_width)
                 
