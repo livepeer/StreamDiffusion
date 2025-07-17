@@ -61,8 +61,6 @@ class StreamDiffusionWrapper:
     ## Weight Management:
     - Prompt weights are normalized by default (sum to 1.0) unless normalize_prompt_weights=False
     - Seed weights are normalized by default (sum to 1.0) unless normalize_seed_weights=False
-    - Use update_prompt_weights([0.8, 0.2]) to change weights without re-encoding prompts
-    - Use update_seed_weights([0.3, 0.7]) to change weights without regenerating noise
     
     ## Cache Management:
     - Prompt embeddings and seed noise tensors are automatically cached for performance
@@ -1421,40 +1419,6 @@ class StreamDiffusionWrapper:
             seed_list=seed_list,
             seed_interpolation_method=interpolation_method
         )
-    
-    def update_prompt_weights(
-        self, 
-        prompt_weights: List[float],
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Update weights for current prompt list without re-encoding prompts.
-        
-        Parameters
-        ----------
-        prompt_weights : List[float]
-            New weights for the current prompt list.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.update_prompt_weights(prompt_weights, prompt_interpolation_method)
-    
-    def update_seed_weights(
-        self, 
-        seed_weights: List[float],
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update weights for current seed list without regenerating noise.
-        
-        Parameters
-        ----------
-        seed_weights : List[float]
-            New weights for the current seed list.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_seed_weights(seed_weights, interpolation_method)
 
     def get_current_prompts(self) -> List[Tuple[str, float]]:
         """
@@ -1492,120 +1456,6 @@ class StreamDiffusionWrapper:
     def clear_caches(self) -> None:
         """Clear all cached prompt embeddings and seed noise tensors."""
         self.stream._param_updater.clear_caches()
-
-    def update_prompt_at_index(
-        self, 
-        index: int, 
-        new_prompt: str,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Update a specific prompt by index without changing other prompts.
-        
-        Parameters
-        ----------
-        index : int
-            Index of the prompt to update.
-        new_prompt : str
-            New prompt text.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.update_prompt_at_index(index, new_prompt, prompt_interpolation_method)
-    
-    def add_prompt(
-        self, 
-        prompt: str, 
-        weight: float = 1.0,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Add a new prompt to the current blending configuration.
-        
-        Parameters
-        ----------
-        prompt : str
-            Prompt text to add.
-        weight : float
-            Weight for the new prompt, by default 1.0.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.add_prompt(prompt, weight, prompt_interpolation_method)
-    
-    def remove_prompt_at_index(
-        self, 
-        index: int,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Remove a prompt from the current blending configuration by index.
-        
-        Parameters
-        ----------
-        index : int
-            Index of the prompt to remove.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between remaining prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.remove_prompt_at_index(index, prompt_interpolation_method)
-    
-    def update_seed_at_index(
-        self, 
-        index: int, 
-        new_seed: int,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update a specific seed by index without changing other seeds.
-        
-        Parameters
-        ----------
-        index : int
-            Index of the seed to update.
-        new_seed : int
-            New seed value.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_seed_at_index(index, new_seed, interpolation_method)
-    
-    def add_seed(
-        self, 
-        seed: int, 
-        weight: float = 1.0,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Add a new seed to the current blending configuration.
-        
-        Parameters
-        ----------
-        seed : int
-            Seed value to add.
-        weight : float
-            Weight for the new seed, by default 1.0.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.add_seed(seed, weight, interpolation_method)
-    
-    def remove_seed_at_index(
-        self, 
-        index: int,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Remove a seed from the current blending configuration by index.
-        
-        Parameters
-        ----------
-        index : int
-            Index of the seed to remove.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between remaining seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.remove_seed_at_index(index, interpolation_method)
 
 
 
