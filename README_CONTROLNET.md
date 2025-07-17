@@ -270,9 +270,8 @@ See `configs/` directory for more complete configuration examples.
 ### Dynamic ControlNet Strength Adjustment
 
 ```python
-# Update ControlNet strength during runtime
-wrapper.update_controlnet_scale(0, 0.8)  # Set first ControlNet to 80% strength
-wrapper.update_controlnet_scale(1, 0.3)  # Set second ControlNet to 30% strength
+# Update ControlNet strength during runtime using unified interface
+wrapper.update_stream_params(controlnet_strengths=[0.8, 0.3])  # Set first ControlNet to 80% strength, second to 30% strength
 ```
 
 ### Efficient Control Image Updates
@@ -318,8 +317,8 @@ StreamDiffusionWrapper(
 ### Runtime Control Methods
 
 ```python
-# Update ControlNet strength dynamically
-wrapper.update_controlnet_scale(index: int, scale: float)
+# Update ControlNet strength dynamically using unified interface
+wrapper.update_stream_params(controlnet_strengths=[0.8, 0.3])
 
 # Update control image for all ControlNets efficiently  
 wrapper.update_control_image_efficient(image: PIL.Image)

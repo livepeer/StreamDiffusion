@@ -120,18 +120,7 @@ class BaseIPAdapterPipeline:
             self.style_image = Image.open(style_image).convert("RGB")
         else:
             self.style_image = style_image
-    
-    def update_scale(self, scale: float) -> None:
-        """
-        Update the conditioning scale for the IPAdapter
-        
-        Args:
-            scale: New conditioning scale
-        """
-        if self.ipadapter is not None:
-            self.scale = scale
-            self.ipadapter.set_scale(scale)
-    
+
     def _resolve_model_path(self, model_path: str, model_type: str, filename: Optional[str] = None) -> str:
         """
         Resolve model path - download from HuggingFace if it's a model ID, or use local path

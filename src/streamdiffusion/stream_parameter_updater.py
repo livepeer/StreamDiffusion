@@ -174,6 +174,8 @@ class StreamParameterUpdater:
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        controlnet_strengths: Optional[List[float]] = None,
+        ipadapter_strengths: Optional[List[float]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
         
@@ -211,6 +213,14 @@ class StreamParameterUpdater:
                 interpolation_method=seed_interpolation_method
             )
         
+        # Handle ControlNet strength updates
+        if controlnet_strengths is not None:
+            self._update_controlnet_strengths(controlnet_strengths)
+        
+        # Handle IPAdapter strength updates
+        if ipadapter_strengths is not None:
+            self._update_ipadapter_strengths(ipadapter_strengths)
+        
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
 
@@ -232,7 +242,7 @@ class StreamParameterUpdater:
         self._apply_prompt_blending(prompt_interpolation_method)
 
     def _cache_prompt_embeddings(
-        self, 
+        self,
         prompt_list: List[Tuple[str, float]], 
         negative_prompt: str
     ) -> None:
@@ -564,6 +574,40 @@ class StreamParameterUpdater:
             repeats=self.stream.frame_bff_size if self.stream.use_denoising_batch else 1,
             dim=0,
         )
+
+    def _update_controlnet_strengths(self, strengths: List[float]) -> None:
+        """Update ControlNet conditioning scales."""
+        # Check if ControlNet is available
+        if not hasattr(self.stream, 'controlnet_scales'):
+            print("update_stream_params: Warning: ControlNet not available, ignoring controlnet_strengths")
+            return
+        
+        # Validate strength count
+        if len(strengths) != len(self.stream.controlnet_scales):
+            print(f"update_stream_params: Warning: ControlNet strength count {len(strengths)} doesn't match ControlNet count {len(self.stream.controlnet_scales)}")
+            return
+        
+        # Update ControlNet scales
+        for i, strength in enumerate(strengths):
+            self.stream.controlnet_scales[i] = strength
+        
+        print(f"update_stream_params: Updated ControlNet strengths: {strengths}")
+
+    def _update_ipadapter_strengths(self, strengths: List[float]) -> None:
+        """Update IPAdapter conditioning scales."""
+        # Check if IPAdapter is available
+        if not hasattr(self.stream, 'ipadapter') or self.stream.ipadapter is None:
+            print("update_stream_params: Warning: IPAdapter not available, ignoring ipadapter_strengths")
+            return
+        
+        # For now, only support single IPAdapter (use first strength)
+        if len(strengths) > 0:
+            strength = strengths[0]
+            self.stream.ipadapter.set_scale(strength)
+            print(f"update_stream_params: Updated IPAdapter strength: {strength}")
+        
+        if len(strengths) > 1:
+            print(f"update_stream_params: Warning: Multiple IPAdapter strengths provided but only first one used: {strengths}")
 
     @torch.no_grad()
     def get_current_prompts(self) -> List[Tuple[str, float]]:

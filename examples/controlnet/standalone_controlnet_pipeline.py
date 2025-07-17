@@ -83,11 +83,17 @@ class MultiControlNetStreamDiffusionPipeline:
     
     def update_controlnet_strength(self, index: int, strength: float):
         """Dynamically update ControlNet strength. This will be required for Product."""
-        if hasattr(self.wrapper, 'update_controlnet_scale'):
-            self.wrapper.update_controlnet_scale(index, strength)
-            print(f"update_controlnet_strength: Updated ControlNet {index+1} strength to {strength}")
+        # Get current ControlNet scales and update only the specified index
+        if hasattr(self.wrapper.stream, 'controlnet_scales'):
+            current_scales = self.wrapper.stream.controlnet_scales.copy()
+            if 0 <= index < len(current_scales):
+                current_scales[index] = strength
+                self.wrapper.update_stream_params(controlnet_strengths=current_scales)
+                print(f"update_controlnet_strength: Updated ControlNet {index+1} strength to {strength}")
+            else:
+                print(f"update_controlnet_strength: Warning: Index {index} out of range (0-{len(current_scales)-1})")
         else:
-            print("update_controlnet_strength: Not supported for this pipeline")
+            print("update_controlnet_strength: Warning: No ControlNet scales found")
     
     def update_stream_params(self, guidance_scale: float = None, delta: float = None, num_inference_steps: int = None):
         """Dynamically update StreamDiffusion parameters during inference"""

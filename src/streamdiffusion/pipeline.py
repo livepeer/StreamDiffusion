@@ -286,6 +286,9 @@ class StreamDiffusion:
         # New seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        # New ControlNet and IPAdapter strength parameters
+        controlnet_strengths: Optional[List[float]] = None,
+        ipadapter_strengths: Optional[List[float]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -312,6 +315,10 @@ class StreamDiffusion:
             List of seeds with weights for blending.
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors.
+        controlnet_strengths : Optional[List[float]]
+            List of ControlNet conditioning scales to update.
+        ipadapter_strengths : Optional[List[float]]
+            List of IPAdapter conditioning scales to update.
         """
         self._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -324,6 +331,8 @@ class StreamDiffusion:
             prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
+            controlnet_strengths=controlnet_strengths,
+            ipadapter_strengths=ipadapter_strengths,
         )
 
     def set_normalize_prompt_weights(self, normalize: bool) -> None:

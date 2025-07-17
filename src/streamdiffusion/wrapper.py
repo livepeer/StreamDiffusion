@@ -427,10 +427,12 @@ class StreamDiffusionWrapper:
         # New seed blending parameters  
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        # New ControlNet and IPAdapter strength parameters
+        controlnet_strengths: Optional[List[float]] = None,
+        ipadapter_strengths: Optional[List[float]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
-
 
         Parameters
         ----------
@@ -456,6 +458,10 @@ class StreamDiffusionWrapper:
             Example: [(123, 0.6), (456, 0.4)]
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors, by default "linear".
+        controlnet_strengths : Optional[List[float]]
+            List of ControlNet conditioning scales to update.
+        ipadapter_strengths : Optional[List[float]]
+            List of IPAdapter conditioning scales to update.
         """
         self.stream.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -468,6 +474,8 @@ class StreamDiffusionWrapper:
             prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
+            controlnet_strengths=controlnet_strengths,
+            ipadapter_strengths=ipadapter_strengths,
         )
 
     def set_normalize_prompt_weights(self, normalize: bool) -> None:
@@ -1384,13 +1392,6 @@ class StreamDiffusionWrapper:
             raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
         
         self.stream.update_control_image_efficient(control_image, index=index)
-
-    def update_controlnet_scale(self, index: int, scale: float) -> None:
-        """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_controlnet_scale: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-        
-        self.stream.update_controlnet_scale(index, scale)
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""

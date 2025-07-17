@@ -482,8 +482,16 @@ class App:
                     raise HTTPException(status_code=400, detail="ControlNet is not enabled")
                 
                 # Update ControlNet strength in the pipeline
-                if hasattr(self.pipeline.stream, 'update_controlnet_scale'):
-                    self.pipeline.stream.update_controlnet_scale(controlnet_index, float(strength))
+                # Get current ControlNet scales and update only the specified index
+                if hasattr(self.pipeline.stream, 'controlnet_scales'):
+                    current_scales = self.pipeline.stream.controlnet_scales.copy()
+                    if 0 <= controlnet_index < len(current_scales):
+                        current_scales[controlnet_index] = float(strength)
+                        self.pipeline.stream.update_stream_params(controlnet_strengths=current_scales)
+                    else:
+                        raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range (0-{len(current_scales)-1})")
+                else:
+                    raise HTTPException(status_code=400, detail="No ControlNet scales found")
                     
                 return JSONResponse({
                     "status": "success",
@@ -592,15 +600,13 @@ class App:
                     raise HTTPException(status_code=400, detail="IPAdapter is not enabled")
                 
                 # Update IPAdapter scale in the pipeline
-                success = self.pipeline.update_ipadapter_scale(float(scale))
+                # Use the unified update_stream_params interface
+                self.pipeline.stream.update_stream_params(ipadapter_strengths=[float(scale)])
                 
-                if success:
-                    return JSONResponse({
-                        "status": "success",
-                        "message": f"Updated IPAdapter scale to {scale}"
-                    })
-                else:
-                    raise HTTPException(status_code=500, detail="Failed to update scale in pipeline")
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated IPAdapter scale to {scale}"
+                })
                 
             except Exception as e:
                 logging.error(f"update_ipadapter_scale: Failed to update scale: {e}")

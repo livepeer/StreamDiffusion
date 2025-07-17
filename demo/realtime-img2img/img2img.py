@@ -231,33 +231,6 @@ class Pipeline:
 
         return output_image
 
-    def update_ipadapter_scale(self, scale: float) -> bool:
-        """
-        Update IPAdapter scale/strength in real-time
-        
-        Args:
-            scale: New IPAdapter scale value
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        if not self.has_ipadapter:
-            print("update_ipadapter_scale: IPAdapter not enabled")
-            return False
-            
-        try:
-            # Check if the stream has update_scale method (IPAdapterPipeline)
-            if hasattr(self.stream, 'update_scale'):
-                self.stream.update_scale(scale)
-                print(f"update_ipadapter_scale: Updated IPAdapter scale to {scale}")
-                return True
-            else:
-                print("update_ipadapter_scale: Stream does not support scale updates")
-                return False
-        except Exception as e:
-            print(f"update_ipadapter_scale: Failed to update scale: {e}")
-            return False
-
     def update_ipadapter_style_image(self, style_image: Image.Image) -> bool:
         """
         Update IPAdapter style image in real-time

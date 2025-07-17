@@ -112,8 +112,10 @@ wrapper.update_stream_params(num_inference_steps=10)
 
 ```python
 # Works seamlessly with ControlNet pipelines
-wrapper.update_stream_params(guidance_scale=1.8)
-wrapper.update_controlnet_scale(0, 0.9)  # Adjust ControlNet strength
+wrapper.update_stream_params(
+    guidance_scale=1.8,
+    controlnet_strengths=[0.9, 0.5]  # Adjust ControlNet strengths
+)
 wrapper.update_control_image_efficient(new_control_image)
 output = wrapper(input_image)
 ```
