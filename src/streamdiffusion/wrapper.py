@@ -441,9 +441,9 @@ class StreamDiffusionWrapper:
         seed : Optional[int]
             The random seed to use for noise generation.
         width : Optional[int]
-            The image width (must be multiple of 64, between 512-1024).
+            The image width (must be multiple of 64, between 384-1024).
         height : Optional[int]
-            The image height (must be multiple of 64, between 512-1024).
+            The image height (must be multiple of 64, between 384-1024).
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending. Each tuple contains (prompt_text, weight).
             Example: [("cat", 0.7), ("dog", 0.3)]
@@ -925,7 +925,7 @@ class StreamDiffusionWrapper:
                 ):
                     maybe_path = Path(model_id_or_path)
                     # Use dynamic engine naming to distinguish from static engines
-                    dynamic_suffix = "dyn-512-1024"
+                    dynamic_suffix = "dyn-384-1024"
                     if maybe_path.exists():
                         return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
                     else:
@@ -1049,7 +1049,7 @@ class StreamDiffusionWrapper:
                                 'opt_image_height': self.height,
                                 'opt_image_width': self.width,
                                 'build_dynamic_shape': True,  # Force dynamic shapes
-                                'min_image_resolution': 512,
+                                'min_image_resolution': 384,
                                 'max_image_resolution': 1024,
                             },
                         )
@@ -1065,7 +1065,7 @@ class StreamDiffusionWrapper:
                                 'opt_image_height': self.height,
                                 'opt_image_width': self.width,
                                 'build_dynamic_shape': True,  # Force dynamic shapes
-                                'min_image_resolution': 512,
+                                'min_image_resolution': 384,
                                 'max_image_resolution': 1024,
                             },
                         )
@@ -1095,7 +1095,7 @@ class StreamDiffusionWrapper:
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
                             'build_dynamic_shape': True,  # Force dynamic shapes
-                            'min_image_resolution': 512,
+                            'min_image_resolution': 384,
                             'max_image_resolution': 1024,
                         },
                     )
@@ -1126,7 +1126,7 @@ class StreamDiffusionWrapper:
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
                             'build_dynamic_shape': True,  # Force dynamic shapes
-                            'min_image_resolution': 512,
+                            'min_image_resolution': 384,
                             'max_image_resolution': 1024,
                         },
                     )

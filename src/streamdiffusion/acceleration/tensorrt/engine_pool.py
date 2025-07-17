@@ -42,13 +42,13 @@ class ControlNetEnginePool:
                     dir_name = model_dir.name
                     
                     # Check for new dynamic naming convention first (preferred)
-                    if "--dyn-512-1024" in dir_name:
+                    if "--dyn-384-1024" in dir_name:
                         # Extract model_id from dynamic format
                         model_part = dir_name.split("--batch-")[0] if "--batch-" in dir_name else dir_name.split("--dyn-")[0]
                         model_id = model_part.replace("controlnet_", "").replace("_", "/")
                         
                         self.compiled_models.add(model_id)
-                        print(f"ControlNetEnginePool._discover_existing_engines: Discovered dynamic ControlNet engine: {model_id} (dyn-512-1024)")
+                        print(f"ControlNetEnginePool._discover_existing_engines: Discovered dynamic ControlNet engine: {model_id} (dyn-384-1024)")
                         
                     # Check for legacy static naming format with width/height
                     elif "--width-" in dir_name and "--height-" in dir_name:
@@ -92,7 +92,7 @@ class ControlNetEnginePool:
                           batch_size: int = 1) -> HybridControlNet:
         """Get or load ControlNet engine with TensorRT/PyTorch fallback"""
         # Use dynamic cache key to match new naming convention
-        cache_key = f"{model_id}--batch-{batch_size}--dyn-512-1024"
+        cache_key = f"{model_id}--batch-{batch_size}--dyn-384-1024"
         
         if cache_key in self.engines:
             return self.engines[cache_key]
@@ -142,14 +142,14 @@ class ControlNetEnginePool:
                            batch_size: int) -> bool:
         """Compile ControlNet to TensorRT"""
         try:
-            print(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for dynamic 512-1024 range")
+            print(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for dynamic 384-1024 range")
             
             # Use a flexible optimal resolution that allows for dynamic changes
             # Instead of using current dimensions as optimal, use a middle value
             # This allows the engine to handle both smaller and larger resolutions
-            min_resolution = 512
+            min_resolution = 384
             max_resolution = 1024
-            opt_resolution = (min_resolution + max_resolution) // 2  # 768x768 as optimal
+            opt_resolution = 704 # (min_resolution + max_resolution) // 2  # 768x768 as optimal
             
             # Use the flexible optimal resolution instead of current dimensions
             opt_height = opt_resolution
@@ -248,7 +248,7 @@ class ControlNetEnginePool:
         status = {
             "total_engines": len(self.engines),
             "compiled_models": len(self.compiled_models),
-            "resolution_support": "dyn-512-1024",  # Dynamic resolution support
+            "resolution_support": "dyn-384-1024",  # Dynamic resolution support
             "current_dimensions": f"{self.image_width}x{self.image_height}",  # Current working resolution
             "engines": {}
         }
@@ -272,8 +272,8 @@ class ControlNetEnginePool:
         safe_name = model_id.replace("/", "_").replace("\\", "_").replace(":", "_")
         
         # Use dynamic naming convention to match main UNet engines
-        # This allows ControlNet engines to support 512-1024 resolution range
-        dynamic_suffix = "dyn-512-1024"
+        # This allows ControlNet engines to support 384-1024 resolution range
+        dynamic_suffix = "dyn-384-1024"
         safe_name = f"controlnet_{safe_name}--batch-{batch_size}--{dynamic_suffix}"
         
         model_dir = Path(self.engine_dir) / safe_name

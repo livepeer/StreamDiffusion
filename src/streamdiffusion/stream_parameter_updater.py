@@ -558,8 +558,8 @@ class StreamParameterUpdater:
         if new_width % 64 != 0 or new_height % 64 != 0:
             raise ValueError(f"Resolution must be multiples of 64. Got {new_width}x{new_height}")
         
-        if not (512 <= new_width <= 1024) or not (512 <= new_height <= 1024):
-            raise ValueError(f"Resolution must be between 512 and 1024. Got {new_width}x{new_height}")
+        if not (384 <= new_width <= 1024) or not (384 <= new_height <= 1024):
+            raise ValueError(f"Resolution must be between 384 and 1024. Got {new_width}x{new_height}")
         
         # Check if resolution actually changed
         if new_width == self.stream.width and new_height == self.stream.height:

@@ -158,7 +158,7 @@ class BaseModel:
         latent_width = image_width // 8
         
         # Force dynamic shapes for height/width to enable runtime resolution changes
-        # Always use 512-1024 range regardless of static_shape flag (following ComfyUI pattern)
+        # Always use 384-1024 range regardless of static_shape flag
         min_image_height = self.min_image_shape
         max_image_height = self.max_image_shape
         min_image_width = self.min_image_shape

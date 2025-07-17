@@ -396,8 +396,8 @@ class App:
                         if config_width % 64 != 0 or config_height % 64 != 0:
                             raise HTTPException(status_code=400, detail="Resolution must be multiples of 64")
                         
-                        if not (512 <= config_width <= 1024) or not (512 <= config_height <= 1024):
-                            raise HTTPException(status_code=400, detail="Resolution must be between 512 and 1024")
+                        if not (384 <= config_width <= 1024) or not (384 <= config_height <= 1024):
+                            raise HTTPException(status_code=400, detail="Resolution must be between 384 and 1024")
                         
                         # Update the resolution
                         self.new_width = config_width
@@ -810,25 +810,25 @@ class App:
                 resolution_str = data.get('resolution')
                 
                 if not resolution_str:
-                    return JSONResponse({"success": False, "detail": "Resolution parameter is required"}, status_code=400)
+                    raise HTTPException(status_code=400, detail="Resolution parameter is required")
                 
                 # Parse resolution string (e.g., "512x768 (2:3)" -> width=512, height=768)
                 resolution_part = resolution_str.split(' ')[0]  # Get "512x768" part
                 try:
                     width, height = map(int, resolution_part.split('x'))
                 except ValueError:
-                    return JSONResponse({"success": False, "detail": "Invalid resolution format. Use 'widthxheight' (e.g., '512x768')"}, status_code=400)
+                    raise HTTPException(status_code=400, detail="Invalid resolution format. Use 'widthxheight' (e.g., '512x768')")
                 
                 # Validate resolution
                 if width % 64 != 0 or height % 64 != 0:
-                    return JSONResponse({"success": False, "detail": "Resolution must be multiples of 64"}, status_code=400)
+                    raise HTTPException(status_code=400, detail="Resolution must be multiples of 64")
                 
-                if not (512 <= width <= 1024) or not (512 <= height <= 1024):
-                    return JSONResponse({"success": False, "detail": "Resolution must be between 512 and 1024"}, status_code=400)
+                if not (384 <= width <= 1024) or not (384 <= height <= 1024):
+                    raise HTTPException(status_code=400, detail="Resolution must be between 384 and 1024")
                 
                 # Check if resolution actually changed
                 if width == self.new_width and height == self.new_height:
-                    return JSONResponse({"success": True, "detail": "Resolution unchanged"})
+                    raise HTTPException(status_code=400, detail="Resolution unchanged")
                 
                 print(f"API: Updating resolution from {self.new_width}x{self.new_height} to {width}x{height}")
                 
@@ -838,25 +838,17 @@ class App:
                     
                     print(f"API: Resolution update successful: {width}x{height}")
                     return JSONResponse({
-                        "success": True,
-                        "detail": f"Resolution updated to {width}x{height}",
-                        "method": "pipeline_recreation"
+                        "status": "success",
+                        "message": f"Resolution updated to {width}x{height}",
                     })
                     
                 except Exception as update_error:
                     print(f"API: Resolution update failed: {update_error}")
-                    return JSONResponse({
-                        "success": False,
-                        "detail": f"Failed to update resolution: {update_error}",
-                        "method": "failed"
-                    }, status_code=500)
+                    raise HTTPException(status_code=500, detail=f"Failed to update resolution: {update_error}")
                 
             except Exception as e:
                 print(f"API: Resolution update error: {e}")
-                return JSONResponse({
-                    "success": False,
-                    "detail": f"Failed to update resolution: {e}"
-                }, status_code=500)
+                raise HTTPException(status_code=500, detail=f"Failed to update resolution: {e}")
 
         @self.app.post("/api/update-normalize-prompt-weights")
         async def update_normalize_prompt_weights(request: Request):
@@ -918,7 +910,7 @@ class App:
                 
                 print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
                 print(f"update_prompt_blending: prompt_list = {prompt_list}")
-                print(f"update_prompt_blending: interpolation_method = {interpolation_method}")
+                print(f"update_prompt_blending: interpolation_method = {prompt_interpolation_method}")
                 
                 if prompt_list is None:
                     raise HTTPException(status_code=400, detail="Missing prompt_list parameter")
@@ -1263,6 +1255,8 @@ class App:
                     "performance_tips": "Use TensorRT preprocessors for real-time performance. Standard preprocessors are fine for non-realtime use."
                 }
             })
+
+        # ------------------------------------------------------------
 
         # Only mount static files if not in API-only mode
         if not self.args.api_only:

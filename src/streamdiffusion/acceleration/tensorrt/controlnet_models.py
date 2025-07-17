@@ -54,20 +54,20 @@ class ControlNetTRT(BaseModel):
     
     def get_input_profile(self, batch_size, image_height, image_width, 
                          static_batch, static_shape):
-        """Generate TensorRT input profiles for ControlNet with dynamic 512-1024 range"""
+        """Generate TensorRT input profiles for ControlNet with dynamic 384-1024 range"""
         min_batch = batch_size if static_batch else self.min_batch
         max_batch = batch_size if static_batch else self.max_batch
         
-        # Force dynamic shapes for universal engines (512-1024 range)
-        min_ctrl_h = 512  # Changed from 256 to 512 to match min resolution
+        # Force dynamic shapes for universal engines (384-1024 range)
+        min_ctrl_h = 384  # Changed from 256 to 512 to match min resolution
         max_ctrl_h = 1024
-        min_ctrl_w = 512  # Changed from 256 to 512 to match min resolution
+        min_ctrl_w = 384  # Changed from 256 to 512 to match min resolution
         max_ctrl_w = 1024
         
         # Use a flexible optimal resolution that's in the middle of the range
         # This allows the engine to handle both smaller and larger resolutions
-        opt_ctrl_h = 768  # Middle of 512-1024 range
-        opt_ctrl_w = 768  # Middle of 512-1024 range
+        opt_ctrl_h = 704  # Middle of 512-1024 range
+        opt_ctrl_w = 704  # Middle of 512-1024 range
         
         # Calculate latent dimensions
         min_latent_h = min_ctrl_h // 8  # 64

@@ -299,9 +299,9 @@ class StreamDiffusion:
         seed : Optional[int]
             The random seed to use for noise generation.
         width : Optional[int]
-            The image width (must be multiple of 64, between 512-1024).
+            The image width (must be multiple of 64, between 384-1024).
         height : Optional[int]
-            The image height (must be multiple of 64, between 512-1024).
+            The image height (must be multiple of 64, between 384-1024).
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending.
         negative_prompt : Optional[str]
