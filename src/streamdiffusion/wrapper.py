@@ -975,11 +975,10 @@ class StreamDiffusionWrapper:
                 try:
                     model_type = detect_model_from_diffusers_unet(stream.unet)
                     
+                    # Enable IPAdapter TensorRT if configured and available
                     if has_ipadapter:
-                        # IPAdapter mode: Only enable IPAdapter support
                         use_ipadapter_trt = True
                         cross_attention_dim = stream.unet.config.cross_attention_dim
-                        unet_arch = {"context_dim": cross_attention_dim}
                         print(f"IPAdapter detected - enabling TensorRT IPAdapter support for {model_type}")
                         
                         # Determine IPAdapter variant from loaded instance
@@ -989,12 +988,29 @@ class StreamDiffusionWrapper:
                             print(f"IPAdapter: {variant} IPAdapter ({detected_tokens} tokens), cross_attention_dim={cross_attention_dim}")
                         else:
                             print(f"IPAdapter: cross_attention_dim={cross_attention_dim}")
-                    else:
-                        # ControlNet mode: Enable ControlNet support for backward compatibility
+                    
+                    # Enable ControlNet TensorRT if configured (independent of IPAdapter)
+                    if use_controlnet and controlnet_config:
+                        use_controlnet_trt = True
+                        print(f"ControlNet detected - enabling TensorRT ControlNet support for {model_type}")
+                    
+                    # Set up architecture info for enabled modes
+                    if use_controlnet_trt and not use_ipadapter_trt:
+                        # ControlNet only: Full architecture needed
                         unet_arch = extract_unet_architecture(stream.unet)
                         unet_arch = validate_architecture(unet_arch, model_type)
-                        use_controlnet_trt = True
-                        print(f"Enabling TensorRT ControlNet support for {model_type}")
+                    elif use_ipadapter_trt and not use_controlnet_trt:
+                        # IPAdapter only: Cross-attention dim needed
+                        unet_arch = {"context_dim": stream.unet.config.cross_attention_dim}
+                    elif use_controlnet_trt and use_ipadapter_trt:
+                        # Combined mode: Full architecture + cross-attention dim
+                        unet_arch = extract_unet_architecture(stream.unet)
+                        unet_arch = validate_architecture(unet_arch, model_type)
+                        unet_arch["context_dim"] = stream.unet.config.cross_attention_dim
+                        print(f"Combined ControlNet + IPAdapter mode enabled for {model_type}")
+                    else:
+                        # Neither enabled: Standard UNet
+                        unet_arch = {}
                         
                 except Exception as e:
                     print(f"Architecture detection failed: {e}, compiling without special support")
@@ -1081,13 +1097,20 @@ class StreamDiffusionWrapper:
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
                     
-                    # Get IPAdapter token count for UNet model from loaded instance
+                    # Unified compilation path using ConditioningWrapper
+                    from streamdiffusion.acceleration.tensorrt.conditioning_wrapper import ConditioningWrapper
+                    
+                    # Gather parameters for unified wrapper - validate IPAdapter first for consistent token count
+                    control_input_names = None
+                    num_tokens = 4  # Default for non-IPAdapter mode
+                    
                     if use_ipadapter_trt:
                         if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
                             raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
-                        num_image_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
-                    else:
-                        num_image_tokens = 4  # Default fallback for non-IPAdapter mode
+                        num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                        print(f"_load_model: IPAdapter token count validated: {num_tokens}")
+                    
+                    # Create UNet model with consistent token count
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
@@ -1098,25 +1121,13 @@ class StreamDiffusionWrapper:
                         use_control=use_controlnet_trt,
                         unet_arch=unet_arch if use_controlnet_trt else None,
                         use_ipadapter=use_ipadapter_trt,
-                        num_image_tokens=num_image_tokens,
+                        num_image_tokens=num_tokens,  # Use same token count for consistency
                         image_height=self.height,
                         image_width=self.width,
                     )
-
-                    # Unified compilation path using ConditioningWrapper
-                    from streamdiffusion.acceleration.tensorrt.conditioning_wrapper import ConditioningWrapper
-                    
-                    # Gather parameters for unified wrapper
-                    control_input_names = None
-                    num_tokens = 4
                     
                     if use_controlnet_trt:
                         control_input_names = unet_model.get_input_names()
-                    
-                    if use_ipadapter_trt:
-                        if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
-                            raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
-                        num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
                     
                     # Log configuration
                     conditioning_config = f"ControlNet={'ON' if use_controlnet_trt else 'OFF'}, IPAdapter={'ON' if use_ipadapter_trt else 'OFF'}"
@@ -1216,19 +1227,21 @@ class StreamDiffusionWrapper:
                 )
                 
                 # Store metadata on the engine for runtime use
+                setattr(stream.unet, 'use_control', use_controlnet_trt)
+                setattr(stream.unet, 'use_ipadapter', use_ipadapter_trt)
+                
                 if use_controlnet_trt:
-                    setattr(stream.unet, 'use_control', True)
                     setattr(stream.unet, 'unet_arch', unet_arch)
-                    setattr(stream.unet, 'use_ipadapter', False)
-                    print("TensorRT UNet engine configured for ControlNet support")
-                elif use_ipadapter_trt:
-                    setattr(stream.unet, 'use_control', False)
-                    setattr(stream.unet, 'use_ipadapter', True)
+                    
+                if use_ipadapter_trt:
                     setattr(stream.unet, 'ipadapter_arch', unet_arch)
-                    print("TensorRT UNet engine configured for IPAdapter support")
-                else:
-                    setattr(stream.unet, 'use_control', False)
-                    setattr(stream.unet, 'use_ipadapter', False)
+                
+                # Log final configuration
+                config_parts = []
+                if use_controlnet_trt: config_parts.append("ControlNet")
+                if use_ipadapter_trt: config_parts.append("IPAdapter")
+                config_desc = " + ".join(config_parts) if config_parts else "standard UNet"
+                print(f"TensorRT UNet engine configured for: {config_desc}")
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,

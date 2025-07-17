@@ -265,5 +265,5 @@ def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, in
         
     except Exception as e:
         print(f"create_ipadapter_wrapper: Error during model detection: {e}")
-        print(f"create_ipadapter_wrapper: Falling back to default cross_attention_dim=768, num_tokens=4")
+        print(f"create_ipadapter_wrapper: Falling back to default cross_attention_dim=768, num_tokens={num_tokens}")
         return IPAdapterUNetWrapper(unet, 768, num_tokens, install_processors) 
