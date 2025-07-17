@@ -273,8 +273,6 @@ class StreamDiffusion:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
@@ -298,10 +296,6 @@ class StreamDiffusion:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
-        width : Optional[int]
-            The image width (must be multiple of 64, between 384-1024).
-        height : Optional[int]
-            The image height (must be multiple of 64, between 384-1024).
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending.
         negative_prompt : Optional[str]
@@ -319,8 +313,6 @@ class StreamDiffusion:
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
-            width=width,
-            height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
             prompt_interpolation_method=prompt_interpolation_method,

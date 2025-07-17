@@ -415,8 +415,6 @@ class StreamDiffusionWrapper:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
         # New prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
@@ -440,10 +438,6 @@ class StreamDiffusionWrapper:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
-        width : Optional[int]
-            The image width (must be multiple of 64, between 384-1024).
-        height : Optional[int]
-            The image height (must be multiple of 64, between 384-1024).
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending. Each tuple contains (prompt_text, weight).
             Example: [("cat", 0.7), ("dog", 0.3)]
@@ -457,28 +451,19 @@ class StreamDiffusionWrapper:
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors, by default "linear".
         """
-        new_stream = self.stream._param_updater.update_stream_params(
+        self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
-            width=width,
-            height=height,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
             prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
         )
-        # If a new stream was created (pipeline restart), update self.stream
-        if new_stream is not None:
-            self.stream = new_stream
-        # Update wrapper's width/height properties if resolution changed
-        if width is not None:
-            self.width = width
-        if height is not None:
-            self.height = height
+
 
     def set_normalize_prompt_weights(self, normalize: bool) -> None:
         """Set whether to normalize prompt weights in blending operations."""

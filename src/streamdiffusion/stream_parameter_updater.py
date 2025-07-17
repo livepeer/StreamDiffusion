@@ -120,19 +120,13 @@ class StreamParameterUpdater:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
-    ) -> Optional[Any]:
-        """Update streaming parameters efficiently in a single call. Returns new stream if pipeline was restarted."""
-        new_stream = None
-        # Handle width/height updates for dynamic resolution
-        if width is not None or height is not None:
-            new_stream = self._update_resolution(width, height)
+    ) -> None:
+        """Update streaming parameters efficiently in a single call."""
         
         if num_inference_steps is not None:
             self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
@@ -170,7 +164,6 @@ class StreamParameterUpdater:
         
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
-        return new_stream
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -545,117 +538,6 @@ class StreamParameterUpdater:
             repeats=self.stream.frame_bff_size if self.stream.use_denoising_batch else 1,
             dim=0,
         )
-
-    @torch.no_grad()
-    def _update_resolution(self, width: Optional[int], height: Optional[int]) -> Optional[Any]:
-        """This method complete restarts the pipeline with new params. Returns new stream if restarted."""
-        
-        # Use current dimensions if only one is provided
-        new_width = width if width is not None else self.stream.width
-        new_height = height if height is not None else self.stream.height
-        
-        # Validate resolution parameters
-        if new_width % 64 != 0 or new_height % 64 != 0:
-            raise ValueError(f"Resolution must be multiples of 64. Got {new_width}x{new_height}")
-        
-        if not (384 <= new_width <= 1024) or not (384 <= new_height <= 1024):
-            raise ValueError(f"Resolution must be between 384 and 1024. Got {new_width}x{new_height}")
-        
-        # Check if resolution actually changed
-        if new_width == self.stream.width and new_height == self.stream.height:
-            return  # No change needed
-        
-        print(f"Updating resolution from {self.stream.width}x{self.stream.height} to {new_width}x{new_height}")
-        print("Restarting pipeline with new resolution...")
-        
-        # Store current state that needs to be preserved
-        current_prompt_list = self._current_prompt_list.copy()
-        current_negative_prompt = self._current_negative_prompt
-        current_seed_list = self._current_seed_list.copy()
-        current_normalize_weights = self.normalize_weights
-        
-        # Store current pipeline parameters
-        pipe = self.stream.pipe
-        t_index_list = self.stream.t_list
-        torch_dtype = self.stream.dtype
-        do_add_noise = self.stream.do_add_noise
-        use_denoising_batch = self.stream.use_denoising_batch
-        frame_buffer_size = self.stream.frame_bff_size
-        cfg_type = self.stream.cfg_type
-        
-        # Store current inference parameters
-        current_guidance_scale = getattr(self.stream, 'guidance_scale', 1.2)
-        current_delta = getattr(self.stream, 'delta', 1.0)
-        current_seed = getattr(self.stream, 'current_seed', 2)
-        current_generator = getattr(self.stream, 'generator', None)
-        
-        # Store ControlNet state if present
-        controlnet_state = None
-        if hasattr(self.stream, 'controlnets') and len(self.stream.controlnets) > 0:
-            controlnet_state = {
-                'controlnets': self.stream.controlnets.copy(),
-                'controlnet_images': self.stream.controlnet_images.copy(),
-                'controlnet_scales': self.stream.controlnet_scales.copy(),
-                'preprocessors': self.stream.preprocessors.copy()
-            }
-        
-        # Store TensorRT engine pool if present
-        controlnet_engine_pool = getattr(self.stream, 'controlnet_engine_pool', None)
-        
-        # Create new StreamDiffusion instance with new resolution
-        from streamdiffusion.pipeline import StreamDiffusion
-        new_stream = StreamDiffusion(
-            pipe=pipe,
-            t_index_list=t_index_list,
-            torch_dtype=torch_dtype,
-            width=new_width,
-            height=new_height,
-            do_add_noise=do_add_noise,
-            use_denoising_batch=use_denoising_batch,
-            frame_buffer_size=frame_buffer_size,
-            cfg_type=cfg_type,
-            normalize_weights=current_normalize_weights,
-        )
-        
-        # Restore ControlNet state if present
-        if controlnet_state:
-            new_stream.controlnets = controlnet_state['controlnets']
-            new_stream.controlnet_images = controlnet_state['controlnet_images']
-            new_stream.controlnet_scales = controlnet_state['controlnet_scales']
-            new_stream.preprocessors = controlnet_state['preprocessors']
-            
-            # Update ControlNet engine pool dimensions
-            # if controlnet_engine_pool:
-                # controlnet_engine_pool.update_dimensions(new_width, new_height)
-                # new_stream.controlnet_engine_pool = controlnet_engine_pool
-        
-        # Replace the stream instance
-        self.stream = new_stream
-        
-        # Restore prompt blending state
-        if current_prompt_list:
-            self._current_prompt_list = current_prompt_list
-            self._current_negative_prompt = current_negative_prompt
-            self._apply_prompt_blending("slerp")  # Default interpolation method
-        
-        # Restore seed blending state
-        if current_seed_list:
-            self._current_seed_list = current_seed_list
-            self._apply_seed_blending("linear")  # Default interpolation method
-        
-        # Prepare the new stream with current parameters
-        new_stream.prepare(
-            prompt="",  # Will be set by prompt blending if needed
-            negative_prompt=current_negative_prompt,
-            num_inference_steps=50,  # Default value
-            guidance_scale=current_guidance_scale,
-            delta=current_delta,
-            generator=current_generator,
-            seed=current_seed,
-        )
-        
-        print(f"Resolution updated successfully. New latent dimensions: {new_stream.latent_width}x{new_stream.latent_height}")
-        return new_stream
 
     def _regenerate_resolution_tensors(self) -> None:
         """This method is no longer used - resolution updates now restart the pipeline"""
