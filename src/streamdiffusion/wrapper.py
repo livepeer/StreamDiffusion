@@ -1103,62 +1103,47 @@ class StreamDiffusionWrapper:
                         image_width=self.width,
                     )
 
-                    # Use appropriate wrapper based on mode
+                    # Unified compilation path using ConditioningWrapper
+                    from streamdiffusion.acceleration.tensorrt.conditioning_wrapper import ConditioningWrapper
+                    
+                    # Gather parameters for unified wrapper
+                    control_input_names = None
+                    num_tokens = 4
+                    
+                    if use_controlnet_trt:
+                        control_input_names = unet_model.get_input_names()
+                    
                     if use_ipadapter_trt:
-                        print("Compiling UNet with IPAdapter support (baked-in processors WITH WEIGHTS)")
-                        
-                        # Get IPAdapter token count from loaded instance
                         if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
                             raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
-                        
                         num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
-                        
-                        # Create IPAdapter-aware wrapper with baked-in processors
-                        wrapped_unet = create_ipadapter_wrapper(stream.unet, num_tokens=num_tokens)
-                        compile_unet(
-                            wrapped_unet,
-                            unet_model,
-                            unet_path + ".onnx",
-                            unet_path + ".opt.onnx",
-                            unet_path,
-                            opt_batch_size=stream.trt_unet_batch_size,
-                        )
-                    elif use_controlnet_trt:
-                        print("Compiling UNet with ControlNet support")
-                        control_input_names = unet_model.get_input_names()
-                        wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
-                        compile_unet(
-                            wrapped_unet,
-                            unet_model,
-                            unet_path + ".onnx",
-                            unet_path + ".opt.onnx",
-                            unet_path,
-                            opt_batch_size=stream.trt_unet_batch_size,
-                            engine_build_options={
-                                'opt_image_height': self.height,
-                                'opt_image_width': self.width,
-                                'build_dynamic_shape': True,  # Force dynamic shapes
-                                'min_image_resolution': 384,
-                                'max_image_resolution': 1024,
-                            },
-                        )
-                    else:
-                        print("Compiling UNet without special support")
-                        compile_unet(
-                            stream.unet,
-                            unet_model,
-                            unet_path + ".onnx",
-                            unet_path + ".opt.onnx",
-                            unet_path,
-                            opt_batch_size=stream.trt_unet_batch_size,
-                            engine_build_options={
-                                'opt_image_height': self.height,
-                                'opt_image_width': self.width,
-                                'build_dynamic_shape': True,  # Force dynamic shapes
-                                'min_image_resolution': 384,
-                                'max_image_resolution': 1024,
-                            },
-                        )
+                    
+                    # Log configuration
+                    conditioning_config = f"ControlNet={'ON' if use_controlnet_trt else 'OFF'}, IPAdapter={'ON' if use_ipadapter_trt else 'OFF'}"
+                    print(f"Compiling UNet with unified conditioning: {conditioning_config}")
+                    
+                    # Single unified wrapper for all configurations
+                    wrapped_unet = ConditioningWrapper(
+                        stream.unet,
+                        use_controlnet=use_controlnet_trt,
+                        use_ipadapter=use_ipadapter_trt,
+                        control_input_names=control_input_names,
+                        num_tokens=num_tokens
+                    )
+                    
+                    # Single compilation call for all cases
+                    compile_unet(
+                        wrapped_unet,
+                        unet_model,
+                        unet_path + ".onnx",
+                        unet_path + ".opt.onnx",
+                        unet_path,
+                        opt_batch_size=stream.trt_unet_batch_size,
+                        engine_build_options={
+                            'opt_image_height': self.height,
+                            'opt_image_width': self.width,
+                        },
+                    )
 
                 if not os.path.exists(vae_decoder_path):
                     os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
