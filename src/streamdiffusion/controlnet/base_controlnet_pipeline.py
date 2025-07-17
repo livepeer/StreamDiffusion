@@ -347,10 +347,7 @@ class BaseControlNetPipeline:
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
         """Get ControlNet conditioning for the current latent and timestep"""
         if not self.controlnets:
-            print("ControlNetPipeline: No ControlNets configured, returning None")
             return None, None
-        
-        print(f"ControlNetPipeline: Processing {len(self.controlnets)} ControlNets")
         
         # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
         active_indices = [
@@ -383,8 +380,6 @@ class BaseControlNetPipeline:
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
             
-            print(f"ControlNetPipeline: Processing ControlNet {i} with scale {scale}")
-            
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
             if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
@@ -402,9 +397,7 @@ class BaseControlNetPipeline:
             
             # Forward pass through ControlNet
             try:
-                print(f"ControlNetPipeline: Calling ControlNet {i} with input shape: {current_control_image.shape}")
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
-                print(f"ControlNetPipeline: ControlNet {i} returned - down_blocks: {len(down_samples) if down_samples else 0}, mid_block: {mid_sample is not None}")
                 
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)

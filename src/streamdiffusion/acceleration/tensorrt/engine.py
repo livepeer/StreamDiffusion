@@ -34,8 +34,6 @@ class UNet2DConditionModelEngine:
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
 
-        print(f"UNetEngine: Main input shapes - latent: {latent_model_input.shape}, timestep: {timestep.shape}, encoder: {encoder_hidden_states.shape}")
-
         # Prepare base shape and input dictionaries
         shape_dict = {
             "sample": latent_model_input.shape,
@@ -83,11 +81,6 @@ class UNet2DConditionModelEngine:
                 
                 # Use cached dummy inputs
                 self._add_cached_dummy_inputs(self._cached_dummy_controlnet_inputs, latent_model_input, shape_dict, input_dict)
-
-        print(f"UNetEngine: Final shape_dict keys: {list(shape_dict.keys())}")
-        for key, shape in shape_dict.items():
-            if key.startswith('input_control'):
-                print(f"UNetEngine: Control input {key}: {shape}")
 
         # Allocate buffers and run inference
         self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
@@ -147,7 +140,6 @@ class UNet2DConditionModelEngine:
             shape_dict: Shape dictionary to update
             input_dict: Input dictionary to update
         """
-        print(f"UNetEngine: Adding ControlNet residuals - down_blocks: {len(down_block_additional_residuals) if down_block_additional_residuals else 0}, mid_block: {mid_block_additional_residual is not None}")
         
         # Add down block residuals as input controls
         if down_block_additional_residuals is not None:
@@ -156,14 +148,12 @@ class UNet2DConditionModelEngine:
                 input_name = f"input_control_{i:02d}"  # Use zero-padded names to match engine
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
-                print(f"UNetEngine: Added control input {input_name}: {tensor.shape}")
         
         # Add middle block residual
         if mid_block_additional_residual is not None:
             input_name = "input_control_middle"  # Match engine middle control name
             shape_dict[input_name] = mid_block_additional_residual.shape
             input_dict[input_name] = mid_block_additional_residual
-            print(f"UNetEngine: Added middle control input {input_name}: {mid_block_additional_residual.shape}")
 
     def _add_cached_dummy_inputs(self, 
                                dummy_inputs: Dict, 

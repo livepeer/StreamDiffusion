@@ -87,8 +87,6 @@ class ControlNetModelEngine:
         output_shapes = self._resolve_output_shapes(batch_size, latent_height, latent_width)
         shape_dict.update(output_shapes)
         
-        print(f"ControlNetEngine: Input shapes - sample: {sample.shape}, controlnet_cond: {controlnet_cond.shape}")
-        
         self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
         
         outputs = self.engine.infer(
@@ -103,14 +101,6 @@ class ControlNetModelEngine:
             torch.cuda.current_stream().synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
-        
-        # Log output dimensions
-        print(f"ControlNetEngine: Output dimensions:")
-        for i, block in enumerate(down_blocks):
-            if block is not None:
-                print(f"  down_block_{i:02d}: {block.shape}")
-        if mid_block is not None:
-            print(f"  mid_block: {mid_block.shape}")
         
         return down_blocks, mid_block
     
