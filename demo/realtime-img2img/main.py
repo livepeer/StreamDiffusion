@@ -225,6 +225,9 @@ class App:
             # Add ControlNet information 
             controlnet_info = self._get_controlnet_info()
             
+            # Add IPAdapter information
+            ipadapter_info = self._get_ipadapter_info()
+            
             # Include config prompt if available
             config_prompt = None
             if self.uploaded_controlnet_config and 'prompt' in self.uploaded_controlnet_config:
@@ -318,6 +321,7 @@ class App:
                     "max_queue_size": self.args.max_queue_size,
                     "page_content": page_content if info.page_content else "",
                     "controlnet": controlnet_info,
+                    "ipadapter": ipadapter_info,
                     "config_prompt": config_prompt,
                     "t_index_list": current_t_index_list,
                     "acceleration": current_acceleration,
@@ -531,6 +535,94 @@ class App:
             except Exception as e:
                 logging.error(f"update_controlnet_strength: Failed to update strength: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update strength: {str(e)}")
+
+        @self.app.post("/api/ipadapter/upload-style-image")
+        async def upload_style_image(file: UploadFile = File(...)):
+            """Upload a style image for IPAdapter"""
+            try:
+                # Validate file type
+                if not file.content_type or not file.content_type.startswith('image/'):
+                    raise HTTPException(status_code=400, detail="File must be an image")
+                
+                # Read file content
+                content = await file.read()
+                
+                # Save temporarily and load as PIL Image
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+                
+                try:
+                    # Load and validate image
+                    from PIL import Image
+                    style_image = Image.open(tmp_path).convert("RGB")
+                    
+                    # If pipeline exists and has IPAdapter, update it immediately
+                    pipeline_updated = False
+                    if self.pipeline and getattr(self.pipeline, 'has_ipadapter', False):
+                        success = self.pipeline.update_ipadapter_style_image(style_image)
+                        if success:
+                            pipeline_updated = True
+                    
+                    # Return success
+                    message = "Style image uploaded successfully"
+                    if pipeline_updated:
+                        message += " and applied to active pipeline"
+                    else:
+                        message += " and will be applied when pipeline starts"
+                    
+                    return JSONResponse({
+                        "status": "success",
+                        "message": message
+                    })
+                    
+                finally:
+                    # Clean up temp file
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to upload style image: {str(e)}")
+
+        @self.app.post("/api/ipadapter/update-scale")
+        async def update_ipadapter_scale(request: Request):
+            """Update IPAdapter scale/strength in real-time"""
+            try:
+                data = await request.json()
+                scale = data.get("scale")
+                
+                if scale is None:
+                    raise HTTPException(status_code=400, detail="Missing scale parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if we're using config mode and have ipadapters configured
+                ipadapter_enabled = (self.pipeline.use_config and 
+                                    self.pipeline.config and 
+                                    'ipadapters' in self.pipeline.config)
+                
+                if not ipadapter_enabled:
+                    raise HTTPException(status_code=400, detail="IPAdapter is not enabled")
+                
+                # Update IPAdapter scale in the pipeline
+                success = self.pipeline.update_ipadapter_scale(float(scale))
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Updated IPAdapter scale to {scale}"
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to update scale in pipeline")
+                
+            except Exception as e:
+                logging.error(f"update_ipadapter_scale: Failed to update scale: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update scale: {str(e)}")
 
         @self.app.post("/api/update-t-index-list")
         async def update_t_index_list(request: Request):
@@ -1347,6 +1439,60 @@ class App:
                     })
         
         return controlnet_info
+
+    def _get_ipadapter_info(self):
+        """Get IPAdapter information from uploaded config or active pipeline"""
+        ipadapter_info = {
+            "enabled": False,
+            "config_loaded": False,
+            "scale": 1.0,
+            "model_path": None,
+            "style_image_set": False,
+            "style_image_path": None
+        }
+        
+        # Check uploaded config first
+        if self.uploaded_controlnet_config:
+            if 'ipadapters' in self.uploaded_controlnet_config and len(self.uploaded_controlnet_config['ipadapters']) > 0:
+                ipadapter_info["enabled"] = True
+                ipadapter_info["config_loaded"] = True
+                
+                # Get info from first IPAdapter config
+                first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
+                ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
+                ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                
+                # Check for style image
+                if 'style_image' in first_ipadapter:
+                    ipadapter_info["style_image_set"] = True
+                    ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                    
+        # Otherwise check active pipeline
+        elif self.pipeline and self.pipeline.use_config and self.pipeline.config and 'ipadapters' in self.pipeline.config:
+            if len(self.pipeline.config['ipadapters']) > 0:
+                ipadapter_info["enabled"] = True
+                ipadapter_info["config_loaded"] = True
+                
+                # Get info from first IPAdapter config
+                first_ipadapter = self.pipeline.config['ipadapters'][0]
+                ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
+                ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                
+                # Check for style image
+                if 'style_image' in first_ipadapter:
+                    ipadapter_info["style_image_set"] = True
+                    ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                    
+            # Try to get current scale from active pipeline if available
+            try:
+                if hasattr(self.pipeline, 'get_ipadapter_info'):
+                    pipeline_info = self.pipeline.get_ipadapter_info()
+                    if pipeline_info.get("enabled"):
+                        ipadapter_info["scale"] = pipeline_info.get("scale", ipadapter_info["scale"])
+            except:
+                pass
+        
+        return ipadapter_info
 
     def _calculate_aspect_ratio(self, width: int, height: int) -> str:
         """Calculate and return aspect ratio as a string"""
