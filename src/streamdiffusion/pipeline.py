@@ -331,6 +331,7 @@ class StreamDiffusion:
         )
 
 
+
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self._param_updater.get_normalize_prompt_weights()
