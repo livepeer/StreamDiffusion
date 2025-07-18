@@ -448,7 +448,7 @@ class BaseControlNetPipeline:
     def _patch_tensorrt_mode(self):
         """Patch for TensorRT mode with ControlNet support"""
         
-        def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):            
+        def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):
             # Handle CFG expansion (same as original)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)

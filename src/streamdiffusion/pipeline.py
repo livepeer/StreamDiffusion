@@ -331,10 +331,6 @@ class StreamDiffusion:
         )
 
 
-    def set_normalize_seed_weights(self, normalize: bool) -> None:
-        """Set whether to normalize seed weights in blending operations."""
-        self._param_updater.set_normalize_seed_weights(normalize)
-
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self._param_updater.get_normalize_prompt_weights()

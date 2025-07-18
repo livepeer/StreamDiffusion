@@ -45,8 +45,6 @@ class App:
         # Store current resolution for pipeline recreation
         self.new_width = 512
         self.new_height = 512
-        # Store uploaded style image before pipeline initialization
-        self.uploaded_style_image = None
         self.init_app()
 
     def init_app(self):
@@ -157,7 +155,7 @@ class App:
                     print("stream: Pipeline created successfully")
                 
                 # Recreate pipeline if config changed (but not resolution - that's handled separately)
-                elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and ('controlnets' in self.pipeline.config or 'ipadapters' in self.pipeline.config))):
+                elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)) or (self.uploaded_controlnet_config and not self.pipeline.use_config):
                     if self.config_needs_reload:
                         print("stream: Recreating pipeline with new config...")
                     else:
