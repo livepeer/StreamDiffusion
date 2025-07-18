@@ -56,9 +56,8 @@
   }
   
   // Panel state management
-  let showPromptBlending: boolean = false; // Default to expanded since it's the unified blending interface
-  let showResolutionPicker: boolean = false; // Default to expanded
-  let showSeedBlending: boolean = false;
+  let showPromptBlending: boolean = true; // Default to expanded since it's the unified blending interface
+  let showResolutionPicker: boolean = true; // Default to expanded
   let leftPanelCollapsed: boolean = false;
   let rightPanelCollapsed: boolean = false;
 
@@ -582,30 +581,12 @@
             </button>
             {#if showPromptBlending}
               <div class="p-4 pt-0">
-                <BlendingControl
-                  blendingType="prompt" 
-                  blendingConfig={promptBlendingConfig} 
-                  normalizeWeights={normalizePromptWeights} 
-                />
-              </div>
-            {/if}
-          </div>
-
-          <!-- Seed Blending -->
-          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-            <button 
-              on:click={() => showSeedBlending = !showSeedBlending}
-              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
-            >
-              <h3 class="text-md font-medium">Seed Blending</h3>
-              <span class="text-sm">{showSeedBlending ? '−' : '+'}</span>
-            </button>
-            {#if showSeedBlending}
-              <div class="p-4 pt-0">
                 <BlendingControl 
-                  blendingType="seed" 
-                  blendingConfig={seedBlendingConfig} 
-                  normalizeWeights={normalizeSeedWeights} 
+                  {promptBlendingConfig} 
+                  {seedBlendingConfig}
+                  {normalizePromptWeights} 
+                  {normalizeSeedWeights}
+                  currentPrompt={$pipelineValues.prompt}
                 />
               </div>
             {/if}

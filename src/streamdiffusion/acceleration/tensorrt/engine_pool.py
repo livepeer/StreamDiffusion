@@ -18,7 +18,7 @@ class ControlNetEnginePool:
     """Manages multiple ControlNet TensorRT engines"""
     
     def __init__(self, engine_dir: str, stream: Optional[cuda.Stream] = None, 
-                 image_width: int = 512, image_height: int = 512):
+                 image_width: int = 512, image_height: int = 512, enable_pytorch_fallback: bool = False):
         """Initialize ControlNet engine pool"""
         self.engine_dir = Path(engine_dir)
         self.engine_dir.mkdir(parents=True, exist_ok=True)
@@ -30,6 +30,7 @@ class ControlNetEnginePool:
         # Store image dimensions for engine compilation
         self.image_width = image_width
         self.image_height = image_height
+        self.enable_pytorch_fallback = enable_pytorch_fallback
         
         self._discover_existing_engines()
     
@@ -122,13 +123,17 @@ class ControlNetEnginePool:
                 print(f"   Engine saved to: {engine_path}")
             else:
                 print(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation failed after {compilation_time:.2f}s")
-                print(f"   Will use PyTorch fallback for {model_id}")
+                if self.enable_pytorch_fallback:
+                    print(f"   Will use PyTorch fallback for {model_id}")
+                else:
+                    print(f"   PyTorch fallback disabled for {model_id}")
         
         hybrid_controlnet = HybridControlNet(
             model_id=model_id,
             engine_path=str(engine_path) if engine_path.exists() else None,
             pytorch_model=pytorch_model,
-            stream=self.stream
+            stream=self.stream,
+            enable_pytorch_fallback=self.enable_pytorch_fallback
         )
         
         self.engines[cache_key] = hybrid_controlnet

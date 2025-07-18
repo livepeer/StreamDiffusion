@@ -114,31 +114,12 @@ class App:
                         need_image = True
                         if self.pipeline and hasattr(self.pipeline, 'pipeline_mode'):
                             # Need image for img2img OR for txt2img with ControlNets
-                            # For IPAdapter: need image for img2img mode, but not for txt2img (style image is separate)
-                            has_controlnets = hasattr(self.pipeline, 'has_controlnet') and self.pipeline.has_controlnet
-                            has_ipadapter = hasattr(self.pipeline, 'has_ipadapter') and self.pipeline.has_ipadapter
-                            
-                            if self.pipeline.pipeline_mode == "img2img":
-                                need_image = True  # Always need image for img2img
-                            elif has_controlnets:
-                                need_image = True  # Need image for txt2img with ControlNets
-                            elif has_ipadapter:
-                                need_image = False  # Don't need input image for txt2img with IPAdapter
-                            else:
-                                need_image = False  # Pure txt2img doesn't need image
+                            has_controlnets = self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config
+                            need_image = self.pipeline.pipeline_mode == "img2img" or has_controlnets
                         elif self.uploaded_controlnet_config and 'mode' in self.uploaded_controlnet_config:
                             # Need image for img2img OR for txt2img with ControlNets
                             has_controlnets = 'controlnets' in self.uploaded_controlnet_config
-                            has_ipadapter = 'ipadapters' in self.uploaded_controlnet_config
-                            
-                            if self.uploaded_controlnet_config['mode'] == "img2img":
-                                need_image = True  # Always need image for img2img
-                            elif has_controlnets:
-                                need_image = True  # Need image for txt2img with ControlNets
-                            elif has_ipadapter:
-                                need_image = False  # Don't need input image for txt2img with IPAdapter
-                            else:
-                                need_image = False  # Pure txt2img doesn't need image
+                            need_image = self.uploaded_controlnet_config['mode'] == "img2img" or has_controlnets
                         
                         if need_image:
                             image_data = await self.conn_manager.receive_bytes(user_id)
@@ -168,7 +149,7 @@ class App:
                 # Create pipeline if it doesn't exist yet
                 if self.pipeline is None:
                     if self.uploaded_controlnet_config:
-                        print("stream: Creating pipeline with config...")
+                        print("stream: Creating pipeline with ControlNet config...")
                         self.pipeline = self._create_pipeline_with_config()
                     else:
                         print("stream: Creating default pipeline...")
@@ -188,8 +169,7 @@ class App:
                         self.pipeline = self._create_default_pipeline()
                     
                     self.config_needs_reload = False  # Reset the flag
-
-                print("stream: Pipeline recreated with config support")
+                    print("stream: Pipeline recreated with config support")
 
                 async def generate():
                     while True:
@@ -244,9 +224,6 @@ class App:
             
             # Add ControlNet information 
             controlnet_info = self._get_controlnet_info()
-            
-            # Add IPAdapter information
-            ipadapter_info = self._get_ipadapter_info()
             
             # Include config prompt if available
             config_prompt = None
@@ -327,11 +304,12 @@ class App:
             normalize_seed_weights = True    # default
             
             if self.pipeline:
-                normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
+                current_normalize = self.pipeline.stream.get_normalize_weights()
+                normalize_prompt_weights = current_normalize
+                normalize_seed_weights = current_normalize
             elif self.uploaded_controlnet_config:
-                normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_prompt_weights', True)
-                normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_seed_weights', True)
+                normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+                normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
             
             return JSONResponse(
                 {
@@ -340,7 +318,6 @@ class App:
                     "max_queue_size": self.args.max_queue_size,
                     "page_content": page_content if info.page_content else "",
                     "controlnet": controlnet_info,
-                    "ipadapter": ipadapter_info,
                     "config_prompt": config_prompt,
                     "t_index_list": current_t_index_list,
                     "acceleration": current_acceleration,
@@ -424,8 +401,13 @@ class App:
                 config_seed = config_data.get('seed', 2)
                 
                 # Get normalization settings
-                config_normalize_prompt_weights = config_data.get('normalize_prompt_weights', True)
-                config_normalize_seed_weights = config_data.get('normalize_seed_weights', True)
+                config_normalize_weights = config_data.get('normalize_weights', True)
+                
+                # Calculate current resolution string for frontend
+                current_resolution = f"{self.new_width}x{self.new_height}"
+                aspect_ratio = self._calculate_aspect_ratio(self.new_width, self.new_height)
+                if aspect_ratio:
+                    current_resolution += f" ({aspect_ratio})"
                 
                 # Calculate current resolution string for frontend
                 current_resolution = f"{self.new_width}x{self.new_height}"
@@ -435,10 +417,9 @@ class App:
                 
                 return JSONResponse({
                     "status": "success",
-                    "message": "Configuration uploaded successfully",
+                    "message": "ControlNet configuration uploaded successfully",
                     "controls_updated": True,  # Flag for frontend to update controls
                     "controlnet": self._get_controlnet_info(),
-                    "ipadapter": self._get_ipadapter_info(),
                     "config_prompt": config_prompt,
                     "t_index_list": t_index_list,
                     "acceleration": config_acceleration,
@@ -449,8 +430,8 @@ class App:
                     "prompt_blending": normalized_prompt_blending,
                     "seed_blending": normalized_seed_blending,
                     "current_resolution": current_resolution,  # Include updated resolution
-                    "normalize_prompt_weights": config_normalize_prompt_weights,
-                    "normalize_seed_weights": config_normalize_seed_weights,
+                    "normalize_prompt_weights": config_normalize_weights,
+                    "normalize_seed_weights": config_normalize_weights,
                 })
                 
             except Exception as e:
@@ -501,11 +482,12 @@ class App:
                 normalize_seed_weights = True
                 
                 if self.pipeline:
-                    normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                    normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
+                    current_normalize = self.pipeline.stream.get_normalize_weights()
+                    normalize_prompt_weights = current_normalize
+                    normalize_seed_weights = current_normalize
                 elif self.uploaded_controlnet_config:
-                    normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_prompt_weights', True)
-                    normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_seed_weights', True)
+                    normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+                    normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
                 
                 return JSONResponse({
                     "prompt_blending": prompt_blending_config,
@@ -555,123 +537,6 @@ class App:
             except Exception as e:
                 logging.error(f"update_controlnet_strength: Failed to update strength: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update strength: {str(e)}")
-
-        @self.app.post("/api/ipadapter/upload-style-image")
-        async def upload_style_image(file: UploadFile = File(...)):
-            """Upload a style image for IPAdapter"""
-            try:
-                logging.info(f"upload_style_image: Starting upload for file: {file.filename}")
-                
-                # Validate file type
-                if not file.content_type or not file.content_type.startswith('image/'):
-                    logging.error(f"upload_style_image: Invalid file type: {file.content_type}")
-                    raise HTTPException(status_code=400, detail="File must be an image")
-                
-                logging.info(f"upload_style_image: File type validated: {file.content_type}")
-                
-                # Read file content
-                content = await file.read()
-                logging.info(f"upload_style_image: Read {len(content)} bytes from file")
-                
-                # Save temporarily and load as PIL Image
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-                    tmp.write(content)
-                    tmp_path = tmp.name
-                
-                logging.info(f"upload_style_image: Saved temp file to: {tmp_path}")
-                
-                try:
-                    # Load and validate image
-                    from PIL import Image
-                    style_image = Image.open(tmp_path).convert("RGB")
-                    logging.info(f"upload_style_image: Loaded PIL image with size: {style_image.size}")
-                    
-                    # Store the style image for use when pipeline is created
-                    self.uploaded_style_image = style_image
-                    logging.info("upload_style_image: Stored style image for later use")
-                    
-                    # If pipeline exists and has IPAdapter, update it immediately
-                    pipeline_updated = False
-                    if self.pipeline and getattr(self.pipeline, 'has_ipadapter', False):
-                        logging.info("upload_style_image: Pipeline found with IPAdapter, updating immediately")
-                        success = self.pipeline.update_ipadapter_style_image(style_image)
-                        if success:
-                            pipeline_updated = True
-                            logging.info("upload_style_image: Updated active pipeline successfully")
-                        else:
-                            logging.warning("upload_style_image: Failed to update active pipeline, but image is stored")
-                    else:
-                        logging.info("upload_style_image: No active IPAdapter pipeline, image stored for when pipeline starts")
-                    
-                    # Return success - image is stored and will be used when pipeline starts
-                    message = "Style image uploaded successfully"
-                    if pipeline_updated:
-                        message += " and applied to active pipeline"
-                    else:
-                        message += " and will be applied when pipeline starts"
-                    
-                    return JSONResponse({
-                        "status": "success",
-                        "message": message
-                    })
-                    
-                finally:
-                    # Clean up temp file
-                    try:
-                        os.unlink(tmp_path)
-                        logging.info(f"upload_style_image: Cleaned up temp file: {tmp_path}")
-                    except Exception as cleanup_error:
-                        logging.warning(f"upload_style_image: Failed to cleanup temp file: {cleanup_error}")
-                
-            except HTTPException:
-                # Re-raise HTTP exceptions as-is
-                raise
-            except Exception as e:
-                logging.error(f"upload_style_image: Unexpected error: {type(e).__name__}: {e}")
-                import traceback
-                logging.error(f"upload_style_image: Traceback: {traceback.format_exc()}")
-                raise HTTPException(status_code=500, detail=f"Failed to upload style image: {str(e)}")
-
-        @self.app.post("/api/ipadapter/update-scale")
-        async def update_ipadapter_scale(request: Request):
-            """Update IPAdapter scale/strength in real-time"""
-            try:
-                data = await request.json()
-                scale = data.get("scale")
-                
-                if scale is None:
-                    raise HTTPException(status_code=400, detail="Missing scale parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Check if we're using config mode and have ipadapters configured
-                ipadapter_enabled = (self.pipeline.use_config and 
-                                    self.pipeline.config and 
-                                    'ipadapters' in self.pipeline.config)
-                
-                if not ipadapter_enabled:
-                    raise HTTPException(status_code=400, detail="IPAdapter is not enabled")
-                
-                # Update IPAdapter scale in the pipeline
-                success = self.pipeline.update_ipadapter_scale(float(scale))
-                
-                if success:
-                    return JSONResponse({
-                        "status": "success",
-                        "message": f"Updated IPAdapter scale to {scale}"
-                    })
-                else:
-                    raise HTTPException(status_code=500, detail="Failed to update scale in pipeline")
-                
-            except Exception as e:
-                logging.error(f"update_ipadapter_scale: Failed to update scale: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update scale: {str(e)}")
-
-        @self.app.get("/api/ipadapter/info")
-        async def get_ipadapter_info():
-            """Get current IPAdapter configuration info"""
-            return JSONResponse({"ipadapter": self._get_ipadapter_info()})
 
         @self.app.post("/api/update-t-index-list")
         async def update_t_index_list(request: Request):
@@ -864,7 +729,8 @@ class App:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
                 # Update normalize weights setting for prompt blending
-                self.pipeline.stream.set_normalize_prompt_weights(bool(normalize))
+                # For now, use the existing single flag (this can be enhanced later with separate flags)
+                self.pipeline.stream.set_normalize_weights(bool(normalize))
                 
                 return JSONResponse({
                     "status": "success",
@@ -889,7 +755,8 @@ class App:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
                 # Update normalize weights setting for seed blending
-                self.pipeline.stream.set_normalize_seed_weights(bool(normalize))
+                # For now, use the existing single flag (this can be enhanced later with separate flags)
+                self.pipeline.stream.set_normalize_weights(bool(normalize))
                 
                 return JSONResponse({
                     "status": "success",
@@ -906,7 +773,11 @@ class App:
             try:
                 data = await request.json()
                 prompt_list = data.get("prompt_list")
-                prompt_interpolation_method = data.get("interpolation_method", "slerp")
+                interpolation_method = data.get("interpolation_method", "slerp")
+                
+                print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
+                print(f"update_prompt_blending: prompt_list = {prompt_list}")
+                print(f"update_prompt_blending: interpolation_method = {interpolation_method}")
                 
                 print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
                 print(f"update_prompt_blending: prompt_list = {prompt_list}")
@@ -935,8 +806,8 @@ class App:
                 
                 # Update prompt blending using the unified public interface
                 self.pipeline.stream.update_prompt(
-                    prompt=prompt_tuples,
-                    prompt_interpolation_method=prompt_interpolation_method
+                    prompt_tuples,  # Pass as first positional argument
+                    prompt_interpolation_method=interpolation_method
                 )
                 
                 print(f"update_prompt_blending: Successfully updated prompt blending")
@@ -1256,13 +1127,10 @@ class App:
                 }
             })
 
-        # ------------------------------------------------------------
-
         # Only mount static files if not in API-only mode
         if not self.args.api_only:
             if not os.path.exists("public"):
                 os.makedirs("public")
-
             self.app.mount(
                 "/", StaticFiles(directory="./frontend/public", html=True), name="public"
             )
@@ -1276,80 +1144,117 @@ class App:
                     "frontend": "Run separately with 'npm run dev' in ./frontend/"
                 })
 
-    def _normalize_blending_config(self, config_data, blending_type):
+    def _normalize_prompt_config(self, config_data):
         """
-        Normalize blending configuration to always return a list format.
-        
-        Args:
-            config_data: The configuration dictionary
-            blending_type: Either 'prompt' or 'seed'
-            
-        Returns:
-            List of [value, weight] pairs or None
-            
-        Priority: {type}_blending.{type}_list > {type}_blending (direct list) > {type} (converted to single-item list) > default
+        Normalize prompt configuration to always return a list format.
+        Priority: prompt_blending.prompt_list > prompt_blending (direct list) > prompt (converted to single-item list) > default
         """
         if not config_data:
             return None
             
-        # Set up type-specific parameters
-        blending_key = f'{blending_type}_blending'
-        list_key = f'{blending_type}_list'
-        single_key = blending_type
-        value_converter = str if blending_type == 'prompt' else int
-        
-        # Check for explicit blending config first (highest priority)
-        if blending_key in config_data:
-            blending_config = config_data[blending_key]
+        # Check for explicit prompt_blending first (highest priority)
+        if 'prompt_blending' in config_data:
+            prompt_blending = config_data['prompt_blending']
             
-            # Handle nested structure: {type}_blending.{type}_list
-            if isinstance(blending_config, dict) and list_key in blending_config:
-                item_list = blending_config[list_key]
-                if isinstance(item_list, list) and len(item_list) > 0:
+            # Handle nested structure: prompt_blending.prompt_list
+            if isinstance(prompt_blending, dict) and 'prompt_list' in prompt_blending:
+                prompt_list = prompt_blending['prompt_list']
+                if isinstance(prompt_list, list) and len(prompt_list) > 0:
                     normalized = []
-                    for item in item_list:
-                        if isinstance(item, (list, tuple)) and len(item) == 2:
-                            normalized.append([value_converter(item[0]), float(item[1])])
+                    for item in prompt_list:
+                        if isinstance(item, list) and len(item) == 2:
+                            normalized.append([str(item[0]), float(item[1])])
+                        elif isinstance(item, tuple) and len(item) == 2:
+                            normalized.append([str(item[0]), float(item[1])])
                     if normalized:
                         return normalized
                         
-            # Handle direct list format: {type}_blending: [[value, weight], ...]
-            elif isinstance(blending_config, list) and len(blending_config) > 0:
+            # Handle direct list format: prompt_blending: [["text", weight], ...]
+            elif isinstance(prompt_blending, list) and len(prompt_blending) > 0:
                 normalized = []
-                for item in blending_config:
-                    if isinstance(item, (list, tuple)) and len(item) == 2:
-                        normalized.append([value_converter(item[0]), float(item[1])])
+                for item in prompt_blending:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
                 if normalized:
                     return normalized
         
-        # Fall back to single value, convert to list format
-        if single_key in config_data:
-            single_value = config_data[single_key]
-            if blending_type == 'prompt' and isinstance(single_value, str) and single_value.strip():
-                return [[single_value, 1.0]]
-            elif blending_type == 'seed' and isinstance(single_value, int):
-                return [[single_value, 1.0]]
-            elif isinstance(single_value, list) and len(single_value) > 0:
-                # Handle case where value is already a list (but not in blending key)
+        # Fall back to single prompt, convert to list format
+        if 'prompt' in config_data:
+            prompt = config_data['prompt']
+            if isinstance(prompt, str) and prompt.strip():
+                return [[prompt, 1.0]]  # Convert single prompt to list with weight 1.0
+            elif isinstance(prompt, list) and len(prompt) > 0:
+                # Handle case where prompt is already a list (but not in prompt_blending key)
                 normalized = []
-                for item in single_value:
-                    if isinstance(item, (list, tuple)) and len(item) == 2:
-                        normalized.append([value_converter(item[0]), float(item[1])])
-                    elif (blending_type == 'prompt' and isinstance(item, str)) or \
-                         (blending_type == 'seed' and isinstance(item, int)):
-                        normalized.append([value_converter(item), 1.0])
+                for item in prompt:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([str(item[0]), float(item[1])])
+                    elif isinstance(item, str):
+                        normalized.append([item, 1.0])
                 if normalized:
                     return normalized
         
         return None
 
-    def _normalize_prompt_config(self, config_data):
-        """Normalize prompt configuration - wrapper for backwards compatibility."""
-        return self._normalize_blending_config(config_data, 'prompt')
-
     def _normalize_seed_config(self, config_data):
-        """Normalize seed configuration - wrapper for backwards compatibility."""
-        return self._normalize_blending_config(config_data, 'seed')
+        """
+        Normalize seed configuration to always return a list format.
+        Priority: seed_blending.seed_list > seed_blending (direct list) > seed (converted to single-item list) > default
+        """
+        if not config_data:
+            return None
+            
+        # Check for explicit seed_blending first (highest priority)
+        if 'seed_blending' in config_data:
+            seed_blending = config_data['seed_blending']
+            
+            # Handle nested structure: seed_blending.seed_list
+            if isinstance(seed_blending, dict) and 'seed_list' in seed_blending:
+                seed_list = seed_blending['seed_list']
+                if isinstance(seed_list, list) and len(seed_list) > 0:
+                    normalized = []
+                    for item in seed_list:
+                        if isinstance(item, list) and len(item) == 2:
+                            normalized.append([int(item[0]), float(item[1])])
+                        elif isinstance(item, tuple) and len(item) == 2:
+                            normalized.append([int(item[0]), float(item[1])])
+                    if normalized:
+                        return normalized
+                        
+            # Handle direct list format: seed_blending: [[seed, weight], ...]
+            elif isinstance(seed_blending, list) and len(seed_blending) > 0:
+                normalized = []
+                for item in seed_blending:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                if normalized:
+                    return normalized
+        
+        # Fall back to single seed, convert to list format
+        if 'seed' in config_data:
+            seed = config_data['seed']
+            if isinstance(seed, int):
+                return [[seed, 1.0]]  # Convert single seed to list with weight 1.0
+            elif isinstance(seed, list) and len(seed) > 0:
+                # Handle case where seed is already a list (but not in seed_blending key)
+                normalized = []
+                for item in seed:
+                    if isinstance(item, list) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        normalized.append([int(item[0]), float(item[1])])
+                    elif isinstance(item, int):
+                        normalized.append([item, 1.0])
+                if normalized:
+                    return normalized
+        
+        return None
 
     def _create_default_pipeline(self):
         """Create the default pipeline (standard mode)"""
@@ -1372,35 +1277,14 @@ class App:
         if controlnet_config_path:
             new_args = self.args._replace(controlnet_config=controlnet_config_path)
         elif self.uploaded_controlnet_config:
-            # Create a copy of the config to modify
-            config_data = self.uploaded_controlnet_config.copy()
-            
-            # If we have an uploaded style image, modify the config to use it instead of the file path
-            if self.uploaded_style_image and 'ipadapters' in config_data:
-                print("_create_pipeline_with_config: Modifying config to use uploaded style image")
-                
-                # Save uploaded style image to a temporary file
-                temp_image_path = tempfile.NamedTemporaryFile(mode='wb', suffix='.jpg', delete=False)
-                self.uploaded_style_image.save(temp_image_path.name, format='JPEG')
-                temp_image_path.close()
-                
-                # Update the config to point to our uploaded image
-                for ipadapter_config in config_data['ipadapters']:
-                    original_path = ipadapter_config.get('style_image', 'None')
-                    ipadapter_config['style_image'] = temp_image_path.name
-                    print(f"_create_pipeline_with_config: Changed style_image from '{original_path}' to '{temp_image_path.name}'")
-                
-                # Store the temp image path for cleanup later
-                self.temp_style_image_path = temp_image_path.name
-            
-            # Create temporary file from modified config
+            # Create temporary file from stored config
             temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-            yaml.dump(config_data, temp_config_path, default_flow_style=False)
+            yaml.dump(self.uploaded_controlnet_config, temp_config_path, default_flow_style=False)
             temp_config_path.close()
             
             # Merge YAML config values into args, respecting config overrides
             # This ensures that acceleration settings from YAML config override command line args
-            config_acceleration = config_data.get('acceleration', self.args.acceleration)
+            config_acceleration = self.uploaded_controlnet_config.get('acceleration', self.args.acceleration)
             new_args = self.args._replace(
                 controlnet_config=temp_config_path.name,
                 acceleration=config_acceleration
@@ -1421,22 +1305,23 @@ class App:
             default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
             new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
         
-        # Clean up temp files if created
+        # Initialize prompt blending from config
+        normalized_prompt_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+        if normalized_prompt_config:
+            # Convert to tuple format and set up prompt blending
+            prompt_tuples = [(item[0], item[1]) for item in normalized_prompt_config]
+            new_pipeline.stream.update_prompt(prompt_tuples, prompt_interpolation_method="slerp")
+        else:
+            # Fallback to default single prompt
+            default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
+            new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
+        
+        # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
             try:
                 os.unlink(new_args.controlnet_config)
             except:
                 pass
-                
-            # Clean up temp style image file if created
-            if hasattr(self, 'temp_style_image_path'):
-                try:
-                    os.unlink(self.temp_style_image_path)
-                    print(f"_create_pipeline_with_config: Cleaned up temp style image: {self.temp_style_image_path}")
-                except:
-                    pass
-                finally:
-                    delattr(self, 'temp_style_image_path')
         
         return new_pipeline
 
@@ -1534,44 +1419,6 @@ class App:
                 pass
         
         print(f"Pipeline updated successfully to {width}x{height}")
-
-    def _get_ipadapter_info(self):
-        """Get IPAdapter information from uploaded config or active pipeline"""
-        ipadapter_info = {
-            "enabled": False,
-            "config_loaded": False,
-            "style_image_path": None,
-            "scale": 1.0,
-            "model_path": None,
-            "style_image_uploaded": self.uploaded_style_image is not None
-        }
-        
-        # Check uploaded config first
-        if self.uploaded_controlnet_config:
-            if 'ipadapters' in self.uploaded_controlnet_config:
-                ipadapter_info["enabled"] = True
-                ipadapter_info["config_loaded"] = True
-                # Use first IPAdapter config
-                if len(self.uploaded_controlnet_config['ipadapters']) > 0:
-                    ia_config = self.uploaded_controlnet_config['ipadapters'][0]
-                    ipadapter_info["style_image_path"] = ia_config.get('style_image')
-                    ipadapter_info["scale"] = ia_config.get('scale', 1.0)
-                    ipadapter_info["model_path"] = ia_config.get('ipadapter_model_path')
-        # Otherwise check active pipeline
-        elif self.pipeline:
-            # Use the pipeline's method to get current IPAdapter info
-            pipeline_info = self.pipeline.get_ipadapter_info()
-            ipadapter_info.update(pipeline_info)
-            ipadapter_info["config_loaded"] = pipeline_info["enabled"]
-            
-            # Add style_image_path from config if available
-            if self.pipeline.config and 'ipadapters' in self.pipeline.config:
-                if len(self.pipeline.config['ipadapters']) > 0:
-                    ia_config = self.pipeline.config['ipadapters'][0]
-                    ipadapter_info["style_image_path"] = ia_config.get('style_image')
-        
-        return ipadapter_info
-
 
 app = App(config).app
 

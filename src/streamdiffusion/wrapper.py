@@ -103,6 +103,7 @@ class StreamDiffusionWrapper:
         # ControlNet options
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        enable_pytorch_fallback: bool = False,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -181,9 +182,14 @@ class StreamDiffusionWrapper:
             ControlNet configuration(s), by default None.
             Can be a single config dict or list of config dicts for multiple ControlNets.
             Each config should contain: model_id, preprocessor (optional), conditioning_scale, etc.
+        enable_pytorch_fallback : bool, optional
+            Whether to enable PyTorch fallback when acceleration fails, by default False.
+            When True, falls back to PyTorch inference if TensorRT/xformers acceleration fails.
+            When False, raises an exception when acceleration fails.
         """
         self.sd_turbo = "turbo" in model_id_or_path
         self.use_controlnet = use_controlnet
+        self.enable_pytorch_fallback = enable_pytorch_fallback
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -239,6 +245,7 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             use_controlnet=use_controlnet,
             controlnet_config=controlnet_config,
+            enable_pytorch_fallback=enable_pytorch_fallback,
         )
 
         # Store acceleration settings for ControlNet integration
@@ -415,13 +422,15 @@ class StreamDiffusionWrapper:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        # New prompt blending parameters
+        # Prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        # New seed blending parameters
+        normalize_prompt_weights: Optional[bool] = None,
+        # Seed blending parameters
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
+        normalize_seed_weights: Optional[bool] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -445,11 +454,17 @@ class StreamDiffusionWrapper:
             The negative prompt to apply to all blended prompts.
         prompt_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between prompt embeddings, by default "slerp".
+        normalize_prompt_weights : Optional[bool]
+            Whether to normalize prompt weights in blending to sum to 1, by default None (no change).
+            When False, weights > 1 will amplify embeddings.
         seed_list : Optional[List[Tuple[int, float]]]
             List of seeds with weights for blending. Each tuple contains (seed_value, weight).
             Example: [(123, 0.6), (456, 0.4)]
         seed_interpolation_method : Literal["linear", "slerp"]
             Method for interpolating between seed noise tensors, by default "linear".
+        normalize_seed_weights : Optional[bool]
+            Whether to normalize seed weights in blending to sum to 1, by default None (no change).
+            When False, weights > 1 will amplify noise.
         """
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -462,6 +477,8 @@ class StreamDiffusionWrapper:
             prompt_interpolation_method=prompt_interpolation_method,
             seed_list=seed_list,
             seed_interpolation_method=seed_interpolation_method,
+            normalize_prompt_weights=normalize_prompt_weights,
+            normalize_seed_weights=normalize_seed_weights,
         )
 
 
@@ -611,7 +628,7 @@ class StreamDiffusionWrapper:
         # Use stream's current resolution instead of wrapper's cached values
         current_width = self.stream.width
         current_height = self.stream.height
-
+        
         if isinstance(image, str):
             image = Image.open(image).convert("RGB").resize((current_width, current_height))
         if isinstance(image, Image.Image):
@@ -748,6 +765,7 @@ class StreamDiffusionWrapper:
         normalize_seed_weights: bool = True,
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        enable_pytorch_fallback: bool = False,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -1156,8 +1174,10 @@ class StreamDiffusionWrapper:
         except Exception:
             traceback.print_exc()
             print("Acceleration has failed. Falling back to normal mode.")
-            # TODO: Make pytorch fallback configurable
-            raise NotImplementedError("Acceleration has failed. Automatic pytorch inference fallback temporarily disabled.")
+            if not self.enable_pytorch_fallback:
+                raise NotImplementedError("Acceleration has failed. Automatic pytorch inference fallback disabled.")
+            else:
+                print("Acceleration has failed. Falling back to PyTorch inference.")
 
         if seed < 0:  # Random seed
             seed = np.random.randint(0, 1000000)
@@ -1229,7 +1249,7 @@ class StreamDiffusionWrapper:
 
             # Create engine pool with same engine directory structure as UNet
             stream_cuda = cuda.Stream()
-            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height)
+            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height, enable_pytorch_fallback=self.enable_pytorch_fallback)
 
             # Store pool on the pipeline for later use
             controlnet_pipeline._controlnet_pool = controlnet_pool

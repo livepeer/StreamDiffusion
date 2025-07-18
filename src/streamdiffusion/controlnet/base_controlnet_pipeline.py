@@ -350,8 +350,7 @@ class BaseControlNetPipeline:
             print("ControlNetPipeline: No ControlNets configured, returning None")
             return None, None
         
-        print(f"ControlNetPipeline: Processing {len(self.controlnets)} ControlNets")
-        
+
         # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
         active_indices = [
             i for i, (controlnet, control_image, scale) in enumerate(
@@ -363,8 +362,7 @@ class BaseControlNetPipeline:
             print("ControlNetPipeline: No active ControlNets, returning None")
             return None, None
         
-        print(f"ControlNetPipeline: Active ControlNet indices: {active_indices}")
-        
+
         # Prepare base kwargs for ControlNet calls
         main_batch_size = x_t_latent.shape[0]
         base_kwargs = {
@@ -404,7 +402,7 @@ class BaseControlNetPipeline:
             try:
                 print(f"ControlNetPipeline: Calling ControlNet {i} with input shape: {current_control_image.shape}")
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
-                print(f"ControlNetPipeline: ControlNet {i} returned - down_blocks: {len(down_samples) if down_samples else 0}, mid_block: {mid_sample is not None}")
+
                 
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)

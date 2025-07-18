@@ -139,12 +139,14 @@ class HybridControlNet:
                  model_id: str,
                  engine_path: Optional[str] = None,
                  pytorch_model: Optional[Any] = None,
-                 stream: Optional[cuda.Stream] = None):
+                 stream: Optional[cuda.Stream] = None,
+                 enable_pytorch_fallback: bool = False):
         """Initialize hybrid ControlNet wrapper"""
         self.model_id = model_id
         self.engine_path = engine_path
         self.pytorch_model = pytorch_model
         self.stream = stream
+        self.enable_pytorch_fallback = enable_pytorch_fallback
         
         self.trt_engine: Optional[ControlNetModelEngine] = None
         self.use_tensorrt = False
@@ -173,6 +175,9 @@ class HybridControlNet:
             except Exception as e:
                 self.use_tensorrt = False
                 self.fallback_reason = f"Runtime error: {e}"
+        
+        if not self.enable_pytorch_fallback:
+            raise RuntimeError(f"TensorRT acceleration failed for ControlNet {self.model_id} and PyTorch fallback is disabled. Error: {self.fallback_reason}")
         
         if self.pytorch_model is None:
             raise RuntimeError(f"No PyTorch fallback available for ControlNet {self.model_id}")
@@ -206,5 +211,6 @@ class HybridControlNet:
             "using_tensorrt": self.is_using_tensorrt,
             "engine_path": self.engine_path,
             "fallback_reason": self.fallback_reason,
-            "has_pytorch_fallback": self.pytorch_model is not None
+            "has_pytorch_fallback": self.pytorch_model is not None,
+            "enable_pytorch_fallback": self.enable_pytorch_fallback
         } 
