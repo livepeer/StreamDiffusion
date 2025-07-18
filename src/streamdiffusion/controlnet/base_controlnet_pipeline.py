@@ -460,9 +460,9 @@ class BaseControlNetPipeline:
             # Get pipeline-specific conditioning context
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
-            # Get ControlNet conditioning
+            # Get ControlNet conditioning (extract original text embeddings only - no IPAdapter tokens)
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
-                x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
+                x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds[:, :77, :], **conditioning_context
             )
             
             # Call TensorRT engine with ControlNet inputs
@@ -498,9 +498,9 @@ class BaseControlNetPipeline:
             # Get pipeline-specific conditioning context
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
-            # Get ControlNet conditioning
+            # Get ControlNet conditioning (extract original text embeddings only - no IPAdapter tokens)
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
-                x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
+                x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds[:, :77, :], **conditioning_context
             )
             
             # Prepare UNet kwargs
