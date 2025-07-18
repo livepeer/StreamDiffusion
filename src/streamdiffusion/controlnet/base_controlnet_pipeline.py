@@ -360,7 +360,6 @@ class BaseControlNetPipeline:
         if not active_indices:
             return None, None
         
-
         # Prepare base kwargs for ControlNet calls
         main_batch_size = x_t_latent.shape[0]
         base_kwargs = {
@@ -378,9 +377,7 @@ class BaseControlNetPipeline:
             controlnet = self.controlnets[i]
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
-            
-            print(f"ControlNetPipeline: Processing ControlNet {i} with scale {scale}")
-            
+                        
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
             if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
@@ -467,7 +464,7 @@ class BaseControlNetPipeline:
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
-                        
+                
             # Call TensorRT engine with ControlNet inputs
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,

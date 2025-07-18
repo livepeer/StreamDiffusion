@@ -86,7 +86,7 @@ class ControlNetModelEngine:
         latent_width = sample.shape[3]
         output_shapes = self._resolve_output_shapes(batch_size, latent_height, latent_width)
         shape_dict.update(output_shapes)
-                
+
         self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
         
         outputs = self.engine.infer(

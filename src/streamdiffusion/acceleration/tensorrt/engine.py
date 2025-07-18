@@ -137,7 +137,6 @@ class UNet2DConditionModelEngine:
             shape_dict: Shape dictionary to update
             input_dict: Input dictionary to update
         """
-
         
         # Add down block residuals as input controls
         if down_block_additional_residuals is not None:
