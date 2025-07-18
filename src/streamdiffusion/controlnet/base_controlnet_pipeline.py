@@ -347,7 +347,6 @@ class BaseControlNetPipeline:
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
         """Get ControlNet conditioning for the current latent and timestep"""
         if not self.controlnets:
-            print("ControlNetPipeline: No ControlNets configured, returning None")
             return None, None
         
 
@@ -359,7 +358,6 @@ class BaseControlNetPipeline:
         ]
         
         if not active_indices:
-            print("ControlNetPipeline: No active ControlNets, returning None")
             return None, None
         
 
@@ -400,10 +398,7 @@ class BaseControlNetPipeline:
             
             # Forward pass through ControlNet
             try:
-                print(f"ControlNetPipeline: Calling ControlNet {i} with input shape: {current_control_image.shape}")
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
-
-                
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
             except Exception as e:
@@ -453,9 +448,7 @@ class BaseControlNetPipeline:
     def _patch_tensorrt_mode(self):
         """Patch for TensorRT mode with ControlNet support"""
         
-        def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):
-            print(f"ControlNetPipeline: TensorRT unet_step called with latent shape: {x_t_latent.shape}")
-            
+        def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):            
             # Handle CFG expansion (same as original)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
@@ -471,13 +464,10 @@ class BaseControlNetPipeline:
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
             # Get ControlNet conditioning
-            print(f"ControlNetPipeline: Getting ControlNet conditioning for {len(self.controlnets)} ControlNets")
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
-            
-            print(f"ControlNetPipeline: ControlNet conditioning result - down_blocks: {len(down_block_res_samples) if down_block_res_samples else 0}, mid_block: {mid_block_res_sample is not None}")
-            
+                        
             # Call TensorRT engine with ControlNet inputs
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
@@ -492,7 +482,6 @@ class BaseControlNetPipeline:
         
         # Replace the method
         self.stream.unet_step = patched_unet_step_tensorrt
-        print("ControlNetPipeline: Successfully patched TensorRT unet_step method")
 
     def _patch_pytorch_mode(self):
         """Patch for PyTorch mode with ControlNet support (original implementation)"""

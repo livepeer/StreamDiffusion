@@ -65,16 +65,6 @@ class StreamParameterUpdater:
         self._current_seed_list.clear()
         self._seed_cache_stats = CacheStats()
 
-    def set_normalize_prompt_weights(self, normalize: bool) -> None:
-        """Set whether to normalize prompt weights in blending operations."""
-        self.normalize_prompt_weights = normalize
-        print(f"set_normalize_prompt_weights: Prompt weight normalization set to {normalize}")
-
-    def set_normalize_seed_weights(self, normalize: bool) -> None:
-        """Set whether to normalize seed weights in blending operations."""
-        self.normalize_seed_weights = normalize
-        print(f"set_normalize_seed_weights: Seed weight normalization set to {normalize}")
-
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
         return self.normalize_prompt_weights
