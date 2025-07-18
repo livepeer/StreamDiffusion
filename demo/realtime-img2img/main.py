@@ -28,7 +28,32 @@ from img2img import Pipeline
 mimetypes.add_type("application/javascript", ".js")
 
 THROTTLE = 1.0 / 120
-# logging.basicConfig(level=logging.DEBUG)
+
+# Configure logging
+def setup_logging(log_level: str = "INFO"):
+    """Setup logging configuration for the application"""
+    # Convert string to logging level
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Set up logger for streamdiffusion modules
+    streamdiffusion_logger = logging.getLogger('streamdiffusion')
+    streamdiffusion_logger.setLevel(numeric_level)
+    
+    # Set up logger for this application
+    app_logger = logging.getLogger('realtime_img2img')
+    app_logger.setLevel(numeric_level)
+    
+    return app_logger
+
+# Initialize logger
+logger = setup_logging(config.log_level)
 
 
 class App:
@@ -147,19 +172,19 @@ class App:
                 # Create pipeline if it doesn't exist yet
                 if self.pipeline is None:
                     if self.uploaded_controlnet_config:
-                        print("stream: Creating pipeline with ControlNet config...")
+                        logger.info("stream: Creating pipeline with ControlNet config...")
                         self.pipeline = self._create_pipeline_with_config()
                     else:
-                        print("stream: Creating default pipeline...")
+                        logger.info("stream: Creating default pipeline...")
                         self.pipeline = self._create_default_pipeline()
-                    print("stream: Pipeline created successfully")
+                    logger.info("stream: Pipeline created successfully")
                 
                 # Recreate pipeline if config changed (but not resolution - that's handled separately)
                 elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)) or (self.uploaded_controlnet_config and not self.pipeline.use_config):
                     if self.config_needs_reload:
-                        print("stream: Recreating pipeline with new config...")
+                        logger.info("stream: Recreating pipeline with new ControlNet config...")
                     else:
-                        print("stream: Upgrading to config-based pipeline...")
+                        logger.info("stream: Upgrading to ControlNet pipeline...")
                     
                     if self.uploaded_controlnet_config:
                         self.pipeline = self._create_pipeline_with_config()
@@ -167,7 +192,7 @@ class App:
                         self.pipeline = self._create_default_pipeline()
                     
                     self.config_needs_reload = False  # Reset the flag
-                    print("stream: Pipeline recreated with config support")
+                    logger.info("stream: Pipeline recreated successfully")
 
                 async def generate():
                     while True:
@@ -195,7 +220,7 @@ class App:
                         
                         yield frame
                         if self.args.debug:
-                            print(f"Time taken: {time.time() - frame_start_time}")
+                            logger.debug(f"Time taken: {time.time() - frame_start_time}")
                         
                         # Add delay for testing - 1 frame per second
                         # await asyncio.sleep(1.0)
@@ -377,7 +402,7 @@ class App:
                         # Update the resolution
                         self.new_width = config_width
                         self.new_height = config_height
-                        print(f"upload_controlnet_config: Updated resolution to {config_width}x{config_height}")
+                        logger.info(f"upload_controlnet_config: Updated resolution to {config_width}x{config_height}")
                     except Exception as e:
                         logging.error(f"upload_controlnet_config: Failed to update resolution: {e}")
                         # Don't fail the upload, just log the error
@@ -387,10 +412,10 @@ class App:
                 normalized_seed_blending = self._normalize_seed_config(config_data)
                 
                 # Debug logging
-                print(f"upload_controlnet_config: Raw prompt_blending in config: {config_data.get('prompt_blending', 'NOT FOUND')}")
-                print(f"upload_controlnet_config: Raw seed_blending in config: {config_data.get('seed_blending', 'NOT FOUND')}")
-                print(f"upload_controlnet_config: Normalized prompt blending: {normalized_prompt_blending}")
-                print(f"upload_controlnet_config: Normalized seed blending: {normalized_seed_blending}")
+                logger.debug(f"upload_controlnet_config: Raw prompt_blending in config: {config_data.get('prompt_blending', 'NOT FOUND')}")
+                logger.debug(f"upload_controlnet_config: Raw seed_blending in config: {config_data.get('seed_blending', 'NOT FOUND')}")
+                logger.debug(f"upload_controlnet_config: Normalized prompt blending: {normalized_prompt_blending}")
+                logger.debug(f"upload_controlnet_config: Normalized seed blending: {normalized_seed_blending}")
                 
                 # Get other streaming parameters from config
                 config_guidance_scale = config_data.get('guidance_scale', 1.1)
@@ -453,12 +478,12 @@ class App:
                 if self.pipeline:
                     try:
                         current_prompts = self.pipeline.stream.get_current_prompts()
-                        print(f"get_current_blending_config: Retrieved current prompts from pipeline: {current_prompts}")
+                        logger.debug(f"get_current_blending_config: Retrieved current prompts from pipeline: {current_prompts}")
                         if current_prompts and len(current_prompts) > 0:
                             prompt_blending_config = current_prompts
-                            print(f"get_current_blending_config: Using pipeline prompts: {prompt_blending_config}")
+                            logger.debug(f"get_current_blending_config: Using pipeline prompts: {prompt_blending_config}")
                     except Exception as e:
-                        print(f"get_current_blending_config: Error getting current prompts: {e}")
+                        logger.debug(f"get_current_blending_config: Error getting current prompts: {e}")
                         pass
                         
                     try:
@@ -693,24 +718,24 @@ class App:
                 if width == self.new_width and height == self.new_height:
                     raise HTTPException(status_code=400, detail="Resolution unchanged")
                 
-                print(f"API: Updating resolution from {self.new_width}x{self.new_height} to {width}x{height}")
+                logger.info(f"API: Updating resolution from {self.new_width}x{self.new_height} to {width}x{height}")
                 
                 # Create new pipeline with new resolution
                 try:
                     self._update_resolution(width, height)
                     
-                    print(f"API: Resolution update successful: {width}x{height}")
+                    logger.info(f"API: Resolution update successful: {width}x{height}")
                     return JSONResponse({
                         "status": "success",
                         "message": f"Resolution updated to {width}x{height}",
                     })
                     
                 except Exception as update_error:
-                    print(f"API: Resolution update failed: {update_error}")
+                    logger.error(f"API: Resolution update failed: {update_error}")
                     raise HTTPException(status_code=500, detail=f"Failed to update resolution: {update_error}")
-                
+
             except Exception as e:
-                print(f"API: Resolution update error: {e}")
+                logger.error(f"API: Resolution update error: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update resolution: {e}")
 
         @self.app.post("/api/update-normalize-prompt-weights")
@@ -773,9 +798,9 @@ class App:
                 prompt_list = data.get("prompt_list")
                 interpolation_method = data.get("interpolation_method", "slerp")
                 
-                print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
-                print(f"update_prompt_blending: prompt_list = {prompt_list}")
-                print(f"update_prompt_blending: interpolation_method = {interpolation_method}")
+                logger.debug(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
+                logger.debug(f"update_prompt_blending: prompt_list = {prompt_list}")
+                logger.debug(f"update_prompt_blending: interpolation_method = {interpolation_method}")
                 
                 print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
                 print(f"update_prompt_blending: prompt_list = {prompt_list}")
@@ -800,7 +825,7 @@ class App:
                 # Convert list format [[prompt, weight], ...] to tuple format [(prompt, weight), ...]
                 prompt_tuples = [(item[0], item[1]) for item in prompt_list]
                 
-                print(f"update_prompt_blending: Calling pipeline.stream.update_prompt with {len(prompt_tuples)} prompts")
+                logger.debug(f"update_prompt_blending: Calling pipeline.stream.update_prompt with {len(prompt_tuples)} prompts")
                 
                 # Update prompt blending using the unified public interface
                 self.pipeline.stream.update_prompt(
@@ -808,7 +833,7 @@ class App:
                     prompt_interpolation_method=interpolation_method
                 )
                 
-                print(f"update_prompt_blending: Successfully updated prompt blending")
+                logger.debug(f"update_prompt_blending: Successfully updated prompt blending")
                 
                 return JSONResponse({
                     "status": "success",
@@ -816,7 +841,7 @@ class App:
                 })
                 
             except Exception as e:
-                print(f"update_prompt_blending: Error: {e}")
+                logger.error(f"update_prompt_blending: Error: {e}")
                 logging.error(f"update_prompt_blending: Failed to update prompt blending: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update prompt blending: {str(e)}")
 
@@ -1360,7 +1385,7 @@ class App:
 
     def _update_resolution(self, width: int, height: int) -> None:
         """Create a new pipeline with the specified resolution and replace the old one."""
-        print(f"Creating new pipeline with resolution {width}x{height}")
+        logger.info(f"Creating new pipeline with resolution {width}x{height}")
         
         # Store current pipeline state
         current_prompt = getattr(self.pipeline, 'prompt', '')
@@ -1405,7 +1430,7 @@ class App:
             except:
                 pass
         
-        print(f"Pipeline updated successfully to {width}x{height}")
+        logger.info(f"Pipeline updated successfully to {width}x{height}")
 
 app = App(config).app
 

@@ -214,8 +214,8 @@ class BaseControlNetPipeline:
         if hasattr(self.stream, 'controlnet_engine_pool'):
             model_type = self._detected_model_type
             
-            print(f"Loading ControlNet {model_id} with TensorRT acceleration support")
-            print(f"  Model type: {model_type}")
+            logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration support")
+            logger.info(f"  Model type: {model_type}")
             
             # Debug: Check what batch size we're getting
             detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)
@@ -227,7 +227,7 @@ class BaseControlNetPipeline:
             )
         else:
             # Fallback to PyTorch only
-            print(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
+            logger.info(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
             return pytorch_controlnet
     
     def _load_pytorch_controlnet_model(self, model_id: str):
@@ -263,12 +263,10 @@ class BaseControlNetPipeline:
             return controlnet
             
         except Exception as e:
-            print(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
-            print(f"Full stack trace for model loading failure:")
-            print(traceback.format_exc())
+            logger.error(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
+            logger.error(f"Full stack trace for model loading failure:")
+            logger.error(traceback.format_exc())
             raise ValueError(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
-    
-
     
 
     
@@ -347,7 +345,10 @@ class BaseControlNetPipeline:
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
         """Get ControlNet conditioning for the current latent and timestep"""
         if not self.controlnets:
+            logger.debug("ControlNetPipeline: No ControlNets configured, returning None")
             return None, None
+        
+        logger.debug(f"ControlNetPipeline: Processing {len(self.controlnets)} ControlNets")
         
         # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
         active_indices = [
@@ -357,7 +358,10 @@ class BaseControlNetPipeline:
         ]
         
         if not active_indices:
+            logger.debug("ControlNetPipeline: No active ControlNets, returning None")
             return None, None
+        
+        logger.debug(f"ControlNetPipeline: Active ControlNet indices: {active_indices}")
         
         # Prepare base kwargs for ControlNet calls
         main_batch_size = x_t_latent.shape[0]
@@ -376,7 +380,9 @@ class BaseControlNetPipeline:
             controlnet = self.controlnets[i]
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
-
+            
+            logger.debug(f"ControlNetPipeline: Processing ControlNet {i} with scale {scale}")
+            
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
             if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
@@ -394,13 +400,16 @@ class BaseControlNetPipeline:
             
             # Forward pass through ControlNet
             try:
+                logger.debug(f"ControlNetPipeline: Calling ControlNet {i} with input shape: {current_control_image.shape}")
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
+                logger.debug(f"ControlNetPipeline: ControlNet {i} returned - down_blocks: {len(down_samples) if down_samples else 0}, mid_block: {mid_sample is not None}")
+                
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
             except Exception as e:
-                print(f"ControlNetPipeline: ControlNet {i} failed: {e}")
-                print(f"ControlNetPipeline: Full stack trace for ControlNet {i}:")
-                print(traceback.format_exc())
+                logger.error(f"ControlNetPipeline: ControlNet {i} failed: {e}")
+                logger.error(f"ControlNetPipeline: Full stack trace for ControlNet {i}:")
+                logger.error(traceback.format_exc())
                 continue
         
         # Early exit if no outputs
@@ -445,6 +454,8 @@ class BaseControlNetPipeline:
         """Patch for TensorRT mode with ControlNet support"""
         
         def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):
+            logger.debug(f"ControlNetPipeline: TensorRT unet_step called with latent shape: {x_t_latent.shape}")
+            
             # Handle CFG expansion (same as original)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
@@ -460,9 +471,12 @@ class BaseControlNetPipeline:
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
             # Get ControlNet conditioning
+            logger.debug(f"ControlNetPipeline: Getting ControlNet conditioning for {len(self.controlnets)} ControlNets")
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
+            
+            logger.debug(f"ControlNetPipeline: ControlNet conditioning result - down_blocks: {len(down_block_res_samples) if down_block_res_samples else 0}, mid_block: {mid_block_res_sample is not None}")
             
             # Call TensorRT engine with ControlNet inputs
             model_pred = self.stream.unet(
@@ -478,6 +492,7 @@ class BaseControlNetPipeline:
         
         # Replace the method
         self.stream.unet_step = patched_unet_step_tensorrt
+        logger.info("ControlNetPipeline: Successfully patched TensorRT unet_step method")
 
     def _patch_pytorch_mode(self):
         """Patch for PyTorch mode with ControlNet support (original implementation)"""

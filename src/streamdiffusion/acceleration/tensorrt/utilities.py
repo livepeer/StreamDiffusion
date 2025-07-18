@@ -20,13 +20,15 @@
 
 import gc
 from collections import OrderedDict
-from typing import *
+from pathlib import Path
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import onnx
 import onnx_graphsurgeon as gs
 import tensorrt as trt
 import torch
+import logging
 from cuda import cudart
 from PIL import Image
 from polygraphy import cuda
@@ -43,6 +45,8 @@ from polygraphy.backend.trt import util as trt_util
 
 from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
 
@@ -116,7 +120,7 @@ class Engine:
                     values = convert_int64(values)
                 refit_dict[name] = values
 
-        print(f"Refitting TensorRT engine with {onnx_refit_path} weights")
+        logger.info(f"Refitting TensorRT engine with {onnx_refit_path} weights")
         refit_nodes = gs.import_onnx(onnx.load(onnx_refit_path)).toposort().nodes
 
         # Construct mapping from weight names in refit model -> original model
@@ -164,7 +168,7 @@ class Engine:
             # Constant nodes in ONNX do not have inputs but have a constant output
             if n.op == "Constant":
                 name = map_name(n.outputs[0].name)
-                print(f"Add Constant {name}\n")
+                logger.debug(f"Add Constant {name}")
                 add_to_map(refit_dict, name, n.outputs[0].values)
 
             # Handle scale and bias weights
@@ -199,11 +203,11 @@ class Engine:
             if refit_dict[custom_name] is not None:
                 refitter.set_weights(layer_name, weights_role, refit_dict[custom_name])
             else:
-                print(f"[W] No refit weights for layer: {layer_name}")
+                logger.warning(f"No refit weights for layer: {layer_name}")
 
         if not refitter.refit_cuda_engine():
-            print("Failed to refit!")
-            exit(0)
+            logger.error("Failed to refit!")
+            raise RuntimeError("TensorRT engine refit failed")
 
     def build(
         self,
@@ -239,7 +243,7 @@ class Engine:
         save_engine(engine, path=self.engine_path)
 
     def load(self):
-        print(f"Loading TensorRT engine: {self.engine_path}")
+        logger.info(f"Loading TensorRT engine: {self.engine_path}")
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
 
     def activate(self, reuse_device_memory=None):
@@ -252,7 +256,12 @@ class Engine:
     def allocate_buffers(self, shape_dict=None, device="cuda"):
         # Check if we can reuse existing buffers (OPTIMIZATION)
         if self._can_reuse_buffers(shape_dict, device):
+            logger.debug(f"[DEBUG] Engine.allocate_buffers: Reusing existing buffers")
             return
+        
+        logger.debug(f"[DEBUG] Engine.allocate_buffers: Allocating new buffers")
+        logger.debug(f"[DEBUG] Engine.allocate_buffers: Device = {device}")
+        logger.debug(f"[DEBUG] Engine.allocate_buffers: Engine has {self.engine.num_io_tensors} I/O tensors")
             
         # Clear existing buffers before reallocating
         self.tensors.clear()
@@ -266,18 +275,25 @@ class Engine:
                 shape = self.engine.get_tensor_shape(name)
 
             dtype_np = trt.nptype(self.engine.get_tensor_dtype(name))
+            mode = self.engine.get_tensor_mode(name)
 
-            if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+            logger.debug(f"[DEBUG] Engine.allocate_buffers: Tensor[{idx}] '{name}' - shape: {shape}, dtype: {dtype_np}, mode: {mode}")
+
+            if mode == trt.TensorIOMode.INPUT:
+                logger.debug(f"[DEBUG] Engine.allocate_buffers: Setting input shape for '{name}': {shape}")
                 self.context.set_input_shape(name, shape)
 
             tensor = torch.empty(tuple(shape),
                                  dtype=numpy_to_torch_dtype_dict[dtype_np]) \
                           .to(device=device)
             self.tensors[name] = tensor
+            
+            logger.debug(f"[DEBUG] Engine.allocate_buffers: Allocated tensor '{name}' with shape {tensor.shape} and dtype {tensor.dtype}")
         
         # Cache allocation parameters for reuse check
         self._last_shape_dict = shape_dict.copy() if shape_dict else None
         self._last_device = device
+        logger.debug(f"[DEBUG] Engine.allocate_buffers: Buffer allocation completed")
     
     def _can_reuse_buffers(self, shape_dict=None, device="cuda"):
         """
@@ -322,20 +338,46 @@ class Engine:
         return True
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
+        logger.debug(f"[DEBUG] Engine.infer: Starting inference")
+        logger.debug(f"[DEBUG] Engine.infer: feed_dict keys: {list(feed_dict.keys())}")
+        logger.debug(f"[DEBUG] Engine.infer: use_cuda_graph: {use_cuda_graph}")
+        
+        # Copy input data to allocated tensors
         for name, buf in feed_dict.items():
+            if name not in self.tensors:
+                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: Input '{name}' not found in allocated tensors! ***")
+                logger.warning(f"[DEBUG] Engine.infer: Available tensors: {list(self.tensors.keys())}")
+                continue
+                
+            logger.debug(f"[DEBUG] Engine.infer: Copying input '{name}' - shape: {buf.shape}, dtype: {buf.dtype}")
+            logger.debug(f"[DEBUG] Engine.infer: Input '{name}' range: [{buf.min().item():.6f}, {buf.max().item():.6f}]")
+            
+            # Check for NaN/Inf in inputs
+            if torch.isnan(buf).any():
+                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: NaN detected in input '{name}'! ***")
+            if torch.isinf(buf).any():
+                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: Inf detected in input '{name}'! ***")
+            
             self.tensors[name].copy_(buf)
 
+        # Set tensor addresses for TensorRT context
+        logger.debug(f"[DEBUG] Engine.infer: Setting tensor addresses for TensorRT context")
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
+            logger.debug(f"[DEBUG] Engine.infer: Set address for tensor '{name}' at {hex(tensor.data_ptr())}")
 
+        # Execute inference
         if use_cuda_graph:
+            logger.debug(f"[DEBUG] Engine.infer: Using CUDA Graph execution")
             if self.cuda_graph_instance is not None:
                 CUASSERT(cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr))
                 CUASSERT(cudart.cudaStreamSynchronize(stream.ptr))
             else:
+                logger.debug(f"[DEBUG] Engine.infer: Capturing CUDA Graph (first run)")
                 # do inference before CUDA graph capture
                 noerror = self.context.execute_async_v3(stream.ptr)
                 if not noerror:
+                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: Initial inference failed during CUDA graph capture! ***")
                     raise ValueError("ERROR: inference failed.")
                 # capture cuda graph
                 CUASSERT(
@@ -345,10 +387,41 @@ class Engine:
                 self.graph = CUASSERT(cudart.cudaStreamEndCapture(stream.ptr))
                 self.cuda_graph_instance = CUASSERT(cudart.cudaGraphInstantiate(self.graph, 0))
         else:
+            logger.debug(f"[DEBUG] Engine.infer: Using standard TensorRT execution")
             noerror = self.context.execute_async_v3(stream.ptr)
             if not noerror:
+                logger.error(f"[DEBUG] Engine.infer: *** ERROR: TensorRT inference execution failed! ***")
+                logger.error(f"[DEBUG] Engine.infer: This could indicate:")
+                logger.error(f"[DEBUG] Engine.infer: - Invalid input shapes or types")
+                logger.error(f"[DEBUG] Engine.infer: - Memory allocation issues")
+                logger.error(f"[DEBUG] Engine.infer: - Engine compatibility problems")
                 raise ValueError("ERROR: inference failed.")
+            else:
+                logger.debug(f"[DEBUG] Engine.infer: TensorRT execution completed successfully")
 
+        # Check outputs for NaN/Inf
+        logger.debug(f"[DEBUG] Engine.infer: Checking output tensors")
+        for name, tensor in self.tensors.items():
+            mode = self.engine.get_tensor_mode(self.engine.get_tensor_name(
+                next(i for i in range(self.engine.num_io_tensors) 
+                     if self.engine.get_tensor_name(i) == name)
+            ))
+            
+            if mode == trt.TensorIOMode.OUTPUT:
+                logger.debug(f"[DEBUG] Engine.infer: Output '{name}' - shape: {tensor.shape}, dtype: {tensor.dtype}")
+                logger.debug(f"[DEBUG] Engine.infer: Output '{name}' range: [{tensor.min().item():.6f}, {tensor.max().item():.6f}]")
+                
+                if torch.isnan(tensor).any():
+                    nan_count = torch.isnan(tensor).sum().item()
+                    total_elements = tensor.numel()
+                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: NaN detected in output '{name}'! Count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
+                    
+                if torch.isinf(tensor).any():
+                    inf_count = torch.isinf(tensor).sum().item()
+                    total_elements = tensor.numel()
+                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: Inf detected in output '{name}'! Count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
+
+        logger.debug(f"[DEBUG] Engine.infer: Inference completed, returning tensors")
         return self.tensors
 
 
