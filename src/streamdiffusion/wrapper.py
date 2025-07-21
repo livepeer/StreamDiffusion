@@ -823,18 +823,26 @@ class StreamDiffusionWrapper:
         ]
 
         pipe = None
+        last_error = None
         for method, method_name in loading_methods:
             try:
+                print(f"_load_model: Attempting to load with {method_name}...")
                 pipe = method(model_id_or_path).to(device=self.device, dtype=self.dtype)
                 print(f"_load_model: Successfully loaded using {method_name}")
                 break
             except Exception as e:
+                print(f"_load_model: {method_name} failed: {e}")
+                last_error = e
                 continue
 
         if pipe is None:
-            traceback.print_exc()
-            print("_load_model: All loading methods failed. Model doesn't exist or is incompatible.")
-            exit()
+            error_msg = f"_load_model: All loading methods failed for model '{model_id_or_path}'. Last error: {last_error}"
+            print(error_msg)
+            if last_error:
+                print("Full traceback of last error:")
+                import traceback
+                traceback.print_exc()
+            raise RuntimeError(error_msg)
 
         # Use existing model detection instead of guessing from config
         model_type = detect_model_from_diffusers_unet(pipe.unet)

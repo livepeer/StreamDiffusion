@@ -44,6 +44,27 @@ class StreamDiffusion:
 
         self.cfg_type = cfg_type
 
+        # Detect model type for proper conditioning
+        try:
+            from .acceleration.tensorrt.model_detection import detect_model_from_diffusers_unet
+            self.model_type = detect_model_from_diffusers_unet(pipe.unet)
+        except ImportError:
+            # Fallback detection if tensorrt is not available
+            if hasattr(pipe, 'text_encoder_2'):
+                self.model_type = "SDXL"
+            elif hasattr(pipe.unet.config, 'cross_attention_dim'):
+                if pipe.unet.config.cross_attention_dim == 2048:
+                    self.model_type = "SDXL"
+                elif pipe.unet.config.cross_attention_dim == 1024:
+                    self.model_type = "SD21"
+                else:
+                    self.model_type = "SD15"
+            else:
+                self.model_type = "SD15"
+        
+        self.is_sdxl = self.model_type == "SDXL"
+        print(f"Detected model type: {self.model_type}")
+
         if use_denoising_batch:
             self.batch_size = self.denoising_steps_num * frame_buffer_size
             if self.cfg_type == "initialize":
@@ -79,6 +100,11 @@ class StreamDiffusion:
 
         self.inference_time_ema = 0
 
+        # Initialize SDXL-specific attributes
+        if self.is_sdxl:
+            self.add_text_embeds = None
+            self.add_time_ids = None
+
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
 
@@ -90,6 +116,15 @@ class StreamDiffusion:
         adapter_name: Optional[Any] = None,
         **kwargs,
     ) -> None:
+        # Check for SDXL compatibility
+        if self.is_sdxl:
+            print(f"WARNING: Skipping LCM LoRA loading for SDXL model. ")
+            print(f"SDXL models are incompatible with SD1.5 LCM LoRAs due to different architectures:")
+            print(f"- Context dimensions: SDXL=2048 vs SD1.5=768")
+            print(f"- Channel configurations: Different U-Net structures")
+            print(f"Use SDXL-specific LCM LoRAs or SDXL-Turbo models instead.")
+            return
+            
         self.pipe.load_lora_weights(
             pretrained_model_name_or_path_or_dict, adapter_name, **kwargs
         )
@@ -165,26 +200,90 @@ class StreamDiffusion:
         if self.guidance_scale > 1.0:
             do_classifier_free_guidance = True
 
-        encoder_output = self.pipe.encode_prompt(
-            prompt=prompt,
-            device=self.device,
-            num_images_per_prompt=1,
-            do_classifier_free_guidance=do_classifier_free_guidance,
-            negative_prompt=negative_prompt,
-        )
-        self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
-
-        if self.use_denoising_batch and self.cfg_type == "full":
-            uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
-        elif self.cfg_type == "initialize":
-            uncond_prompt_embeds = encoder_output[1].repeat(self.frame_bff_size, 1, 1)
-
-        if self.guidance_scale > 1.0 and (
-            self.cfg_type == "initialize" or self.cfg_type == "full"
-        ):
-            self.prompt_embeds = torch.cat(
-                [uncond_prompt_embeds, self.prompt_embeds], dim=0
+        # Handle SDXL vs SD1.5/SD2.1 text encoding differently
+        if self.is_sdxl:
+            # SDXL encode_prompt returns 4 values: 
+            # (prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds)
+            encoder_output = self.pipe.encode_prompt(
+                prompt=prompt,
+                prompt_2=None,  # Use same prompt for both encoders
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                negative_prompt=negative_prompt,
+                negative_prompt_2=None,  # Use same negative prompt for both encoders
+                prompt_embeds=None,
+                negative_prompt_embeds=None,
+                pooled_prompt_embeds=None,
+                negative_pooled_prompt_embeds=None,
+                lora_scale=None,
+                clip_skip=None,
             )
+            
+            if len(encoder_output) >= 4:
+                prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = encoder_output[:4]
+                
+                # Set up prompt embeddings for the UNet
+                self.prompt_embeds = prompt_embeds.repeat(self.batch_size, 1, 1)
+                
+                # Handle CFG for prompt embeddings
+                if self.use_denoising_batch and self.cfg_type == "full":
+                    uncond_prompt_embeds = negative_prompt_embeds.repeat(self.batch_size, 1, 1)
+                elif self.cfg_type == "initialize":
+                    uncond_prompt_embeds = negative_prompt_embeds.repeat(self.frame_bff_size, 1, 1)
+
+                if self.guidance_scale > 1.0 and (
+                    self.cfg_type == "initialize" or self.cfg_type == "full"
+                ):
+                    self.prompt_embeds = torch.cat(
+                        [uncond_prompt_embeds, self.prompt_embeds], dim=0
+                    )
+                
+                # Set up SDXL-specific conditioning (added_cond_kwargs)
+                if do_classifier_free_guidance:
+                    self.add_text_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
+                else:
+                    self.add_text_embeds = pooled_prompt_embeds
+                
+                # Create time conditioning for SDXL micro-conditioning
+                original_size = (self.height, self.width)
+                target_size = (self.height, self.width)
+                crops_coords_top_left = (0, 0)
+                
+                add_time_ids = list(original_size + crops_coords_top_left + target_size)
+                add_time_ids = torch.tensor([add_time_ids], dtype=self.dtype, device=self.device)
+                
+                if do_classifier_free_guidance:
+                    self.add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
+                else:
+                    self.add_time_ids = add_time_ids
+                    
+                print(f"SDXL conditioning setup: prompt_embeds {self.prompt_embeds.shape}, "
+                      f"add_text_embeds {self.add_text_embeds.shape}, add_time_ids {self.add_time_ids.shape}")
+            else:
+                raise ValueError(f"SDXL encode_prompt returned {len(encoder_output)} outputs, expected at least 4")
+        else:
+            # SD1.5/SD2.1 encode_prompt returns 2 values: (prompt_embeds, negative_prompt_embeds)
+            encoder_output = self.pipe.encode_prompt(
+                prompt=prompt,
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                negative_prompt=negative_prompt,
+            )
+            self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+
+            if self.use_denoising_batch and self.cfg_type == "full":
+                uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
+            elif self.cfg_type == "initialize":
+                uncond_prompt_embeds = encoder_output[1].repeat(self.frame_bff_size, 1, 1)
+
+            if self.guidance_scale > 1.0 and (
+                self.cfg_type == "initialize" or self.cfg_type == "full"
+            ):
+                self.prompt_embeds = torch.cat(
+                    [uncond_prompt_embeds, self.prompt_embeds], dim=0
+                )
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -257,6 +356,15 @@ class StreamDiffusion:
             repeats=self.frame_bff_size if self.use_denoising_batch else 1,
             dim=0,
         )
+
+        if not self.use_denoising_batch:
+            self.sub_timesteps_tensor = self.sub_timesteps_tensor[0]
+            self.alpha_prod_t_sqrt = self.alpha_prod_t_sqrt[0]
+            self.beta_prod_t_sqrt = self.beta_prod_t_sqrt[0]
+
+        self.sub_timesteps_tensor = self.sub_timesteps_tensor.to(self.device)
+        self.c_skip = self.c_skip.to(self.device)
+        self.c_out = self.c_out.to(self.device)
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
@@ -391,12 +499,57 @@ class StreamDiffusion:
         else:
             x_t_latent_plus_uc = x_t_latent
 
-        model_pred = self.unet(
-            x_t_latent_plus_uc,
-            t_list,
-            encoder_hidden_states=self.prompt_embeds,
-            return_dict=False,
-        )[0]
+        # Prepare UNet call arguments
+        unet_kwargs = {
+            'sample': x_t_latent_plus_uc,
+            'timestep': t_list,
+            'encoder_hidden_states': self.prompt_embeds,
+            'return_dict': False,
+        }
+        
+        # Add SDXL-specific conditioning if this is an SDXL model
+        if self.is_sdxl and hasattr(self, 'add_text_embeds') and hasattr(self, 'add_time_ids'):
+            if self.add_text_embeds is not None and self.add_time_ids is not None:
+                # Handle batching for CFG - replicate conditioning to match batch size
+                batch_size = x_t_latent_plus_uc.shape[0]
+                
+                # Replicate add_text_embeds and add_time_ids to match the batch size
+                if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
+                    # For initialize mode: [uncond, cond, cond, ...]
+                    add_text_embeds = torch.cat([
+                        self.add_text_embeds[0:1],  # uncond
+                        self.add_text_embeds[1:2].repeat(batch_size - 1, 1)  # repeat cond
+                    ], dim=0)
+                    add_time_ids = torch.cat([
+                        self.add_time_ids[0:1],  # uncond  
+                        self.add_time_ids[1:2].repeat(batch_size - 1, 1)  # repeat cond
+                    ], dim=0)
+                elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
+                    # For full mode: repeat both uncond and cond for each latent
+                    repeat_factor = batch_size // 2
+                    add_text_embeds = self.add_text_embeds.repeat(repeat_factor, 1)
+                    add_time_ids = self.add_time_ids.repeat(repeat_factor, 1)
+                else:
+                    # No CFG: just repeat the conditioning
+                    add_text_embeds = self.add_text_embeds[1:2].repeat(batch_size, 1) if self.add_text_embeds.shape[0] > 1 else self.add_text_embeds.repeat(batch_size, 1)
+                    add_time_ids = self.add_time_ids[1:2].repeat(batch_size, 1) if self.add_time_ids.shape[0] > 1 else self.add_time_ids.repeat(batch_size, 1)
+                
+                unet_kwargs['added_cond_kwargs'] = {
+                    'text_embeds': add_text_embeds,
+                    'time_ids': add_time_ids
+                }
+
+        # Call UNet with appropriate conditioning
+        if self.is_sdxl:
+            model_pred = self.unet(**unet_kwargs)[0]
+        else:
+            # For SD1.5/SD2.1, use the old calling convention for compatibility
+            model_pred = self.unet(
+                x_t_latent_plus_uc,
+                t_list,
+                encoder_hidden_states=self.prompt_embeds,
+                return_dict=False,
+            )[0]
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             noise_pred_text = model_pred[1:]
@@ -565,12 +718,39 @@ class StreamDiffusion:
             device=self.device,
             dtype=self.dtype,
         )
-        model_pred = self.unet(
-            x_t_latent,
-            self.sub_timesteps_tensor,
-            encoder_hidden_states=self.prompt_embeds,
-            return_dict=False,
-        )[0]
+        
+        # Prepare UNet call arguments
+        unet_kwargs = {
+            'sample': x_t_latent,
+            'timestep': self.sub_timesteps_tensor,
+            'encoder_hidden_states': self.prompt_embeds,
+            'return_dict': False,
+        }
+        
+        # Add SDXL-specific conditioning if this is an SDXL model
+        if self.is_sdxl and hasattr(self, 'add_text_embeds') and hasattr(self, 'add_time_ids'):
+            if self.add_text_embeds is not None and self.add_time_ids is not None:
+                # For txt2img, replicate conditioning to match batch size
+                add_text_embeds = self.add_text_embeds[1:2].repeat(batch_size, 1) if self.add_text_embeds.shape[0] > 1 else self.add_text_embeds.repeat(batch_size, 1)
+                add_time_ids = self.add_time_ids[1:2].repeat(batch_size, 1) if self.add_time_ids.shape[0] > 1 else self.add_time_ids.repeat(batch_size, 1)
+                
+                unet_kwargs['added_cond_kwargs'] = {
+                    'text_embeds': add_text_embeds,
+                    'time_ids': add_time_ids
+                }
+
+        # Call UNet with appropriate conditioning
+        if self.is_sdxl:
+            model_pred = self.unet(**unet_kwargs)[0]
+        else:
+            # For SD1.5/SD2.1, use the old calling convention for compatibility
+            model_pred = self.unet(
+                x_t_latent,
+                self.sub_timesteps_tensor,
+                encoder_hidden_states=self.prompt_embeds,
+                return_dict=False,
+            )[0]
+            
         x_0_pred_out = (
             x_t_latent - self.beta_prod_t_sqrt * model_pred
         ) / self.alpha_prod_t_sqrt

@@ -47,41 +47,39 @@ class SDXLTurboControlNetPipeline(BaseControlNetPipeline):
 
     def _get_conditioning_context(self, x_t_latent: torch.Tensor, t_list: torch.Tensor) -> Dict[str, Any]:
         """Get SDXL-specific conditioning context"""
-        added_cond_kwargs = {}
+        conditioning_context = {}
         
+        # Use the conditioning that was set up in StreamDiffusion.prepare()
         if hasattr(self.stream, 'add_text_embeds') and hasattr(self.stream, 'add_time_ids'):
-            if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
-                add_text_embeds = torch.concat([self.stream.add_text_embeds[0:1], self.stream.add_text_embeds], dim=0)
-                add_time_ids = torch.concat([self.stream.add_time_ids[0:1], self.stream.add_time_ids], dim=0)
-            elif self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "full"):
-                add_text_embeds = torch.concat([self.stream.add_text_embeds, self.stream.add_text_embeds], dim=0)
-                add_time_ids = torch.concat([self.stream.add_time_ids, self.stream.add_time_ids], dim=0)
-            else:
-                add_text_embeds = self.stream.add_text_embeds
-                add_time_ids = self.stream.add_time_ids
-            
-            added_cond_kwargs = {
-                'text_embeds': add_text_embeds,
-                'time_ids': add_time_ids
-            }
-        elif hasattr(self.stream.pipe, 'text_encoder_2'):
-            batch_size = x_t_latent.shape[0]
-            device = self.stream.device
-            dtype = self.stream.dtype
-            
-            time_ids = torch.tensor([
-                [self.stream.height, self.stream.width, 0, 0, self.stream.height, self.stream.width]
-            ], dtype=dtype, device=device)
-            time_ids = time_ids.repeat(batch_size, 1)
-            
-            text_embeds = torch.zeros((batch_size, 1280), dtype=dtype, device=device)
-            
-            added_cond_kwargs = {
-                'text_embeds': text_embeds,
-                'time_ids': time_ids
-            }
+            if self.stream.add_text_embeds is not None and self.stream.add_time_ids is not None:
+                # Handle batching for CFG - replicate conditioning to match batch size
+                batch_size = x_t_latent.shape[0]
+                
+                # Replicate add_text_embeds and add_time_ids to match the batch size
+                if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
+                    # For initialize mode: [uncond, cond, cond, ...]
+                    add_text_embeds = torch.cat([
+                        self.stream.add_text_embeds[0:1],  # uncond
+                        self.stream.add_text_embeds[1:2].repeat(batch_size - 1, 1)  # repeat cond
+                    ], dim=0)
+                    add_time_ids = torch.cat([
+                        self.stream.add_time_ids[0:1],  # uncond  
+                        self.stream.add_time_ids[1:2].repeat(batch_size - 1, 1)  # repeat cond
+                    ], dim=0)
+                elif self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "full"):
+                    # For full mode: repeat both uncond and cond for each latent
+                    repeat_factor = batch_size // 2
+                    add_text_embeds = self.stream.add_text_embeds.repeat(repeat_factor, 1)
+                    add_time_ids = self.stream.add_time_ids.repeat(repeat_factor, 1)
+                else:
+                    # No CFG: just repeat the conditioning
+                    add_text_embeds = self.stream.add_text_embeds[1:2].repeat(batch_size, 1) if self.stream.add_text_embeds.shape[0] > 1 else self.stream.add_text_embeds.repeat(batch_size, 1)
+                    add_time_ids = self.stream.add_time_ids[1:2].repeat(batch_size, 1) if self.stream.add_time_ids.shape[0] > 1 else self.stream.add_time_ids.repeat(batch_size, 1)
+                
+                conditioning_context['text_embeds'] = add_text_embeds
+                conditioning_context['time_ids'] = add_time_ids
         
-        return added_cond_kwargs
+        return conditioning_context
 
     def _get_additional_controlnet_kwargs(self, **kwargs) -> Dict[str, Any]:
         """Get SDXL-specific additional kwargs for ControlNet calls"""
@@ -95,75 +93,12 @@ class SDXLTurboControlNetPipeline(BaseControlNetPipeline):
             return {'added_cond_kwargs': kwargs}
         return {}
 
-    def _setup_sdxl_embeddings(self) -> None:
-        """Extract and store SDXL-specific embeddings if using SDXL pipeline"""
-        if not hasattr(self.stream.pipe, 'text_encoder_2'):
-            return
-        
-        if hasattr(self.stream, 'add_text_embeds') and hasattr(self.stream, 'add_time_ids'):
-            return
-        
-        try:
-            prompt = getattr(self.stream, '_current_prompt', "")
-            negative_prompt = getattr(self.stream, '_current_negative_prompt', "")
-            
-            if not prompt:
-                prompt = "a photo"
-            
-            do_classifier_free_guidance = self.stream.guidance_scale > 1.0
-            encoder_output = self.stream.pipe.encode_prompt(
-                prompt=prompt,
-                device=self.stream.device,
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=do_classifier_free_guidance,
-                negative_prompt=negative_prompt,
-                prompt_embeds=None,
-                negative_prompt_embeds=None,
-                pooled_prompt_embeds=None,
-                negative_pooled_prompt_embeds=None,
-                lora_scale=None,
-                clip_skip=None,
-            )
-            
-            if len(encoder_output) >= 4:
-                prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = encoder_output[:4]
-                
-                if do_classifier_free_guidance:
-                    self.stream.add_text_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
-                else:
-                    self.stream.add_text_embeds = pooled_prompt_embeds
-                
-                original_size = (self.stream.height, self.stream.width)
-                target_size = (self.stream.height, self.stream.width)
-                crops_coords_top_left = (0, 0)
-                
-                add_time_ids = list(original_size + crops_coords_top_left + target_size)
-                add_time_ids = torch.tensor([add_time_ids], dtype=self.stream.dtype, device=self.stream.device)
-                
-                if do_classifier_free_guidance:
-                    self.stream.add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
-                else:
-                    self.stream.add_time_ids = add_time_ids
-                
-                print("Set up SDXL embeddings for ControlNet pipeline")
-                
-        except Exception as e:
-            print(f"Warning: Failed to set up SDXL embeddings: {e}")
-            batch_size = 2 if self.stream.guidance_scale > 1.0 else 1
-            self.stream.add_text_embeds = torch.zeros((batch_size, 1280), dtype=self.stream.dtype, device=self.stream.device)
-            
-            add_time_ids = torch.tensor([
-                [self.stream.height, self.stream.width, 0, 0, self.stream.height, self.stream.width]
-            ], dtype=self.stream.dtype, device=self.stream.device)
-            self.stream.add_time_ids = add_time_ids.repeat(batch_size, 1)
-
     def __call__(self, 
                  image: Union[str, Image.Image, np.ndarray, torch.Tensor] = None,
                  num_inference_steps: int = None,
                  guidance_scale: float = None,
                  **kwargs) -> torch.Tensor:
-        """Generate image using SDXL Turbo with ControlNet"""
-        self._setup_sdxl_embeddings()
+        """Generate image using SDXL with ControlNet"""
         
         if image is not None:
             self.update_control_image_efficient(image)

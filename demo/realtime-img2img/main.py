@@ -327,9 +327,8 @@ class App:
             normalize_seed_weights = True    # default
             
             if self.pipeline:
-                current_normalize = self.pipeline.stream.get_normalize_weights()
-                normalize_prompt_weights = current_normalize
-                normalize_seed_weights = current_normalize
+                normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
+                normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
             elif self.uploaded_controlnet_config:
                 normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
                 normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
