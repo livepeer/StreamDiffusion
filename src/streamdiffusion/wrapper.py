@@ -1063,27 +1063,45 @@ class StreamDiffusionWrapper:
         try:
             # Store reference to stream before potentially deleting it
             stream_ref = None
+            underlying_stream = None
+            
             if hasattr(self, 'stream') and self.stream is not None:
                 stream_ref = self.stream
+                
+                # Check if this is a ControlNet pipeline wrapper
+                if hasattr(stream_ref, 'stream'):
+                    # This is a ControlNet pipeline, get the underlying stream
+                    underlying_stream = stream_ref.stream
+                else:
+                    # This is the raw StreamDiffusion object
+                    underlying_stream = stream_ref
             
-            # Clean up TensorRT engines first (while we still have stream reference)
-            if stream_ref is not None:
+            # Clean up TensorRT engines first (using the underlying stream)
+            if underlying_stream is not None:
                 # Clean up TensorRT UNet engine if it exists
-                if hasattr(stream_ref, 'unet') and hasattr(stream_ref.unet, 'engine'):
-                    if hasattr(stream_ref.unet.engine, 'cleanup'):
-                        stream_ref.unet.engine.cleanup()
+                if hasattr(underlying_stream, 'unet') and hasattr(underlying_stream.unet, 'engine'):
+                    if hasattr(underlying_stream.unet.engine, 'cleanup'):
+                        underlying_stream.unet.engine.cleanup()
 
                 # Clean up VAE engine if it exists
-                if hasattr(stream_ref, 'vae') and hasattr(stream_ref.vae, 'cleanup'):
-                    stream_ref.vae.cleanup()
+                if hasattr(underlying_stream, 'vae') and hasattr(underlying_stream.vae, 'cleanup'):
+                    underlying_stream.vae.cleanup()
 
-                # Clean up ControlNet engine pool if exists
-                if hasattr(stream_ref, 'controlnet_engine_pool'):
-                    if hasattr(stream_ref.controlnet_engine_pool, 'cleanup'):
-                        stream_ref.controlnet_engine_pool.cleanup()
-                    del stream_ref.controlnet_engine_pool
+                # Clean up ControlNet engine pool if exists (should be on underlying stream)
+                if hasattr(underlying_stream, 'controlnet_engine_pool'):
+                    if hasattr(underlying_stream.controlnet_engine_pool, 'cleanup'):
+                        underlying_stream.controlnet_engine_pool.cleanup()
+                    del underlying_stream.controlnet_engine_pool
 
-                # Clean up the main stream
+            # Clean up ControlNet pipeline wrapper if exists
+            if stream_ref is not None:
+                # Check for ControlNet pipeline-specific cleanup
+                if hasattr(stream_ref, '_controlnet_pool'):
+                    if hasattr(stream_ref._controlnet_pool, 'cleanup'):
+                        stream_ref._controlnet_pool.cleanup()
+                    del stream_ref._controlnet_pool
+
+                # Clean up the main stream/pipeline
                 if hasattr(stream_ref, 'cleanup'):
                     stream_ref.cleanup()
 
