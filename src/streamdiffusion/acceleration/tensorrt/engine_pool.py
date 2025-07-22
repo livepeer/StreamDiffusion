@@ -301,7 +301,25 @@ class ControlNetEnginePool:
     
     def cleanup(self) -> None:
         """Clean up resources and stop background threads"""
-        self.engines.clear()
+        try:
+            # Clean up all engines
+            for model_id, engine in list(self.engines.items()):
+                if hasattr(engine, 'cleanup'):
+                    engine.cleanup()
+                del engine
+            self.engines.clear()
+            
+            # Clear compiled models set
+            self.compiled_models.clear()
+            
+            # Clean up CUDA stream if we own it
+            if hasattr(self, 'stream') and self.stream is not None:
+                del self.stream
+                self.stream = None
+                
+            print("ControlNet engine pool cleanup completed")
+        except Exception as e:
+            print(f"Warning: Error during ControlNet engine pool cleanup: {e}")
     
     def __del__(self):
         """Cleanup on destruction"""

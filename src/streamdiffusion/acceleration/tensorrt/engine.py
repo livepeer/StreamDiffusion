@@ -367,6 +367,27 @@ class UNet2DConditionModelEngine:
     def forward(self, *args, **kwargs):
         pass
 
+    def cleanup(self):
+        """Clean up TensorRT engine resources"""
+        try:
+            if hasattr(self, 'engine') and self.engine is not None:
+                del self.engine
+                self.engine = None
+            if hasattr(self, 'stream') and self.stream is not None:
+                del self.stream
+                self.stream = None
+            if hasattr(self, '_cached_dummy_controlnet_inputs'):
+                self._cached_dummy_controlnet_inputs = None
+        except Exception as e:
+            print(f"Warning: Error during UNet engine cleanup: {e}")
+
+    def __del__(self):
+        """Cleanup on destruction"""
+        try:
+            self.cleanup()
+        except:
+            pass
+
 
 class AutoencoderKLEngine:
     def __init__(
@@ -433,3 +454,25 @@ class AutoencoderKLEngine:
 
     def forward(self, *args, **kwargs):
         pass
+
+    def cleanup(self):
+        """Clean up TensorRT VAE engine resources"""
+        try:
+            if hasattr(self, 'vae_encoder') and self.vae_encoder is not None:
+                del self.vae_encoder
+                self.vae_encoder = None
+            if hasattr(self, 'vae_decoder') and self.vae_decoder is not None:
+                del self.vae_decoder
+                self.vae_decoder = None
+            if hasattr(self, 'stream') and self.stream is not None:
+                del self.stream
+                self.stream = None
+        except Exception as e:
+            print(f"Warning: Error during VAE engine cleanup: {e}")
+
+    def __del__(self):
+        """Cleanup on destruction"""
+        try:
+            self.cleanup()
+        except:
+            pass
