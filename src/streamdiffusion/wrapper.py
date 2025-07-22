@@ -1997,10 +1997,34 @@ class StreamDiffusionWrapper:
     def cleanup(self):
         """Clean up all resources including CUDA streams and TensorRT engines"""
         try:
-            # Clean up the main stream
+            # Store reference to stream before potentially deleting it
+            stream_ref = None
             if hasattr(self, 'stream') and self.stream is not None:
-                if hasattr(self.stream, 'cleanup'):
-                    self.stream.cleanup()
+                stream_ref = self.stream
+            
+            # Clean up TensorRT engines first (while we still have stream reference)
+            if stream_ref is not None:
+                # Clean up TensorRT UNet engine if it exists
+                if hasattr(stream_ref, 'unet') and hasattr(stream_ref.unet, 'engine'):
+                    if hasattr(stream_ref.unet.engine, 'cleanup'):
+                        stream_ref.unet.engine.cleanup()
+
+                # Clean up VAE engine if it exists
+                if hasattr(stream_ref, 'vae') and hasattr(stream_ref.vae, 'cleanup'):
+                    stream_ref.vae.cleanup()
+
+                # Clean up ControlNet engine pool if exists
+                if hasattr(stream_ref, 'controlnet_engine_pool'):
+                    if hasattr(stream_ref.controlnet_engine_pool, 'cleanup'):
+                        stream_ref.controlnet_engine_pool.cleanup()
+                    del stream_ref.controlnet_engine_pool
+
+                # Clean up the main stream
+                if hasattr(stream_ref, 'cleanup'):
+                    stream_ref.cleanup()
+
+            # Now delete the stream reference
+            if hasattr(self, 'stream'):
                 del self.stream
                 self.stream = None
 
@@ -2008,20 +2032,6 @@ class StreamDiffusionWrapper:
             if hasattr(self, '_cuda_stream') and self._cuda_stream is not None:
                 del self._cuda_stream
                 self._cuda_stream = None
-
-            # Clean up TensorRT engines if they exist
-            if hasattr(self.stream, 'unet') and hasattr(self.stream.unet, 'engine'):
-                if hasattr(self.stream.unet.engine, 'cleanup'):
-                    self.stream.unet.engine.cleanup()
-
-            if hasattr(self.stream, 'vae') and hasattr(self.stream.vae, 'cleanup'):
-                self.stream.vae.cleanup()
-
-            # Clean up ControlNet engine pool if exists
-            if hasattr(self.stream, 'controlnet_engine_pool'):
-                if hasattr(self.stream.controlnet_engine_pool, 'cleanup'):
-                    self.stream.controlnet_engine_pool.cleanup()
-                del self.stream.controlnet_engine_pool
 
             # Force garbage collection and clear CUDA cache
             import gc
