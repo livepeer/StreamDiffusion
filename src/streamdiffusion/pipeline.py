@@ -1,5 +1,6 @@
 import time
 from typing import List, Optional, Union, Any, Dict, Tuple, Literal
+import gc
 
 import numpy as np
 import PIL.Image
@@ -79,6 +80,12 @@ class StreamDiffusion:
         
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self)
+        
+        # Initialize reusable CUDA events to avoid creating them repeatedly
+        self._cuda_events_initialized = False
+        self._start_event = None
+        self._end_event = None
+        self._cleanup_done = False
 
     def load_lcm_lora(
         self,
@@ -480,9 +487,12 @@ class StreamDiffusion:
     def __call__(
         self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None
     ) -> torch.Tensor:
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        # Initialize CUDA events if needed
+        self._initialize_cuda_events()
+        
+        if self._cuda_events_initialized:
+            self._start_event.record()
+        
         if x is not None:
             x = self.image_processor.preprocess(x, self.height, self.width).to(
                 device=self.device, dtype=self.dtype
@@ -502,10 +512,13 @@ class StreamDiffusion:
         x_output = self.decode_image(x_0_pred_out).detach().clone()
 
         self.prev_image_result = x_output
-        end.record()
-        torch.cuda.synchronize()
-        inference_time = start.elapsed_time(end) / 1000
-        self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
+        
+        if self._cuda_events_initialized:
+            self._end_event.record()
+            torch.cuda.synchronize()
+            inference_time = self._start_event.elapsed_time(self._end_event) / 1000
+            self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
+        
         return x_output
 
     @torch.no_grad()
@@ -534,3 +547,71 @@ class StreamDiffusion:
             x_t_latent - self.beta_prod_t_sqrt * model_pred
         ) / self.alpha_prod_t_sqrt
         return self.decode_image(x_0_pred_out)
+
+    def _initialize_cuda_events(self):
+        """Initialize reusable CUDA events for timing"""
+        if not self._cuda_events_initialized and torch.cuda.is_available():
+            self._start_event = torch.cuda.Event(enable_timing=True)
+            self._end_event = torch.cuda.Event(enable_timing=True)
+            self._cuda_events_initialized = True
+
+    def cleanup(self):
+        """Clean up CUDA resources and other memory"""
+        if self._cleanup_done:
+            return
+            
+        try:
+            # Clean up CUDA events
+            if self._cuda_events_initialized:
+                if self._start_event is not None:
+                    del self._start_event
+                if self._end_event is not None:
+                    del self._end_event
+                self._start_event = None
+                self._end_event = None
+                self._cuda_events_initialized = False
+
+            # Clean up tensors on GPU
+            tensors_to_cleanup = [
+                'init_noise', 'stock_noise', 'c_skip', 'c_out',
+                'alpha_prod_t_sqrt', 'beta_prod_t_sqrt', 'sub_timesteps_tensor',
+                'prompt_embeds', 'prev_image_result'
+            ]
+            
+            for tensor_name in tensors_to_cleanup:
+                if hasattr(self, tensor_name):
+                    tensor = getattr(self, tensor_name)
+                    if tensor is not None and torch.is_tensor(tensor):
+                        del tensor
+                    setattr(self, tensor_name, None)
+
+            # Clean up similar image filter
+            if hasattr(self, 'similar_filter') and self.similar_filter is not None:
+                if hasattr(self.similar_filter, 'cleanup'):
+                    self.similar_filter.cleanup()
+                del self.similar_filter
+                self.similar_filter = None
+
+            # Clean up parameter updater
+            if hasattr(self, '_param_updater') and self._param_updater is not None:
+                del self._param_updater
+                self._param_updater = None
+
+            # Force garbage collection and clear CUDA cache
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            self._cleanup_done = True
+            
+        except Exception as e:
+            # Log error but don't raise to avoid issues during shutdown
+            print(f"Warning: Error during StreamDiffusion cleanup: {e}")
+
+    def __del__(self):
+        """Cleanup on object destruction"""
+        try:
+            self.cleanup()
+        except:
+            pass  # Ignore errors during destruction

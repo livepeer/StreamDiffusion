@@ -2,7 +2,7 @@ from typing import Dict, Union
 from uuid import UUID
 import asyncio
 from fastapi import WebSocket
-from starlette.websockets import WebSocketState
+from starlette.websockets import WebSocketState, WebSocketDisconnect
 import logging
 from types import SimpleNamespace
 
@@ -81,31 +81,74 @@ class ConnectionManager:
         return None
 
     async def disconnect(self, user_id: UUID):
-        websocket = self.get_websocket(user_id)
-        if websocket:
-            await websocket.close()
-        self.delete_user(user_id)
+        """Gracefully disconnect a user"""
+        try:
+            websocket = self.get_websocket(user_id)
+            if websocket:
+                # Try to send a final message before closing
+                try:
+                    await websocket.send_json({"status": "disconnecting"})
+                except:
+                    pass  # Ignore if can't send (connection already broken)
+                
+                # Close the websocket gracefully
+                try:
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        await websocket.close(code=1000, reason="Normal closure")
+                except:
+                    pass  # Ignore if connection already closed
+        except Exception as e:
+            logging.error(f"Error during websocket disconnect: {e}")
+        finally:
+            # Always clean up the user session
+            self.delete_user(user_id)
 
     async def send_json(self, user_id: UUID, data: Dict):
         try:
             websocket = self.get_websocket(user_id)
-            if websocket:
+            if websocket and websocket.client_state == WebSocketState.CONNECTED:
                 await websocket.send_json(data)
+        except ConnectionResetError:
+            # Connection was reset by client
+            logging.debug(f"Connection reset while sending to {user_id}")
+            self.delete_user(user_id)
         except Exception as e:
-            logging.error(f"Error: Send json: {e}")
+            # Only log as error if it's not a common disconnect scenario
+            if "1005" not in str(e) and "no status received" not in str(e):
+                logging.error(f"Error: Send json: {e}")
+            else:
+                logging.debug(f"WebSocket closed during send to {user_id}: {e}")
+            # Clean up user on send failure
+            self.delete_user(user_id)
 
     async def receive_json(self, user_id: UUID) -> Dict:
         try:
             websocket = self.get_websocket(user_id)
-            if websocket:
+            if websocket and websocket.client_state == WebSocketState.CONNECTED:
                 return await websocket.receive_json()
+        except ConnectionResetError:
+            logging.debug(f"Connection reset while receiving from {user_id}")
+            self.delete_user(user_id)
         except Exception as e:
-            logging.error(f"Error: Receive json: {e}")
+            if "1005" not in str(e) and "no status received" not in str(e):
+                logging.error(f"Error: Receive json: {e}")
+            else:
+                logging.debug(f"WebSocket closed during receive from {user_id}: {e}")
+            self.delete_user(user_id)
+        return None
 
     async def receive_bytes(self, user_id: UUID) -> bytes:
         try:
             websocket = self.get_websocket(user_id)
-            if websocket:
+            if websocket and websocket.client_state == WebSocketState.CONNECTED:
                 return await websocket.receive_bytes()
+        except ConnectionResetError:
+            logging.debug(f"Connection reset while receiving bytes from {user_id}")
+            self.delete_user(user_id)
         except Exception as e:
-            logging.error(f"Error: Receive bytes: {e}")
+            if "1005" not in str(e) and "no status received" not in str(e):
+                logging.error(f"Error: Receive bytes: {e}")
+            else:
+                logging.debug(f"WebSocket closed during receive bytes from {user_id}: {e}")
+            self.delete_user(user_id)
+        return None

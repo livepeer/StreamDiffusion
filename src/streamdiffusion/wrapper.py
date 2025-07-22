@@ -1057,3 +1057,51 @@ class StreamDiffusionWrapper:
             config_dict = controlnet_config
 
         return config_dict.get('pipeline_type', 'sd1.5')  # Default to SD 1.5 if not specified
+
+    def cleanup(self):
+        """Clean up all resources including CUDA streams and TensorRT engines"""
+        try:
+            # Clean up the main stream
+            if hasattr(self, 'stream') and self.stream is not None:
+                if hasattr(self.stream, 'cleanup'):
+                    self.stream.cleanup()
+                del self.stream
+                self.stream = None
+
+            # Clean up TensorRT CUDA stream if exists
+            if hasattr(self, '_cuda_stream') and self._cuda_stream is not None:
+                del self._cuda_stream
+                self._cuda_stream = None
+
+            # Clean up TensorRT engines if they exist
+            if hasattr(self.stream, 'unet') and hasattr(self.stream.unet, 'engine'):
+                if hasattr(self.stream.unet.engine, 'cleanup'):
+                    self.stream.unet.engine.cleanup()
+
+            if hasattr(self.stream, 'vae') and hasattr(self.stream.vae, 'cleanup'):
+                self.stream.vae.cleanup()
+
+            # Clean up ControlNet engine pool if exists
+            if hasattr(self.stream, 'controlnet_engine_pool'):
+                if hasattr(self.stream.controlnet_engine_pool, 'cleanup'):
+                    self.stream.controlnet_engine_pool.cleanup()
+                del self.stream.controlnet_engine_pool
+
+            # Force garbage collection and clear CUDA cache
+            import gc
+            gc.collect()
+            if torch and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            print("StreamDiffusionWrapper cleanup completed successfully")
+            
+        except Exception as e:
+            print(f"Warning: Error during StreamDiffusionWrapper cleanup: {e}")
+
+    def __del__(self):
+        """Cleanup on object destruction"""
+        try:
+            self.cleanup()
+        except:
+            pass  # Ignore errors during destruction

@@ -62,9 +62,24 @@ class App:
                 await handle_websocket_data(user_id)
             except ServerFullException as e:
                 logging.error(f"Server Full: {e}")
+            except WebSocketDisconnect:
+                logging.info(f"WebSocket disconnected normally: {user_id}")
+            except Exception as e:
+                logging.error(f"WebSocket error: {e}, user: {user_id}")
             finally:
+                # Get user count before disconnect to check if last user
+                user_count_before = self.conn_manager.get_user_count()
+                
                 await self.conn_manager.disconnect(user_id)
                 logging.info(f"User disconnected: {user_id}")
+                
+                # Clean up pipeline resources when last user disconnects
+                # Use the count from before disconnect to determine if this was the last user
+                if user_count_before <= 1:  # This was the last user
+                    logging.info("Last user disconnected, cleaning up pipeline resources")
+                    # Add small delay to ensure WebSocket is fully closed before cleanup
+                    await asyncio.sleep(0.1)
+                    await self.async_cleanup_pipeline()
 
         async def handle_websocket_data(user_id: uuid.UUID):
             if not self.conn_manager.check_user(user_id):
@@ -72,6 +87,11 @@ class App:
             last_time = time.time()
             try:
                 while True:
+                    # Check if user still exists (might have been cleaned up)
+                    if not self.conn_manager.check_user(user_id):
+                        logging.debug(f"User {user_id} no longer exists, ending data handler")
+                        break
+                        
                     if (
                         self.args.timeout > 0
                         and time.time() - last_time > self.args.timeout
@@ -87,9 +107,14 @@ class App:
                         return
                     data = await self.conn_manager.receive_json(user_id)
                     if data is None:
+                        # Connection closed or error occurred
+                        logging.debug(f"No data received from {user_id}, ending handler")
                         break
                     if data["status"] == "next_frame":
                         params = await self.conn_manager.receive_json(user_id)
+                        if params is None:
+                            # Connection closed during parameter reception
+                            break
                         params = Pipeline.InputParams(**params)
                         params = SimpleNamespace(**params.dict())
                         
@@ -106,6 +131,9 @@ class App:
                         
                         if need_image:
                             image_data = await self.conn_manager.receive_bytes(user_id)
+                            if image_data is None:
+                                # Connection closed during image reception
+                                break
                             if len(image_data) == 0:
                                 await self.conn_manager.send_json(
                                     user_id, {"status": "send_frame"}
@@ -116,10 +144,20 @@ class App:
                             params.image = None
                         
                         await self.conn_manager.update_data(user_id, params)
+                        last_time = time.time()  # Update last activity time
 
+            except WebSocketDisconnect:
+                logging.debug(f"WebSocket disconnected normally during data handling: {user_id}")
             except Exception as e:
-                logging.error(f"Websocket Error: {e}, {user_id} ")
-                await self.conn_manager.disconnect(user_id)
+                # Only log as error if it's not a common disconnect scenario
+                if "1005" not in str(e) and "no status received" not in str(e):
+                    logging.error(f"Websocket Error: {e}, {user_id}")
+                else:
+                    logging.debug(f"WebSocket closed during data handling: {user_id}, {e}")
+            finally:
+                # Ensure user is disconnected on any exit
+                if self.conn_manager.check_user(user_id):
+                    await self.conn_manager.disconnect(user_id)
 
         @self.app.get("/api/queue")
         async def get_queue_size():
@@ -131,52 +169,80 @@ class App:
             try:
                 # Create pipeline if it doesn't exist yet or needs recreation
                 if self.pipeline is None:
-                    if self.uploaded_controlnet_config:
+                    # Check if we have uploaded config AND it needs to be applied
+                    if self.uploaded_controlnet_config and (self.config_needs_reload or True):
                         print("stream: Creating pipeline with ControlNet config...")
                         self.pipeline = self._create_pipeline_with_config()
+                        self.config_needs_reload = False  # Reset flag after creation
                     else:
                         print("stream: Creating default pipeline...")
                         self.pipeline = self._create_default_pipeline()
                     print("stream: Pipeline created successfully")
                 
-                # Recreate pipeline if config changed
-                elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)):
-                    if self.config_needs_reload:
-                        print("stream: Recreating pipeline with new ControlNet config...")
-                    else:
-                        print("stream: Upgrading to ControlNet pipeline...")
-                    
+                # Recreate pipeline if config changed and we have an existing pipeline
+                elif self.config_needs_reload and self.uploaded_controlnet_config:
+                    print("stream: Recreating pipeline with new ControlNet config...")
+                    # Clean up old pipeline first
+                    self.cleanup_pipeline()
+                    # Create new one with config
                     self.pipeline = self._create_pipeline_with_config()
                     self.config_needs_reload = False  # Reset the flag
                     print("stream: Pipeline recreated with ControlNet support")
+                
+                # Upgrade existing pipeline to ControlNet if config was uploaded but not applied
+                elif (self.uploaded_controlnet_config and 
+                      not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)):
+                    print("stream: Upgrading to ControlNet pipeline...")
+                    # Clean up old pipeline first
+                    self.cleanup_pipeline()
+                    # Create new one with config
+                    self.pipeline = self._create_pipeline_with_config()
+                    print("stream: Pipeline upgraded with ControlNet support")
 
                 async def generate():
                     while True:
-                        frame_start_time = time.time()
-                        await self.conn_manager.send_json(
-                            user_id, {"status": "send_frame"}
-                        )
-                        params = await self.conn_manager.get_latest_data(user_id)
-                        if params is None:
-                            continue
-                        
                         try:
-                            image = self.pipeline.predict(params)
-                            if image is None:
+                            frame_start_time = time.time()
+                            
+                            # Check if user still exists before sending
+                            if not self.conn_manager.check_user(user_id):
+                                logging.debug(f"User {user_id} no longer exists, stopping stream generation")
+                                break
+                                
+                            await self.conn_manager.send_json(
+                                user_id, {"status": "send_frame"}
+                            )
+                            params = await self.conn_manager.get_latest_data(user_id)
+                            if params is None:
                                 continue
-                            frame = pil_to_frame(image)
+                            
+                            # Ensure pipeline still exists (might have been cleaned up)
+                            if self.pipeline is None:
+                                logging.error("Pipeline was cleaned up during streaming")
+                                break
+                            
+                            try:
+                                image = self.pipeline.predict(params)
+                                if image is None:
+                                    continue
+                                frame = pil_to_frame(image)
+                            except Exception as e:
+                                logging.debug(f"Frame generation error: {e}")
+                                continue
+                            
+                            # Update FPS counter
+                            frame_time = time.time() - frame_start_time
+                            self.fps_counter.append(frame_time)
+                            if len(self.fps_counter) > 30:  # Keep last 30 frames
+                                self.fps_counter.pop(0)
+                            
+                            yield frame
+                            if self.args.debug:
+                                print(f"Time taken: {time.time() - frame_start_time}")
+                                
                         except Exception as e:
-                            continue
-                        
-                        # Update FPS counter
-                        frame_time = time.time() - frame_start_time
-                        self.fps_counter.append(frame_time)
-                        if len(self.fps_counter) > 30:  # Keep last 30 frames
-                            self.fps_counter.pop(0)
-                        
-                        yield frame
-                        if self.args.debug:
-                            print(f"Time taken: {time.time() - frame_start_time}")
+                            logging.error(f"Error in stream generation: {e}")
+                            break
 
                 return StreamingResponse(
                     generate(),
@@ -834,44 +900,58 @@ class App:
 
     def _create_default_pipeline(self):
         """Create the default pipeline (standard mode)"""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch_dtype = torch.float16
-        return Pipeline(self.args, device, torch_dtype)
+        try:
+            logging.info("Creating default pipeline...")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            torch_dtype = torch.float16
+            pipeline = Pipeline(self.args, device, torch_dtype)
+            logging.info("Default pipeline created successfully")
+            return pipeline
+        except Exception as e:
+            logging.error(f"Failed to create default pipeline: {e}")
+            raise
 
     def _create_pipeline_with_config(self, controlnet_config_path=None):
         """Create a new pipeline with optional ControlNet configuration"""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch_dtype = torch.float16
-        
-        # Use uploaded config if available, otherwise use original args
-        if controlnet_config_path:
-            new_args = self.args._replace(controlnet_config=controlnet_config_path)
-        elif self.uploaded_controlnet_config:
-            # Create temporary file from stored config
-            temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-            yaml.dump(self.uploaded_controlnet_config, temp_config_path, default_flow_style=False)
-            temp_config_path.close()
+        try:
+            logging.info("Creating pipeline with ControlNet config...")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            torch_dtype = torch.float16
             
-            # Merge YAML config values into args, respecting config overrides
-            # This ensures that acceleration settings from YAML config override command line args
-            config_acceleration = self.uploaded_controlnet_config.get('acceleration', self.args.acceleration)
-            new_args = self.args._replace(
-                controlnet_config=temp_config_path.name,
-                acceleration=config_acceleration
-            )
-        else:
-            new_args = self.args
-        
-        new_pipeline = Pipeline(new_args, device, torch_dtype)
-        
-        # Clean up temp file if created
-        if self.uploaded_controlnet_config and not controlnet_config_path:
-            try:
-                os.unlink(new_args.controlnet_config)
-            except:
-                pass
-        
-        return new_pipeline
+            # Use uploaded config if available, otherwise use original args
+            if controlnet_config_path:
+                new_args = self.args._replace(controlnet_config=controlnet_config_path)
+            elif self.uploaded_controlnet_config:
+                # Create temporary file from stored config
+                temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                yaml.dump(self.uploaded_controlnet_config, temp_config_path, default_flow_style=False)
+                temp_config_path.close()
+                
+                # Merge YAML config values into args, respecting config overrides
+                # This ensures that acceleration settings from YAML config override command line args
+                config_acceleration = self.uploaded_controlnet_config.get('acceleration', self.args.acceleration)
+                new_args = self.args._replace(
+                    controlnet_config=temp_config_path.name,
+                    acceleration=config_acceleration
+                )
+            else:
+                new_args = self.args
+            
+            new_pipeline = Pipeline(new_args, device, torch_dtype)
+            
+            # Clean up temp file if created
+            if self.uploaded_controlnet_config and not controlnet_config_path:
+                try:
+                    os.unlink(new_args.controlnet_config)
+                except:
+                    pass
+            
+            logging.info("ControlNet pipeline created successfully")
+            return new_pipeline
+            
+        except Exception as e:
+            logging.error(f"Failed to create ControlNet pipeline: {e}")
+            raise
 
     def _get_controlnet_info(self):
         """Get ControlNet information from uploaded config or active pipeline"""
@@ -907,6 +987,52 @@ class App:
                     })
         
         return controlnet_info
+
+    def cleanup_pipeline(self):
+        """Clean up the current pipeline and free resources"""
+        try:
+            if self.pipeline is not None:
+                # Clean up the pipeline's wrapper
+                if hasattr(self.pipeline, 'stream') and hasattr(self.pipeline.stream, 'cleanup'):
+                    self.pipeline.stream.cleanup()
+                    logging.info("Pipeline stream cleanup completed")
+                
+                # Delete the pipeline
+                del self.pipeline
+                self.pipeline = None
+                
+                # Reset config reload flag when pipeline is cleaned up
+                # This ensures we don't get stuck trying to reload config that doesn't exist
+                if not self.uploaded_controlnet_config:
+                    self.config_needs_reload = False
+                
+                # Force garbage collection and clear CUDA cache
+                import gc
+                gc.collect()
+                if torch and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                
+                logging.info("Pipeline cleanup completed successfully")
+                
+        except Exception as e:
+            logging.error(f"Error during pipeline cleanup: {e}")
+
+    async def async_cleanup_pipeline(self):
+        """Async wrapper for pipeline cleanup"""
+        try:
+            # Run cleanup in executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.cleanup_pipeline)
+        except Exception as e:
+            logging.error(f"Error during async pipeline cleanup: {e}")
+
+    def __del__(self):
+        """Cleanup on app destruction"""
+        try:
+            self.cleanup_pipeline()
+        except:
+            pass  # Ignore errors during destruction
 
 
 app = App(config).app
