@@ -67,7 +67,7 @@ class StreamDiffusion:
                 self.model_type = "SD15"
         
         self.is_sdxl = self.model_type == "SDXL"
-        print(f"Detected model type: {self.model_type}")
+        logger.debug(f"Detected model type: {self.model_type}")
 
         if use_denoising_batch:
             self.batch_size = self.denoising_steps_num * frame_buffer_size
@@ -122,11 +122,11 @@ class StreamDiffusion:
     ) -> None:
         # Check for SDXL compatibility
         if self.is_sdxl:
-            print(f"WARNING: Skipping LCM LoRA loading for SDXL model. ")
-            print(f"SDXL models are incompatible with SD1.5 LCM LoRAs due to different architectures:")
-            print(f"- Context dimensions: SDXL=2048 vs SD1.5=768")
-            print(f"- Channel configurations: Different U-Net structures")
-            print(f"Use SDXL-specific LCM LoRAs or SDXL-Turbo models instead.")
+            logger.debug(f"WARNING: Skipping LCM LoRA loading for SDXL model. ")
+            logger.debug(f"SDXL models are incompatible with SD1.5 LCM LoRAs due to different architectures:")
+            logger.debug(f"- Context dimensions: SDXL=2048 vs SD1.5=768")
+            logger.debug(f"- Channel configurations: Different U-Net structures")
+            logger.debug(f"Use SDXL-specific LCM LoRAs or SDXL-Turbo models instead.")
             return
             
         self.pipe.load_lora_weights(
@@ -262,7 +262,7 @@ class StreamDiffusion:
                 else:
                     self.add_time_ids = add_time_ids
                     
-                print(f"SDXL conditioning setup: prompt_embeds {self.prompt_embeds.shape}, "
+                logger.debug(f"SDXL conditioning setup: prompt_embeds {self.prompt_embeds.shape}, "
                       f"add_text_embeds {self.add_text_embeds.shape}, add_time_ids {self.add_time_ids.shape}")
             else:
                 raise ValueError(f"SDXL encode_prompt returned {len(encoder_output)} outputs, expected at least 4")
@@ -567,21 +567,21 @@ class StreamDiffusion:
         else:
             logger.debug(f"[PIPELINE] unet_step: Not using SDXL conditioning")
 
-        print(f"[PIPELINE] unet_step: Calling UNet with kwargs keys: {list(unet_kwargs.keys())}")
+        logger.debug(f"[PIPELINE] unet_step: Calling UNet with kwargs keys: {list(unet_kwargs.keys())}")
         
         # Call UNet with appropriate conditioning
         if self.is_sdxl:
-            print(f"[PIPELINE] unet_step: Using SDXL UNet call")
-            print(f"[PIPELINE] unet_step: About to call self.unet(**unet_kwargs)")
-            print(f"[PIPELINE] unet_step: UNet object type: {type(self.unet)}")
-            print(f"[PIPELINE] unet_step: UNet object class: {self.unet.__class__}")
-            print(f"[PIPELINE] unet_step: UNet object methods: {[method for method in dir(self.unet) if not method.startswith('_')]}")
-            print(f"[PIPELINE] unet_step: Has __call__: {hasattr(self.unet, '__call__')}")
-            print(f"[PIPELINE] unet_step: Has forward: {hasattr(self.unet, 'forward')}")
+            logger.debug(f"[PIPELINE] unet_step: Using SDXL UNet call")
+            logger.debug(f"[PIPELINE] unet_step: About to call self.unet(**unet_kwargs)")
+            logger.debug(f"[PIPELINE] unet_step: UNet object type: {type(self.unet)}")
+            logger.debug(f"[PIPELINE] unet_step: UNet object class: {self.unet.__class__}")
+            logger.debug(f"[PIPELINE] unet_step: UNet object methods: {[method for method in dir(self.unet) if not method.startswith('_')]}")
+            logger.debug(f"[PIPELINE] unet_step: Has __call__: {hasattr(self.unet, '__call__')}")
+            logger.debug(f"[PIPELINE] unet_step: Has forward: {hasattr(self.unet, 'forward')}")
             
             try:
-                print(f"[PIPELINE] unet_step: 🚀 Starting SDXL UNet call...")
-                print(f"[PIPELINE] unet_step: Calling TensorRT engine with correct argument format...")
+                logger.debug(f"[PIPELINE] unet_step: 🚀 Starting SDXL UNet call...")
+                logger.debug(f"[PIPELINE] unet_step: Calling TensorRT engine with correct argument format...")
                 
                 # Add timing to detect hang
                 import time
@@ -591,7 +591,7 @@ class StreamDiffusion:
                 # Convert diffusers-style kwargs to TensorRT engine format
                 added_cond_kwargs = unet_kwargs.get('added_cond_kwargs', {})
                 
-                print(f"[PIPELINE] unet_step: Calling engine with positional args and added_cond_kwargs")
+                logger.debug(f"[PIPELINE] unet_step: Calling engine with positional args and added_cond_kwargs")
                 model_pred = self.unet(
                     unet_kwargs['sample'],                    # latent_model_input (positional)
                     unet_kwargs['timestep'],                  # timestep (positional)
@@ -600,15 +600,15 @@ class StreamDiffusion:
                 )[0]
                 
                 elapsed_time = time.time() - start_time
-                print(f"[PIPELINE] unet_step: ✅ SDXL UNet call completed in {elapsed_time:.3f}s!")
+                logger.debug(f"[PIPELINE] unet_step: ✅ SDXL UNet call completed in {elapsed_time:.3f}s!")
                 
             except Exception as e:
-                print(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
+                logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
                 import traceback
                 traceback.print_exc()
                 raise
         else:
-            print(f"[PIPELINE] unet_step: Using legacy UNet call")
+            logger.debug(f"[PIPELINE] unet_step: Using legacy UNet call")
             # For SD1.5/SD2.1, use the old calling convention for compatibility
             model_pred = self.unet(
                 x_t_latent_plus_uc,
@@ -816,12 +816,12 @@ class StreamDiffusion:
         # Check for problematic values in final result
         if torch.isnan(x_0_pred_out).any():
             nan_count = torch.isnan(x_0_pred_out).sum().item()
-            print(f"[PIPELINE] predict_x0_batch: *** ERROR: {nan_count} NaN values in final result! ***")
+            logger.debug(f"[PIPELINE] predict_x0_batch: *** ERROR: {nan_count} NaN values in final result! ***")
         if torch.isinf(x_0_pred_out).any():
             inf_count = torch.isinf(x_0_pred_out).sum().item()
-            print(f"[PIPELINE] predict_x0_batch: *** ERROR: {inf_count} Inf values in final result! ***")
+            logger.debug(f"[PIPELINE] predict_x0_batch: *** ERROR: {inf_count} Inf values in final result! ***")
         if (x_0_pred_out == 0).all():
-            print(f"[PIPELINE] predict_x0_batch: *** ERROR: All output values are zero! ***")
+            logger.debug(f"[PIPELINE] predict_x0_batch: *** ERROR: All output values are zero! ***")
 
         return x_0_pred_out
 
