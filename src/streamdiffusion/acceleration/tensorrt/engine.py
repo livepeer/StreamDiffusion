@@ -38,17 +38,12 @@ class UNet2DConditionModelEngine:
         **kwargs,
     ) -> Any:
         
-        print(f"[UNET_ENGINE] __call__: *** UNet2DConditionModelEngine called! ***")
-        print(f"[UNET_ENGINE] __call__: latent_model_input shape: {latent_model_input.shape}")
-        print(f"[UNET_ENGINE] __call__: timestep shape: {timestep.shape}")
-        print(f"[UNET_ENGINE] __call__: encoder_hidden_states shape: {encoder_hidden_states.shape}")
-        print(f"[UNET_ENGINE] __call__: kwargs keys: {list(kwargs.keys())}")
-        print(f"[UNET_ENGINE] __call__: About to start detailed processing...")
-        
-        logger.debug(f"UNet2DConditionModelEngine.__call__: Starting inference")
-        logger.debug(f"Input shapes - latent: {latent_model_input.shape}, timestep: {timestep.shape}, encoder: {encoder_hidden_states.shape}")
-        logger.debug(f"Input dtypes - latent: {latent_model_input.dtype}, timestep: {timestep.dtype}, encoder: {encoder_hidden_states.dtype}")
-        logger.debug(f"Input devices - latent: {latent_model_input.device}, timestep: {timestep.device}, encoder: {encoder_hidden_states.device}")
+        logger.debug(f"[UNET_ENGINE] __call__: *** UNet2DConditionModelEngine called! ***")
+        logger.debug(f"[UNET_ENGINE] __call__: latent_model_input shape: {latent_model_input.shape}")
+        logger.debug(f"[UNET_ENGINE] __call__: timestep shape: {timestep.shape}")
+        logger.debug(f"[UNET_ENGINE] __call__: encoder_hidden_states shape: {encoder_hidden_states.shape}")
+        logger.debug(f"[UNET_ENGINE] __call__: kwargs keys: {list(kwargs.keys())}")
+        logger.debug(f"[UNET_ENGINE] __call__: About to start detailed processing...")
         
         # Check for NaN/Inf in inputs
         if torch.isnan(latent_model_input).any():
