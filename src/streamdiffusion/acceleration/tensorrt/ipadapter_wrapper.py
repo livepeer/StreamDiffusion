@@ -191,7 +191,6 @@ class IPAdapterUNetWrapper(torch.nn.Module):
         batch_size, seq_len, embed_dim = encoder_hidden_states.shape
         
         # Check that we have the expected number of image tokens
-        # Note: We can't validate exact sequence length since text length varies
         if embed_dim != self.cross_attention_dim:
             raise ValueError(f"Embedding dimension {embed_dim} doesn't match expected {self.cross_attention_dim}")
         

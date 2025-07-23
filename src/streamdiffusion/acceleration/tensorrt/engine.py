@@ -51,9 +51,6 @@ class UNet2DConditionModelEngine:
             "encoder_hidden_states": encoder_hidden_states,
         }
 
-        # Note: IPAdapter embeddings are now baked into encoder_hidden_states
-        # No separate image_embeddings handling needed
-
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:
             # Option 1: Direct ControlNet conditioning dict (organized by type)

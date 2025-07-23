@@ -403,10 +403,6 @@ class StreamDiffusion:
             "return_dict": False,
         }
         
-        # Note: IPAdapter embeddings are now baked into UNet via attention processors
-        # Both TensorRT and PyTorch modes use the same concatenated embeddings in encoder_hidden_states
-        # No special handling needed for separate image_embeddings
-                
         model_pred = self.unet(
             x_t_latent_plus_uc,
             t_list,
