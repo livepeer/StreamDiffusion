@@ -72,6 +72,14 @@ class App:
         self.new_height = 512
         self.init_app()
 
+    def cleanup(self):
+        """Cleanup resources when app is shutting down"""
+        logger.info("App cleanup: Starting application cleanup...")
+        if self.pipeline:
+            self._cleanup_pipeline(self.pipeline)
+            self.pipeline = None
+        logger.info("App cleanup: Completed application cleanup")
+
     def init_app(self):
         # Enhanced CORS for API-only development mode
         if self.args.api_only:
@@ -186,6 +194,15 @@ class App:
                     else:
                         logger.info("stream: Upgrading to ControlNet pipeline...")
                     
+                    # Properly cleanup the old pipeline before creating new one
+                    old_pipeline = self.pipeline
+                    self.pipeline = None
+                    
+                    if old_pipeline:
+                        self._cleanup_pipeline(old_pipeline)
+                        old_pipeline = None
+                    
+                    # Create new pipeline
                     if self.uploaded_controlnet_config:
                         self.pipeline = self._create_pipeline_with_config()
                     else:
@@ -1378,54 +1395,95 @@ class App:
         
         return f"{simplified_width}:{simplified_height}"
 
+    def _cleanup_pipeline(self, pipeline):
+        """Properly cleanup a pipeline and free VRAM using StreamDiffusion's built-in cleanup"""
+        if pipeline is None:
+            return
+            
+        try:
+            logger.info("Starting pipeline cleanup...")
+            
+            # Use StreamDiffusion's built-in cleanup method which properly handles:
+            # - TensorRT engine cleanup
+            # - ControlNet engine cleanup  
+            # - Multiple garbage collection cycles
+            # - CUDA cache clearing
+            # - Memory tracking
+            if hasattr(pipeline, 'stream') and pipeline.stream and hasattr(pipeline.stream, 'cleanup_gpu_memory'):
+                pipeline.stream.cleanup_gpu_memory()
+                logger.info("Pipeline cleanup completed using StreamDiffusion cleanup")
+            else:
+                # Fallback cleanup if the method doesn't exist
+                logger.warning("StreamDiffusion cleanup method not found, using fallback cleanup")
+                if hasattr(pipeline, 'stream') and pipeline.stream:
+                    del pipeline.stream
+                del pipeline
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+        except Exception as e:
+            logger.error(f"Error during pipeline cleanup: {e}")
+            # Still try to clear CUDA cache even if cleanup fails
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     def _update_resolution(self, width: int, height: int) -> None:
         """Create a new pipeline with the specified resolution and replace the old one."""
         logger.info(f"Creating new pipeline with resolution {width}x{height}")
         
-        # Store current pipeline state
-        current_prompt = getattr(self.pipeline, 'prompt', '')
-        current_negative_prompt = getattr(self.pipeline, 'negative_prompt', '')
-        current_guidance_scale = getattr(self.pipeline, 'guidance_scale', 1.2)
-        current_num_inference_steps = getattr(self.pipeline, 'num_inference_steps', 50)
+        # Store current pipeline state before cleanup
+        current_prompt = getattr(self.pipeline, 'prompt', '') if self.pipeline else ''
+        current_negative_prompt = getattr(self.pipeline, 'negative_prompt', '') if self.pipeline else ''
+        current_guidance_scale = getattr(self.pipeline, 'guidance_scale', 1.2) if self.pipeline else 1.2
+        current_num_inference_steps = getattr(self.pipeline, 'num_inference_steps', 50) if self.pipeline else 50
         
-        # Update current resolution BEFORE creating new pipeline
+        # Store reference to old pipeline for cleanup
+        old_pipeline = self.pipeline
+        
+        # Clear current pipeline reference before cleanup to prevent any access during cleanup
+        self.pipeline = None
+        
+        # Cleanup old pipeline and free VRAM
+        if old_pipeline:
+            self._cleanup_pipeline(old_pipeline)
+            old_pipeline = None
+        
+        # Update current resolution 
         self.new_width = width
         self.new_height = height
         
         # Create new pipeline with new resolution
-        if self.uploaded_controlnet_config:
-            new_pipeline = self._create_pipeline_with_config()
-        else:
-            new_pipeline = self._create_default_pipeline()
-        
-        # Replace old pipeline
-        old_pipeline = self.pipeline
-        self.pipeline = new_pipeline
-        
-        # Restore pipeline state
-        if current_prompt:
-            self.pipeline.stream.prepare(
-                prompt=current_prompt,
-                negative_prompt=current_negative_prompt,
-                guidance_scale=current_guidance_scale,
-                num_inference_steps=current_num_inference_steps
-            )
-            # Also update the pipeline's stored values
-            self.pipeline.prompt = current_prompt
-            self.pipeline.negative_prompt = current_negative_prompt
-            self.pipeline.guidance_scale = current_guidance_scale
-            self.pipeline.num_inference_steps = current_num_inference_steps
-            self.pipeline.last_prompt = current_prompt
-        
-        # Clean up old pipeline
-        if old_pipeline:
-            try:
-                # Clear any references to free memory
-                del old_pipeline
-            except:
-                pass
-        
-        logger.info(f"Pipeline updated successfully to {width}x{height}")
+        try:
+            if self.uploaded_controlnet_config:
+                new_pipeline = self._create_pipeline_with_config()
+            else:
+                new_pipeline = self._create_default_pipeline()
+            
+            # Set the new pipeline
+            self.pipeline = new_pipeline
+            
+            # Restore pipeline state
+            if current_prompt:
+                self.pipeline.stream.prepare(
+                    prompt=current_prompt,
+                    negative_prompt=current_negative_prompt,
+                    guidance_scale=current_guidance_scale,
+                    num_inference_steps=current_num_inference_steps
+                )
+                # Also update the pipeline's stored values
+                self.pipeline.prompt = current_prompt
+                self.pipeline.negative_prompt = current_negative_prompt
+                self.pipeline.guidance_scale = current_guidance_scale
+                self.pipeline.num_inference_steps = current_num_inference_steps
+                self.pipeline.last_prompt = current_prompt
+            
+            logger.info(f"Pipeline updated successfully to {width}x{height}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create new pipeline: {e}")
+            # Make sure we don't leave the system in a broken state
+            self.pipeline = None
+            raise
 
 app = App(config).app
 
