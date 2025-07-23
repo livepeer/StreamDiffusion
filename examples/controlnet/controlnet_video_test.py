@@ -96,8 +96,12 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         frame_pil = Image.fromarray(frame_rgb)
         
         # Update control image and generate
+        st = time.time()
         wrapper.update_control_image_efficient(frame_pil)
+        print(f"process_video: Update control image time: {time.time() - st}")
+        kp = time.time()
         output_image = wrapper(frame_pil)
+        print(f"process_video: Generate time: {time.time() - kp}")
         
         # Convert output to display format
         output_array = np.array(output_image)

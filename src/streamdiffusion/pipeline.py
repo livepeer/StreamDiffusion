@@ -517,6 +517,7 @@ class StreamDiffusion:
     def __call__(
         self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None
     ) -> torch.Tensor:
+        st = time.time()
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
@@ -543,6 +544,7 @@ class StreamDiffusion:
         torch.cuda.synchronize()
         inference_time = start.elapsed_time(end) / 1000
         self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
+        print(f"pipeline: Total inference time: {time.time() - st}")
         return x_output
 
     @torch.no_grad()

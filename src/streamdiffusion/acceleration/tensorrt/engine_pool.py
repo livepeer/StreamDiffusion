@@ -108,11 +108,12 @@ class ControlNetEnginePool:
                 print(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation failed after {compilation_time:.2f}s")
                 print(f"   Will use PyTorch fallback for {model_id}")
         
+        stream = cuda.Stream()
         hybrid_controlnet = HybridControlNet(
             model_id=model_id,
             engine_path=str(engine_path) if engine_path.exists() else None,
             pytorch_model=pytorch_model,
-            stream=self.stream
+            stream=stream
         )
         
         self.engines[cache_key] = hybrid_controlnet

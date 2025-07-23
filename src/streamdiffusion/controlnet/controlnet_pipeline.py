@@ -32,3 +32,4 @@ class ControlNetPipeline(BaseControlNetPipeline):
         """
         super().__init__(stream_diffusion, device, dtype, use_pipelined_processing=True)
         self.model_type = model_type 
+        print(f"ControlNetPipeline: model_type: {model_type}")

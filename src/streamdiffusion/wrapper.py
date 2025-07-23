@@ -16,6 +16,7 @@ from .acceleration.tensorrt.model_detection import detect_model_from_diffusers_u
 
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
+import time
 
 torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -501,10 +502,16 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The generated image.
         """
+        st = time.time()
         if self.mode == "img2img":
-            return self.img2img(image, prompt)
+            print("__call__ timestamp start: ", time.time())
+            x = self.img2img(image, prompt)
+            print("__call__ timestamp end: ", time.time())
+            print(f"wrapper: Total inference time: {time.time() - st}")
         else:
-            return self.txt2img(prompt)
+            x = self.txt2img(prompt)
+        print(f"wrapper: Total inference time: {time.time() - st}")
+        return x
 
     def txt2img(
         self, prompt: Optional[str] = None
@@ -563,14 +570,23 @@ class StreamDiffusionWrapper:
         Image.Image
             The generated image.
         """
+        print("img2img timestamp start: ", time.time())
+        st = time.time()
         if prompt is not None:
             self.update_prompt(prompt, warn_about_conflicts=True)
 
         if isinstance(image, str) or isinstance(image, Image.Image):
+            # st = time.time()
             image = self.preprocess_image(image)
+            # print(f"img2img: Preprocess image time: {time.time() - st}")
 
+        st = time.time()
         image_tensor = self.stream(image)
+        # print(f"img2img: Generate time: {time.time() - st}")
+
+        l1 = time.time()
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
+        print(f"img2img: Postprocess image time: {time.time() - l1}")
 
         if self.use_safety_checker:
             safety_checker_input = self.feature_extractor(
@@ -581,7 +597,8 @@ class StreamDiffusionWrapper:
                 clip_input=safety_checker_input.pixel_values.to(self.dtype),
             )
             image = self.nsfw_fallback_img if has_nsfw_concept[0] else image
-
+        print(f"img2img: Total inference time: {time.time() - st}")
+        print("img2img timestamp end: ", time.time())
         return image
 
     def preprocess_image(self, image: Union[str, Image.Image, torch.Tensor]) -> torch.Tensor:
@@ -819,6 +836,7 @@ class StreamDiffusionWrapper:
         
         # Store model info for later use (after TensorRT conversion)
         self._detected_model_type = model_type
+        print(f"_load_model: Detected model type: {model_type}")
 
         stream = StreamDiffusion(
             pipe=pipe,
@@ -861,6 +879,10 @@ class StreamDiffusionWrapper:
                 )
 
         try:
+            # Apply ControlNet patch if needed
+            if use_controlnet and controlnet_config:
+                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type)
+            
             if acceleration == "xformers":
                 stream.pipe.enable_xformers_memory_efficient_attention()
             if acceleration == "tensorrt":
@@ -1159,10 +1181,6 @@ class StreamDiffusionWrapper:
             )
             self.nsfw_fallback_img = Image.new("RGB", (self.height, self.width), (0, 0, 0))
 
-        # Apply ControlNet patch if needed
-        if use_controlnet and controlnet_config:
-            stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type)
-
         return stream
 
     def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15") -> Any:
@@ -1190,6 +1208,7 @@ class StreamDiffusionWrapper:
         
         # Set the detected model type to avoid re-detection from TensorRT engine
         controlnet_pipeline._detected_model_type = model_type
+        controlnet_pipeline.model_type = model_type
 
 
         # Initialize ControlNet engine pool if using TensorRT acceleration
@@ -1247,6 +1266,9 @@ class StreamDiffusionWrapper:
                 print(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
                 import traceback
                 traceback.print_exc()
+
+        # if len(controlnet_pipeline.controlnets) > 1:
+        #     controlnet_pipeline._patch_stream_diffusion()
 
         return controlnet_pipeline
 

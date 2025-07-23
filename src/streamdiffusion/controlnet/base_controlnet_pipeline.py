@@ -4,6 +4,9 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 import logging
+import time
+import pickle
+import torch.multiprocessing as mp
 
 from diffusers.models import ControlNetModel
 from diffusers.utils import load_image
@@ -14,6 +17,74 @@ from .preprocessing_orchestrator import PreprocessingOrchestrator
 
 # Setup logger for parallel processing
 logger = logging.getLogger(__name__)
+
+def _load_run_controlnet(model_id: str, in_queue: mp.Queue, out_queue: mp.Queue, model_type: str, dtype: torch.dtype, device: str, trt_unet_batch_size: int = 1, controlnet_engine_pool = None):
+    controlnet = _load_controlnet_model(model_id, model_type, dtype, device, trt_unet_batch_size, controlnet_engine_pool)
+    while True:
+        controlnet_kwargs = in_queue.get()
+        st = time.time()
+        down_samples, mid_sample = controlnet(**controlnet_kwargs)
+        print(f"Controlnet inference time: {time.time() - st}")
+        out_queue.put((down_samples, mid_sample))
+
+def _load_controlnet_model(model_id: str, model_type: str, dtype: torch.dtype, device: str, trt_unet_batch_size: int = 1, controlnet_engine_pool = None):
+    """Load a ControlNet model with TensorRT acceleration support"""
+    # First load the PyTorch model as fallback
+    pytorch_controlnet = _load_pytorch_controlnet_model(model_id, model_type, dtype, device)
+    
+    # Check if TensorRT engine pool is available
+    if controlnet_engine_pool is not None:
+        
+        print(f"Loading ControlNet {model_id} with TensorRT acceleration support")
+        print(f"  Model type: {model_type}")
+        
+        # Debug: Check what batch size we're getting
+        detected_batch_size = trt_unet_batch_size
+        return controlnet_engine_pool.get_or_load_engine(
+            model_id=model_id,
+            pytorch_model=pytorch_controlnet,
+            model_type=model_type,
+            batch_size=detected_batch_size
+        )
+    else:
+        # Fallback to PyTorch only
+        print(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
+        return pytorch_controlnet
+
+def _load_pytorch_controlnet_model(model_id: str, model_type: str, dtype: torch.dtype, device: str):
+    """Load a ControlNet model from HuggingFace or local path"""
+    try:
+        # Check if it's a local path
+        if Path(model_id).exists():
+            controlnet = ControlNetModel.from_pretrained(
+                model_id,
+                torch_dtype=dtype,
+                local_files_only=True
+            )
+        else:
+            # Try as HuggingFace model ID
+            if "/" in model_id and model_id.count("/") > 1:
+                # Handle subfolder case (e.g., "repo/model/subfolder")
+                parts = model_id.split("/")
+                repo_id = "/".join(parts[:2])
+                subfolder = "/".join(parts[2:])
+                controlnet = ControlNetModel.from_pretrained(
+                    repo_id,
+                    subfolder=subfolder,
+                    torch_dtype=dtype
+                )
+            else:
+                controlnet = ControlNetModel.from_pretrained(
+                    model_id,
+                    torch_dtype=dtype
+                )
+        
+        # Move to device
+        controlnet = controlnet.to(device=device, dtype=dtype)
+        return controlnet
+        
+    except Exception as e:
+        raise ValueError(f"Failed to load {model_type} ControlNet model '{model_id}': {e}")
 
 class BaseControlNetPipeline:
     """
@@ -28,7 +99,8 @@ class BaseControlNetPipeline:
                  stream_diffusion: StreamDiffusion,
                  device: str = "cuda",
                  dtype: torch.dtype = torch.float16,
-                 use_pipelined_processing: bool = True):
+                 use_pipelined_processing: bool = True,
+                 parallel_controlnet_inference: bool = False):
         """
         Initialize ControlNet pipeline.
         
@@ -37,6 +109,7 @@ class BaseControlNetPipeline:
             device: Device to run on ("cuda" or "cpu")
             dtype: Tensor dtype for processing
             use_pipelined_processing: Enable inter-frame pipelining for better performance
+            parallel_controlnet_inference: Enable parallel inference for ControlNets
         """
         self.stream = stream_diffusion
         self.device = device
@@ -51,6 +124,9 @@ class BaseControlNetPipeline:
         
         self._original_unet_step = None
         self._is_patched = False
+        # self.parallel_controlnet_inference = parallel_controlnet_inference
+        # if self.parallel_controlnet_inference:
+        self.ctx = mp.get_context('spawn')
         
         # Initialize preprocessing orchestrator
         self._preprocessing_orchestrator = PreprocessingOrchestrator(
@@ -70,7 +146,23 @@ class BaseControlNetPipeline:
             return -1
         
         # Load ControlNet model
-        controlnet = self._load_controlnet_model(controlnet_config['model_id'])
+        in_queue = self.ctx.Queue()
+        out_queue = self.ctx.Queue()
+        # for test in [self.stream.controlnet_engine_pool, controlnet_config['model_id'], in_queue, out_queue]:
+        #     try:
+        #         pickle.dumps(test)
+        #     except Exception as e:
+        #         print(f"Error pickling {test}: {e}")
+        # exit()
+        # try:
+        #     pickle.dumps(self.stream.controlnet_engine_pool)
+        # except Exception as e:
+        #     print(f"Error pickling {self.stream.controlnet_engine_pool}: {e}")
+        #     exit()
+        controlnet_process = self.ctx.Process(target=_load_run_controlnet, args=(controlnet_config['model_id'], in_queue, out_queue, self.model_type, self.dtype, self.device, self.stream.trt_unet_batch_size, self.stream.controlnet_engine_pool))
+        controlnet_process.start()
+        # exit()
+        # controlnet = self._load_controlnet_model(controlnet_config['model_id'])
         
         # Load preprocessor if specified
         preprocessor = None
@@ -102,7 +194,7 @@ class BaseControlNetPipeline:
             processed_image = self._prepare_control_image(control_image, preprocessor)
         
         # Add to collections
-        self.controlnets.append(controlnet)
+        self.controlnets.append({"process": controlnet_process, "in_queue": in_queue, "out_queue": out_queue})
         self.controlnet_images.append(processed_image)
         self.controlnet_scales.append(controlnet_config.get('conditioning_scale', 1.0))
         self.preprocessors.append(preprocessor)
@@ -112,7 +204,7 @@ class BaseControlNetPipeline:
             self._patch_stream_diffusion()
         
         return len(self.controlnets) - 1
-    
+
     def remove_controlnet(self, index: int) -> None:
         """Remove a ControlNet by index"""
         if 0 <= index < len(self.controlnets):
@@ -166,6 +258,7 @@ class BaseControlNetPipeline:
             )
         # Multi-ControlNet case - use pipelined or sync based on configuration  
         elif self.use_pipelined_processing:
+            st = time.time()
             processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
                 control_image=control_image,
                 preprocessors=self.preprocessors,
@@ -173,6 +266,7 @@ class BaseControlNetPipeline:
                 stream_width=self.stream.width,
                 stream_height=self.stream.height
             )
+            print(f"Preprocessing time: {time.time() - st}")
         else:
             processed_images = self._preprocessing_orchestrator.process_control_images_sync(
                 control_image=control_image,
@@ -204,70 +298,6 @@ class BaseControlNetPipeline:
         else:
             raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
 
-    def _load_controlnet_model(self, model_id: str):
-        """Load a ControlNet model with TensorRT acceleration support"""
-        # First load the PyTorch model as fallback
-        pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
-        
-        # Check if TensorRT engine pool is available
-        if hasattr(self.stream, 'controlnet_engine_pool'):
-            model_type = self._detected_model_type
-            
-            print(f"Loading ControlNet {model_id} with TensorRT acceleration support")
-            print(f"  Model type: {model_type}")
-            
-            # Debug: Check what batch size we're getting
-            detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)
-            return self.stream.controlnet_engine_pool.get_or_load_engine(
-                model_id=model_id,
-                pytorch_model=pytorch_controlnet,
-                model_type=model_type,
-                batch_size=detected_batch_size
-            )
-        else:
-            # Fallback to PyTorch only
-            print(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
-            return pytorch_controlnet
-    
-    def _load_pytorch_controlnet_model(self, model_id: str):
-        """Load a ControlNet model from HuggingFace or local path"""
-        try:
-            # Check if it's a local path
-            if Path(model_id).exists():
-                controlnet = ControlNetModel.from_pretrained(
-                    model_id,
-                    torch_dtype=self.dtype,
-                    local_files_only=True
-                )
-            else:
-                # Try as HuggingFace model ID
-                if "/" in model_id and model_id.count("/") > 1:
-                    # Handle subfolder case (e.g., "repo/model/subfolder")
-                    parts = model_id.split("/")
-                    repo_id = "/".join(parts[:2])
-                    subfolder = "/".join(parts[2:])
-                    controlnet = ControlNetModel.from_pretrained(
-                        repo_id,
-                        subfolder=subfolder,
-                        torch_dtype=self.dtype
-                    )
-                else:
-                    controlnet = ControlNetModel.from_pretrained(
-                        model_id,
-                        torch_dtype=self.dtype
-                    )
-            
-            # Move to device
-            controlnet = controlnet.to(device=self.device, dtype=self.dtype)
-            return controlnet
-            
-        except Exception as e:
-            raise ValueError(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
-    
-
-    
-
-    
     def _prepare_control_image(self, 
                               control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
                               preprocessor: Optional[Any] = None) -> torch.Tensor:
@@ -369,9 +399,9 @@ class BaseControlNetPipeline:
         
         # Pre-compute base controlnet_kwargs once
         base_kwargs = {
-            'sample': x_t_latent,
-            'timestep': timestep,
-            'encoder_hidden_states': encoder_hidden_states,
+            'sample': x_t_latent.cuda(),
+            'timestep': timestep.cuda(),
+            'encoder_hidden_states': encoder_hidden_states.cuda(),
             'return_dict': False,
         }
         base_kwargs.update(self._get_additional_controlnet_kwargs(**kwargs))
@@ -380,15 +410,15 @@ class BaseControlNetPipeline:
         down_samples_list = []
         mid_samples_list = []
         
+        st = time.time()
         for i in active_indices:
-            controlnet = self.controlnets[i]
+            in_queue = self.controlnets[i]["in_queue"]
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
             
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
-            if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
-                control_image.shape[0] != main_batch_size):
+            if (control_image.shape[0] != main_batch_size):
                 # Only expand if needed for TensorRT and batch sizes don't match
                 if control_image.dim() == 4:
                     current_control_image = control_image.repeat(main_batch_size // control_image.shape[0], 1, 1, 1)
@@ -397,17 +427,22 @@ class BaseControlNetPipeline:
             
             # Optimized kwargs - reuse base dict and only update specific values
             controlnet_kwargs = base_kwargs
-            controlnet_kwargs['controlnet_cond'] = current_control_image
+            controlnet_kwargs['controlnet_cond'] = current_control_image.cuda()
             controlnet_kwargs['conditioning_scale'] = scale
             
             # Forward pass through ControlNet
             try:
-                down_samples, mid_sample = controlnet(**controlnet_kwargs)
-                down_samples_list.append(down_samples)
-                mid_samples_list.append(mid_sample)
+                in_queue.put(controlnet_kwargs)
             except Exception as e:
                 print(f"_get_controlnet_conditioning: ControlNet {i} failed: {e}")
                 continue
+        
+        for i in active_indices:
+            out_queue = self.controlnets[i]["out_queue"]
+            down_samples, mid_sample = out_queue.get()
+            down_samples_list.append(down_samples)
+            mid_samples_list.append(mid_sample)
+        print(f"ControlNet time: {time.time() - st}")
         
         # Early exit if no outputs
         if not down_samples_list:
@@ -466,10 +501,14 @@ class BaseControlNetPipeline:
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
             # Get ControlNet conditioning
+            st = time.time()
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds, **conditioning_context
             )
-            
+            print(f"ControlNet time: {time.time() - st}")
+            st = time.time()
+
+            st = time.time()
             # Call TensorRT engine with ControlNet inputs
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
@@ -478,9 +517,12 @@ class BaseControlNetPipeline:
                 down_block_additional_residuals=down_block_res_samples,
                 mid_block_additional_residual=mid_block_res_sample,
             ).sample
-            
+            print(f"UNet time: {time.time() - st}")
             # Use shared CFG processing
-            return self._process_cfg_and_predict(model_pred, x_t_latent, idx)
+            st = time.time()
+            x =  self._process_cfg_and_predict(model_pred, x_t_latent, idx)
+            print(f"CFG time: {time.time() - st}")
+            return x
         
         # Replace the method
         self.stream.unet_step = patched_unet_step_tensorrt
