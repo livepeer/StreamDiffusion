@@ -156,8 +156,12 @@
                     alt="Style image from config" 
                     class="w-full max-w-32 h-32 object-cover rounded border border-gray-200 dark:border-gray-600"
                   />
-                  <!-- Fallback if image doesn't load will be handled by browser -->
-                  <p class="text-xs text-gray-500 mt-1">From config: {ipadapterInfo.style_image_path}</p>
+                  <!-- Show different text for uploaded vs config style images -->
+                  <p class="text-xs text-gray-500 mt-1">
+                    {ipadapterInfo.style_image_path.includes('/api/ipadapter/uploaded-style-image') 
+                      ? 'Uploaded style image' 
+                      : `From config: ${ipadapterInfo.style_image_path}`}
+                  </p>
                 </div>
               {/if}
               

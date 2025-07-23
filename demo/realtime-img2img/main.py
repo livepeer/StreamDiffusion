@@ -45,6 +45,8 @@ class App:
         # Store current resolution for pipeline recreation
         self.new_width = 512
         self.new_height = 512
+        # Store uploaded style image persistently
+        self.uploaded_style_image = None
         self.init_app()
 
     def init_app(self):
@@ -357,6 +359,10 @@ class App:
                 self.uploaded_controlnet_config = config_data
                 self.config_needs_reload = True  # Mark that pipeline needs recreation
                 
+                # Log IPAdapter configuration for debugging
+                if 'ipadapters' in config_data:
+                    print(f"upload_controlnet_config: Found IPAdapter configuration: {config_data['ipadapters']}")
+                
                 # Get config prompt if available
                 config_prompt = config_data.get('prompt', None)
                 
@@ -413,11 +419,16 @@ class App:
                 if aspect_ratio:
                     current_resolution += f" ({aspect_ratio})"
                 
+                # Get updated IPAdapter info for response
+                response_ipadapter_info = self._get_ipadapter_info()
+                print(f"upload_controlnet_config: Returning IPAdapter info to frontend: {response_ipadapter_info}")
+                
                 return JSONResponse({
                     "status": "success",
                     "message": "ControlNet configuration uploaded successfully",
                     "controls_updated": True,  # Flag for frontend to update controls
                     "controlnet": self._get_controlnet_info(),
+                    "ipadapter": response_ipadapter_info,  # Include updated IPAdapter info
                     "config_prompt": config_prompt,
                     "t_index_list": t_index_list,
                     "acceleration": config_acceleration,
@@ -557,12 +568,24 @@ class App:
                     from PIL import Image
                     style_image = Image.open(tmp_path).convert("RGB")
                     
+                    # Store the uploaded style image persistently FIRST
+                    self.uploaded_style_image = style_image
+                    print(f"upload_style_image: Stored style image with size: {style_image.size}")
+                    
                     # If pipeline exists and has IPAdapter, update it immediately
                     pipeline_updated = False
                     if self.pipeline and getattr(self.pipeline, 'has_ipadapter', False):
+                        print("upload_style_image: Applying to existing pipeline")
                         success = self.pipeline.update_ipadapter_style_image(style_image)
                         if success:
                             pipeline_updated = True
+                            print("upload_style_image: Successfully applied to existing pipeline")
+                        else:
+                            print("upload_style_image: Failed to apply to existing pipeline")
+                    elif self.pipeline:
+                        print(f"upload_style_image: Pipeline exists but has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
+                    else:
+                        print("upload_style_image: No pipeline exists yet")
                     
                     # Return success
                     message = "Style image uploaded successfully"
@@ -587,6 +610,28 @@ class App:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to upload style image: {str(e)}")
+
+        @self.app.get("/api/ipadapter/uploaded-style-image")
+        async def get_uploaded_style_image():
+            """Get the currently uploaded style image"""
+            try:
+                if not self.uploaded_style_image:
+                    raise HTTPException(status_code=404, detail="No style image uploaded")
+                
+                # Convert PIL image to bytes for streaming
+                import io
+                img_buffer = io.BytesIO()
+                self.uploaded_style_image.save(img_buffer, format='JPEG', quality=95)
+                img_buffer.seek(0)
+                
+                return StreamingResponse(
+                    io.BytesIO(img_buffer.read()),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=3600"}
+                )
+                
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to retrieve style image: {str(e)}")
 
         @self.app.post("/api/ipadapter/update-scale")
         async def update_ipadapter_scale(request: Request):
@@ -1396,6 +1441,15 @@ class App:
             default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
             new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
         
+        # Apply uploaded style image if available and pipeline has IPAdapter
+        if self.uploaded_style_image and getattr(new_pipeline, 'has_ipadapter', False):
+            print("_create_pipeline_with_config: Applying stored style image to new pipeline")
+            success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
+            if success:
+                print("_create_pipeline_with_config: Style image applied successfully")
+            else:
+                print("_create_pipeline_with_config: Failed to apply style image")
+        
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
             try:
@@ -1462,8 +1516,11 @@ class App:
                 ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
-                # Check for style image
-                if 'style_image' in first_ipadapter:
+                # Check for style image - prioritize uploaded style image over config style image
+                if self.uploaded_style_image:
+                    ipadapter_info["style_image_set"] = True
+                    ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
+                elif 'style_image' in first_ipadapter:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = first_ipadapter['style_image']
                     
@@ -1478,8 +1535,11 @@ class App:
                 ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
-                # Check for style image
-                if 'style_image' in first_ipadapter:
+                # Check for style image - prioritize uploaded style image over config style image
+                if self.uploaded_style_image:
+                    ipadapter_info["style_image_set"] = True
+                    ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
+                elif 'style_image' in first_ipadapter:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = first_ipadapter['style_image']
                     
@@ -1524,6 +1584,15 @@ class App:
             new_pipeline = self._create_pipeline_with_config()
         else:
             new_pipeline = self._create_default_pipeline()
+        
+        # Apply uploaded style image if available and pipeline has IPAdapter
+        if self.uploaded_style_image and getattr(new_pipeline, 'has_ipadapter', False):
+            print("_update_resolution: Applying stored style image to new pipeline")
+            success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
+            if success:
+                print("_update_resolution: Style image applied successfully")
+            else:
+                print("_update_resolution: Failed to apply style image")
         
         # Replace old pipeline
         old_pipeline = self.pipeline
