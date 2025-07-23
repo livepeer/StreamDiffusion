@@ -529,8 +529,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
                 if not isinstance(seed_value, int) or seed_value < 0:
                     raise ValueError(f"_validate_config: Seed value {i} must be a non-negative integer")
                 
-                if not isinstance(weight, (int, float)) or weight < 0:
-                    raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
+            if not isinstance(weight, (int, float)) or weight < 0:
+                raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
         
         interpolation_method = seed_blend_config.get('interpolation_method', 'linear')
         if interpolation_method not in ['linear', 'slerp']:
@@ -551,79 +551,3 @@ def _validate_config(config: Dict[str, Any]) -> None:
         enable_pytorch_fallback = config['enable_pytorch_fallback']
         if not isinstance(enable_pytorch_fallback, bool):
             raise ValueError("_validate_config: 'enable_pytorch_fallback' must be a boolean value")
-
-
-# For backwards compatibility, provide simple functions that match expected usage patterns
-def get_controlnet_config(config_dict: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
-    """
-    Get a specific ControlNet configuration by index
-    
-    Args:
-        config_dict: Full configuration dictionary
-        index: Index of the ControlNet to get
-        
-    Returns:
-        ControlNet configuration dictionary
-    """
-    if 'controlnets' not in config_dict or index >= len(config_dict['controlnets']):
-        raise IndexError(f"get_controlnet_config: ControlNet index {index} out of range")
-    
-    return config_dict['controlnets'][index]
-
-
-def get_pipeline_type(config_dict: Dict[str, Any]) -> str:
-    """
-    Get pipeline type from configuration, with fallback to SD 1.5
-    
-    Args:
-        config_dict: Configuration dictionary
-        
-    Returns:
-        Pipeline type string
-    """
-    return config_dict.get('pipeline_type', 'sd1.5')
-
-
-def get_ipadapter_config(config_dict: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
-    """
-    Get a specific IPAdapter configuration by index
-    
-    Args:
-        config_dict: Full configuration dictionary
-        index: Index of the IPAdapter to get
-        
-    Returns:
-        IPAdapter configuration dictionary
-    """
-    if 'ipadapters' not in config_dict or index >= len(config_dict['ipadapters']):
-        raise IndexError(f"get_ipadapter_config: IPAdapter index {index} out of range")
-    
-    return config_dict['ipadapters'][index]
-
-
-def load_ipadapter_config(config_path: Union[str, Path]) -> Dict[str, Any]:
-    """
-    Load IPAdapter configuration from YAML or JSON file
-    
-    Alias for load_config() for consistency with ControlNet naming
-    
-    Args:
-        config_path: Path to configuration file
-        
-    Returns:
-        Configuration dictionary
-    """
-    return load_config(config_path)
-
-
-def save_ipadapter_config(config: Dict[str, Any], config_path: Union[str, Path]) -> None:
-    """
-    Save IPAdapter configuration to YAML or JSON file
-    
-    Alias for save_config() for consistency with ControlNet naming
-    
-    Args:
-        config: Configuration dictionary to save
-        config_path: Path where to save the configuration
-    """
-    save_config(config, config_path)
