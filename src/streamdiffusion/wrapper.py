@@ -901,281 +901,211 @@ class StreamDiffusionWrapper:
             if acceleration == "xformers":
                 stream.pipe.enable_xformers_memory_efficient_attention()
             if acceleration == "tensorrt":
-                # Try modern TensorRT first (recommended)
+                from polygraphy import cuda
+                from streamdiffusion.acceleration.tensorrt import (
+                    TorchVAEEncoder,
+                    compile_unet,
+                    compile_vae_decoder,
+                    compile_vae_encoder,
+                )
+                from streamdiffusion.acceleration.tensorrt.engine import (
+                    AutoencoderKLEngine,
+                    UNet2DConditionModelEngine,
+                )
+                from streamdiffusion.acceleration.tensorrt.models import (
+                    VAE,
+                    UNet,
+                    VAEEncoder,
+                )
+                # Add ControlNet detection and support
+                from streamdiffusion.acceleration.tensorrt.model_detection import (
+                    extract_unet_architecture,
+                    validate_architecture
+                )
+                from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_wrapper
+
+                # Legacy TensorRT implementation (fallback)
+                def create_prefix(
+                    model_id_or_path: str,
+                    max_batch: int,
+                    min_batch_size: int,
+                    width: int,
+                    height: int,
+                ):
+                    maybe_path = Path(model_id_or_path)
+                    # Use dynamic engine naming to distinguish from static engines
+                    dynamic_suffix = "dyn-384-1024"
+                    if maybe_path.exists():
+                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
+                    else:
+                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
+
+                # Enhanced SDXL and ControlNet TensorRT support
+                use_controlnet_trt = False
+                unet_arch = {}
+                is_sdxl_model = False
+                
                 try:
-                    from streamdiffusion.acceleration.tensorrt.nvidia_runtime import StreamDiffusionTensorRTAccelerator
+                    # Use improved SDXL detection and model analysis
+                    from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
                     
-                    print("🚀 Using modern TensorRT acceleration...")
+                    # Get comprehensive SDXL configuration
+                    sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
+                    is_sdxl_model = sdxl_config['is_sdxl']
                     
-                    # Use modern TensorRT acceleration
-                    stream = StreamDiffusionTensorRTAccelerator.accelerate(
-                        stream=stream,
-                        model_path=model_id_or_path,
-                        engine_dir=str(engine_dir) if engine_dir else "./engines",
-                        max_batch_size=stream.trt_unet_batch_size,
-                        use_fp16=True,
-                        use_fp8=False,  # Enable for RTX 4090/H100+
-                        force_rebuild=not build_engines_if_missing
-                    )
+                    # Standard model detection for TensorRT
+                    model_type = detect_model_from_diffusers_unet(stream.unet)
                     
-                    print("✅ Modern TensorRT acceleration complete!")
+                    if is_sdxl_model:
+                        print(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
+                        print(f"   Turbo variant: {sdxl_config['is_turbo']}")
+                        print(f"   Conditioning spec: {sdxl_config['conditioning_spec']}")
+                    else:
+                        print(f"🎯 Building TensorRT engines for {model_type}")
                     
+                    # Only enable ControlNet for legacy TensorRT if ControlNet is actually being used
+                    if self.use_controlnet:
+                        # Temporary: Disable ControlNet TensorRT for SDXL models due to architectural differences
+                        if model_type == "SDXL":
+                            use_controlnet_trt = False
+                            print(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models")
+                            print(f"   ControlNet will run in PyTorch mode for better stability")
+                        else:
+                            try:
+                                unet_arch = extract_unet_architecture(stream.unet)
+                                unet_arch = validate_architecture(unet_arch, model_type)
+                                use_controlnet_trt = True
+                                print(f"   Including ControlNet support for {model_type}")
+                            except Exception as e:
+                                print(f"   ControlNet architecture detection failed: {e}")
+                                use_controlnet_trt = False
+                        
                 except Exception as e:
-                    print(f"⚠️ Modern TensorRT failed: {e}")
-                    print("🔄 Falling back to legacy TensorRT implementation...")
+                    print(f"⚠️ Advanced model detection failed: {e}")
+                    print("   Falling back to basic TensorRT")
                     
-                    # Fallback to legacy TensorRT implementation
-                    from polygraphy import cuda
-                    from streamdiffusion.acceleration.tensorrt import (
-                        TorchVAEEncoder,
-                        compile_unet,
-                        compile_vae_decoder,
-                        compile_vae_encoder,
-                    )
-                    from streamdiffusion.acceleration.tensorrt.engine import (
-                        AutoencoderKLEngine,
-                        UNet2DConditionModelEngine,
-                    )
-                    from streamdiffusion.acceleration.tensorrt.models import (
-                        VAE,
-                        UNet,
-                        VAEEncoder,
-                    )
-                    # Add ControlNet detection and support
-                    from streamdiffusion.acceleration.tensorrt.model_detection import (
-                        extract_unet_architecture,
-                        validate_architecture
-                    )
-                    from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_wrapper
-
-                    # Legacy TensorRT implementation (fallback)
-                    def create_prefix(
-                        model_id_or_path: str,
-                        max_batch: int,
-                        min_batch_size: int,
-                        width: int,
-                        height: int,
-                    ):
-                        maybe_path = Path(model_id_or_path)
-                        # Use dynamic engine naming to distinguish from static engines
-                        dynamic_suffix = "dyn-384-1024"
-                        if maybe_path.exists():
-                            return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
-                        else:
-                            return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
-
-                    # Enhanced SDXL and ControlNet TensorRT support
-                    use_controlnet_trt = False
-                    unet_arch = {}
-                    is_sdxl_model = False
-                    
+                    # Fallback to basic detection
                     try:
-                        # Use improved SDXL detection and model analysis
-                        from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
-                        
-                        # Get comprehensive SDXL configuration
-                        sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
-                        is_sdxl_model = sdxl_config['is_sdxl']
-                        
-                        # Standard model detection for TensorRT
                         model_type = detect_model_from_diffusers_unet(stream.unet)
-                        
-                        if is_sdxl_model:
-                            print(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
-                            print(f"   Turbo variant: {sdxl_config['is_turbo']}")
-                            print(f"   Conditioning spec: {sdxl_config['conditioning_spec']}")
-                        else:
-                            print(f"🎯 Building TensorRT engines for {model_type}")
-                        
-                        # Only enable ControlNet for legacy TensorRT if ControlNet is actually being used
                         if self.use_controlnet:
-                            # Temporary: Disable ControlNet TensorRT for SDXL models due to architectural differences
+                            # Temporary: Disable ControlNet TensorRT for SDXL models
                             if model_type == "SDXL":
                                 use_controlnet_trt = False
-                                print(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models")
-                                print(f"   ControlNet will run in PyTorch mode for better stability")
+                                print(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models (fallback)")
                             else:
-                                try:
-                                    unet_arch = extract_unet_architecture(stream.unet)
-                                    unet_arch = validate_architecture(unet_arch, model_type)
-                                    use_controlnet_trt = True
-                                    print(f"   Including ControlNet support for {model_type}")
-                                except Exception as e:
-                                    print(f"   ControlNet architecture detection failed: {e}")
-                                    use_controlnet_trt = False
-                            
-                    except Exception as e:
-                        print(f"⚠️ Advanced model detection failed: {e}")
-                        print("   Falling back to basic TensorRT")
-                        
-                        # Fallback to basic detection
-                        try:
-                            model_type = detect_model_from_diffusers_unet(stream.unet)
-                            if self.use_controlnet:
-                                # Temporary: Disable ControlNet TensorRT for SDXL models
-                                if model_type == "SDXL":
-                                    use_controlnet_trt = False
-                                    print(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models (fallback)")
-                                else:
-                                    unet_arch = extract_unet_architecture(stream.unet)
-                                    unet_arch = validate_architecture(unet_arch, model_type)
-                                    use_controlnet_trt = True
-                        except Exception:
-                            pass
-                    
-                    if not use_controlnet_trt and not self.use_controlnet:
-                        print("ControlNet not enabled, building engines without ControlNet support")
+                                unet_arch = extract_unet_architecture(stream.unet)
+                                unet_arch = validate_architecture(unet_arch, model_type)
+                                use_controlnet_trt = True
+                    except Exception:
+                        pass
+                
+                if not use_controlnet_trt and not self.use_controlnet:
+                    print("ControlNet not enabled, building engines without ControlNet support")
 
-                    # Use the engine_dir parameter passed to this function, with fallback to instance variable
-                    engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
-                    unet_path = os.path.join(
-                        engine_dir,
-                        create_prefix(
-                            model_id_or_path=model_id_or_path,
-                            max_batch=stream.trt_unet_batch_size,
-                            min_batch_size=stream.trt_unet_batch_size,
-                            width=self.width,
-                            height=self.height,
-                        ),
-                        "unet.engine",
+                # Use the engine_dir parameter passed to this function, with fallback to instance variable
+                engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
+                unet_path = os.path.join(
+                    engine_dir,
+                    create_prefix(
+                        model_id_or_path=model_id_or_path,
+                        max_batch=stream.trt_unet_batch_size,
+                        min_batch_size=stream.trt_unet_batch_size,
+                        width=self.width,
+                        height=self.height,
+                    ),
+                    "unet.engine",
+                )
+                vae_encoder_path = os.path.join(
+                    engine_dir,
+                    create_prefix(
+                        model_id_or_path=model_id_or_path,
+                        max_batch=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        min_batch_size=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        width=self.width,
+                        height=self.height,
+                    ),
+                    "vae_encoder.engine",
+                )
+                vae_decoder_path = os.path.join(
+                    engine_dir,
+                    create_prefix(
+                        model_id_or_path=model_id_or_path,
+                        max_batch=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        min_batch_size=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        width=self.width,
+                        height=self.height,
+                    ),
+                    "vae_decoder.engine",
+                )
+
+                # Check if all required engines exist
+                missing_engines = []
+                if not os.path.exists(unet_path):
+                    missing_engines.append(f"UNet engine: {unet_path}")
+                if not os.path.exists(vae_decoder_path):
+                    missing_engines.append(f"VAE decoder engine: {vae_decoder_path}")
+                if not os.path.exists(vae_encoder_path):
+                    missing_engines.append(f"VAE encoder engine: {vae_encoder_path}")
+
+                if missing_engines:
+                    if build_engines_if_missing:
+                        print(f"Missing TensorRT engines, building them...")
+                        for engine in missing_engines:
+                            print(f"  - {engine}")
+                    else:
+                        error_msg = f"Required TensorRT engines are missing and build_engines_if_missing=False:\n"
+                        for engine in missing_engines:
+                            error_msg += f"  - {engine}\n"
+                        error_msg += f"\nTo build engines, set build_engines_if_missing=True or run the build script manually."
+                        raise RuntimeError(error_msg)
+
+                if not os.path.exists(unet_path):
+                    os.makedirs(os.path.dirname(unet_path), exist_ok=True)
+
+                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
+
+                    # Determine correct embedding dimension based on model type
+                    if model_type == "SDXL":
+                        # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
+                        embedding_dim = 2048
+                        print(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
+                    else:
+                        # SD1.5, SD2.1, etc. use single text encoder
+                        embedding_dim = stream.text_encoder.config.hidden_size
+                        print(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
+
+                    unet_model = UNet(
+                        fp16=True,
+                        device=stream.device,
+                        max_batch=stream.trt_unet_batch_size,
+                        min_batch_size=stream.trt_unet_batch_size,
+                        embedding_dim=embedding_dim,
+                        unet_dim=stream.unet.config.in_channels,
+                        use_control=use_controlnet_trt,
+                        unet_arch=unet_arch if use_controlnet_trt else None,
+                        image_height=self.height,
+                        image_width=self.width,
                     )
-                    vae_encoder_path = os.path.join(
-                        engine_dir,
-                        create_prefix(
-                            model_id_or_path=model_id_or_path,
-                            max_batch=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                            min_batch_size=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                            width=self.width,
-                            height=self.height,
-                        ),
-                        "vae_encoder.engine",
-                    )
-                    vae_decoder_path = os.path.join(
-                        engine_dir,
-                        create_prefix(
-                            model_id_or_path=model_id_or_path,
-                            max_batch=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                            min_batch_size=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                            width=self.width,
-                            height=self.height,
-                        ),
-                        "vae_decoder.engine",
-                    )
 
-                    # Check if all required engines exist
-                    missing_engines = []
-                    if not os.path.exists(unet_path):
-                        missing_engines.append(f"UNet engine: {unet_path}")
-                    if not os.path.exists(vae_decoder_path):
-                        missing_engines.append(f"VAE decoder engine: {vae_decoder_path}")
-                    if not os.path.exists(vae_encoder_path):
-                        missing_engines.append(f"VAE encoder engine: {vae_encoder_path}")
-
-                    if missing_engines:
-                        if build_engines_if_missing:
-                            print(f"Missing TensorRT engines, building them...")
-                            for engine in missing_engines:
-                                print(f"  - {engine}")
-                        else:
-                            error_msg = f"Required TensorRT engines are missing and build_engines_if_missing=False:\n"
-                            for engine in missing_engines:
-                                error_msg += f"  - {engine}\n"
-                            error_msg += f"\nTo build engines, set build_engines_if_missing=True or run the build script manually."
-                            raise RuntimeError(error_msg)
-
-                    if not os.path.exists(unet_path):
-                        os.makedirs(os.path.dirname(unet_path), exist_ok=True)
-
-                        print(f"Creating UNet model for image size: {self.width}x{self.height}")
-
-                        # Determine correct embedding dimension based on model type
-                        if model_type == "SDXL":
-                            # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
-                            embedding_dim = 2048
-                            print(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
-                        else:
-                            # SD1.5, SD2.1, etc. use single text encoder
-                            embedding_dim = stream.text_encoder.config.hidden_size
-                            print(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
-
-                        unet_model = UNet(
-                            fp16=True,
-                            device=stream.device,
-                            max_batch=stream.trt_unet_batch_size,
-                            min_batch_size=stream.trt_unet_batch_size,
-                            embedding_dim=embedding_dim,
-                            unet_dim=stream.unet.config.in_channels,
-                            use_control=use_controlnet_trt,
-                            unet_arch=unet_arch if use_controlnet_trt else None,
-                            image_height=self.height,
-                            image_width=self.width,
-                        )
-
-                        # Use ControlNet wrapper if ControlNet support is enabled
-                        if use_controlnet_trt:
-                            control_input_names = unet_model.get_input_names()
-                            wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
-                            compile_unet(
-                                wrapped_unet,
-                                unet_model,
-                                unet_path + ".onnx",
-                                unet_path + ".opt.onnx",
-                                unet_path,
-                                opt_batch_size=stream.trt_unet_batch_size,
-                                engine_build_options={
-                                    'opt_image_height': self.height,
-                                    'opt_image_width': self.width,
-                                    'build_dynamic_shape': True,  # Force dynamic shapes
-                                    'min_image_resolution': 384,
-                                    'max_image_resolution': 1024,
-                                },
-                            )
-                        else:
-                            compile_unet(
-                                stream.unet,
-                                unet_model,
-                                unet_path + ".onnx",
-                                unet_path + ".opt.onnx",
-                                unet_path,
-                                opt_batch_size=stream.trt_unet_batch_size,
-                                engine_build_options={
-                                    'opt_image_height': self.height,
-                                    'opt_image_width': self.width,
-                                    'build_dynamic_shape': True,  # Force dynamic shapes
-                                    'min_image_resolution': 384,
-                                    'max_image_resolution': 1024,
-                                },
-                            )
-
-                    if not os.path.exists(vae_decoder_path):
-                        os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
-                        stream.vae.forward = stream.vae.decode
-                        vae_decoder_model = VAE(
-                            device=stream.device,
-                            max_batch=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                            min_batch_size=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                        )
-                        compile_vae_decoder(
-                            stream.vae,
-                            vae_decoder_model,
-                            vae_decoder_path + ".onnx",
-                            vae_decoder_path + ".opt.onnx",
-                            vae_decoder_path,
-                            opt_batch_size=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
+                    # Use ControlNet wrapper if ControlNet support is enabled
+                    if use_controlnet_trt:
+                        control_input_names = unet_model.get_input_names()
+                        wrapped_unet = create_controlnet_wrapper(stream.unet, control_input_names)
+                        compile_unet(
+                            wrapped_unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
                             engine_build_options={
                                 'opt_image_height': self.height,
                                 'opt_image_width': self.width,
@@ -1184,29 +1114,14 @@ class StreamDiffusionWrapper:
                                 'max_image_resolution': 1024,
                             },
                         )
-                        delattr(stream.vae, "forward")
-
-                    if not os.path.exists(vae_encoder_path):
-                        os.makedirs(os.path.dirname(vae_encoder_path), exist_ok=True)
-                        vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
-                        vae_encoder_model = VAEEncoder(
-                            device=stream.device,
-                            max_batch=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                            min_batch_size=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
-                        )
-                        compile_vae_encoder(
-                            vae_encoder,
-                            vae_encoder_model,
-                            vae_encoder_path + ".onnx",
-                            vae_encoder_path + ".opt.onnx",
-                            vae_encoder_path,
-                            opt_batch_size=self.batch_size
-                            if self.mode == "txt2img"
-                            else stream.frame_bff_size,
+                    else:
+                        compile_unet(
+                            stream.unet,
+                            unet_model,
+                            unet_path + ".onnx",
+                            unet_path + ".opt.onnx",
+                            unet_path,
+                            opt_batch_size=stream.trt_unet_batch_size,
                             engine_build_options={
                                 'opt_image_height': self.height,
                                 'opt_image_width': self.width,
@@ -1216,36 +1131,97 @@ class StreamDiffusionWrapper:
                             },
                         )
 
-                    cuda_stream = cuda.Stream()
-
-                    vae_config = stream.vae.config
-                    vae_dtype = stream.vae.dtype
-
-                    stream.unet = UNet2DConditionModelEngine(
-                        unet_path, cuda_stream, use_cuda_graph=False
+                if not os.path.exists(vae_decoder_path):
+                    os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
+                    stream.vae.forward = stream.vae.decode
+                    vae_decoder_model = VAE(
+                        device=stream.device,
+                        max_batch=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        min_batch_size=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
                     )
-
-                    # Always set ControlNet support to True for universal TensorRT engines
-                    # This allows the engine to accept dummy inputs when no ControlNets are used
-                    stream.unet.use_control = True
-                    if use_controlnet_trt and unet_arch:
-                        stream.unet.unet_arch = unet_arch
-                        stream.unet.unet_arch = unet_arch
-
-                    stream.vae = AutoencoderKLEngine(
-                        vae_encoder_path,
+                    compile_vae_decoder(
+                        stream.vae,
+                        vae_decoder_model,
+                        vae_decoder_path + ".onnx",
+                        vae_decoder_path + ".opt.onnx",
                         vae_decoder_path,
-                        cuda_stream,
-                        stream.pipe.vae_scale_factor,
-                        use_cuda_graph=False,
+                        opt_batch_size=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        engine_build_options={
+                            'opt_image_height': self.height,
+                            'opt_image_width': self.width,
+                            'build_dynamic_shape': True,  # Force dynamic shapes
+                            'min_image_resolution': 384,
+                            'max_image_resolution': 1024,
+                        },
                     )
-                    stream.vae.config = vae_config
-                    stream.vae.dtype = vae_dtype
-                    stream.vae.config = vae_config
-                    stream.vae.dtype = vae_dtype
+                    delattr(stream.vae, "forward")
 
-                    gc.collect()
-                    torch.cuda.empty_cache()
+                if not os.path.exists(vae_encoder_path):
+                    os.makedirs(os.path.dirname(vae_encoder_path), exist_ok=True)
+                    vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
+                    vae_encoder_model = VAEEncoder(
+                        device=stream.device,
+                        max_batch=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        min_batch_size=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                    )
+                    compile_vae_encoder(
+                        vae_encoder,
+                        vae_encoder_model,
+                        vae_encoder_path + ".onnx",
+                        vae_encoder_path + ".opt.onnx",
+                        vae_encoder_path,
+                        opt_batch_size=self.batch_size
+                        if self.mode == "txt2img"
+                        else stream.frame_bff_size,
+                        engine_build_options={
+                            'opt_image_height': self.height,
+                            'opt_image_width': self.width,
+                            'build_dynamic_shape': True,  # Force dynamic shapes
+                            'min_image_resolution': 384,
+                            'max_image_resolution': 1024,
+                        },
+                    )
+
+                cuda_stream = cuda.Stream()
+
+                vae_config = stream.vae.config
+                vae_dtype = stream.vae.dtype
+
+                stream.unet = UNet2DConditionModelEngine(
+                    unet_path, cuda_stream, use_cuda_graph=False
+                )
+
+                # Always set ControlNet support to True for universal TensorRT engines
+                # This allows the engine to accept dummy inputs when no ControlNets are used
+                stream.unet.use_control = True
+                if use_controlnet_trt and unet_arch:
+                    stream.unet.unet_arch = unet_arch
+                    stream.unet.unet_arch = unet_arch
+
+                stream.vae = AutoencoderKLEngine(
+                    vae_encoder_path,
+                    vae_decoder_path,
+                    cuda_stream,
+                    stream.pipe.vae_scale_factor,
+                    use_cuda_graph=False,
+                )
+                stream.vae.config = vae_config
+                stream.vae.dtype = vae_dtype
+                stream.vae.config = vae_config
+                stream.vae.dtype = vae_dtype
+
+                gc.collect()
+                torch.cuda.empty_cache()
 
             if acceleration == "sfast":
                 from streamdiffusion.acceleration.sfast import (

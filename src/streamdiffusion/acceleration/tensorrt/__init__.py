@@ -1,59 +1,19 @@
-"""
-StreamDiffusion TensorRT Acceleration
-Modern TensorRT acceleration based on NVIDIA's latest optimizations
+import gc
+import os
+import torch
+from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
+    retrieve_latents,
+)
+from polygraphy import cuda
 
-Usage:
-    from streamdiffusion.acceleration.tensorrt import accelerate_with_tensorrt
-    
-    # Simple one-line acceleration
-    accelerated_stream = accelerate_with_tensorrt(
-        stream=stream,
-        model_path="stabilityai/stable-diffusion-xl-base-1.0",
-        engine_dir="./engines"
-    )
-"""
-
-# Modern TensorRT implementation (recommended)
-try:
-    from .nvidia_runtime import StreamDiffusionTensorRTAccelerator
-    from .modern_pipeline import accelerate_streamdiffusion_with_modern_tensorrt
-    
-    # Simple alias for easy import
-    accelerate_with_tensorrt = StreamDiffusionTensorRTAccelerator.accelerate
-    
-    print("✅ Modern TensorRT acceleration available")
-    
-except ImportError as e:
-    print(f"⚠️ Modern TensorRT not available: {e}")
-    StreamDiffusionTensorRTAccelerator = None
-    accelerate_with_tensorrt = None
-
-# Legacy implementation (fallback)
-try:
-    import gc
-    import os
-    import torch
-    from diffusers import AutoencoderKL, UNet2DConditionModel
-    from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
-        retrieve_latents,
-    )
-    from polygraphy import cuda
-
-    from ...pipeline import StreamDiffusion
-    from .builder import EngineBuilder, create_onnx_path
-    from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
-    from .models import VAE, BaseModel, UNet, VAEEncoder
-    from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
-    from .controlnet_wrapper import create_controlnet_wrapper
-    from .engine_pool import ControlNetEnginePool
-    
-    # Legacy function available as fallback
-    LEGACY_TENSORRT_AVAILABLE = True
-    
-except ImportError as e:
-    print(f"⚠️ Legacy TensorRT not available: {e}")
-    LEGACY_TENSORRT_AVAILABLE = False
-
+from ...pipeline import StreamDiffusion
+from .builder import EngineBuilder, create_onnx_path
+from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
+from .models import VAE, BaseModel, UNet, VAEEncoder
+from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
+from .controlnet_wrapper import create_controlnet_wrapper
+from .engine_pool import ControlNetEnginePool
 
 class TorchVAEEncoder(torch.nn.Module):
     def __init__(self, vae: AutoencoderKL):
