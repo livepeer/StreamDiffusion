@@ -54,7 +54,10 @@ class Optimizer:
     def infer_shapes(self, return_onnx=False):
         onnx_graph = gs.export_onnx(self.graph)
         if onnx_graph.ByteSize() > 2147483648:
-            raise TypeError("ERROR: model size exceeds supported 2GB limit")
+            print(f"⚠️ Model size ({onnx_graph.ByteSize() / (1024**3):.2f} GB) exceeds 2GB - this is normal for SDXL models")
+            print("🔧 ONNX shape inference will be skipped for large models to avoid memory issues")
+            # For large models like SDXL, skip shape inference to avoid memory/size issues
+            # The model will still work with TensorRT's own shape inference during engine building
         else:
             onnx_graph = shape_inference.infer_shapes(onnx_graph)
 
@@ -495,6 +498,9 @@ class UNet(BaseModel):
             torch.ones((2 * export_batch_size,), dtype=torch.float32, device=self.device),
             torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
+        
+        print(f"🔧 UNet ONNX export inputs: sample={base_inputs[0].shape}, timestep={base_inputs[1].shape}, encoder_hidden_states={base_inputs[2].shape}")
+        print(f"   embedding_dim={self.embedding_dim}, expected for model type: {'SDXL=2048' if self.embedding_dim >= 2048 else 'SD1.5=768'}")
         
         if self.use_control and self.control_inputs:
             control_inputs = []

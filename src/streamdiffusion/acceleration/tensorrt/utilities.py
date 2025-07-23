@@ -355,8 +355,16 @@ class Engine:
             # Check for NaN/Inf in inputs
             if torch.isnan(buf).any():
                 logger.warning(f"[DEBUG] Engine.infer: *** WARNING: NaN detected in input '{name}'! ***")
+                nan_count = torch.isnan(buf).sum().item()
+                total_elements = buf.numel()
+                logger.warning(f"[DEBUG] Engine.infer: *** NaN count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
             if torch.isinf(buf).any():
                 logger.warning(f"[DEBUG] Engine.infer: *** WARNING: Inf detected in input '{name}'! ***")
+                inf_count = torch.isinf(buf).sum().item()
+                total_elements = buf.numel()
+                logger.warning(f"[DEBUG] Engine.infer: *** Inf count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
+            if (buf == 0).all():
+                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: All values in input '{name}' are zero! ***")
             
             self.tensors[name].copy_(buf)
 
@@ -399,30 +407,32 @@ class Engine:
             else:
                 logger.debug(f"[DEBUG] Engine.infer: TensorRT execution completed successfully")
 
-        # Check outputs for NaN/Inf
+        # Check output tensors
         logger.debug(f"[DEBUG] Engine.infer: Checking output tensors")
+        output_tensors = {}
         for name, tensor in self.tensors.items():
-            mode = self.engine.get_tensor_mode(self.engine.get_tensor_name(
-                next(i for i in range(self.engine.num_io_tensors) 
-                     if self.engine.get_tensor_name(i) == name)
-            ))
-            
-            if mode == trt.TensorIOMode.OUTPUT:
+            if name not in feed_dict:  # This is an output tensor
                 logger.debug(f"[DEBUG] Engine.infer: Output '{name}' - shape: {tensor.shape}, dtype: {tensor.dtype}")
                 logger.debug(f"[DEBUG] Engine.infer: Output '{name}' range: [{tensor.min().item():.6f}, {tensor.max().item():.6f}]")
                 
+                # Check for problematic values in outputs
                 if torch.isnan(tensor).any():
                     nan_count = torch.isnan(tensor).sum().item()
                     total_elements = tensor.numel()
-                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: NaN detected in output '{name}'! Count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
-                    
+                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: NaN detected in output '{name}'! ***")
+                    logger.error(f"[DEBUG] Engine.infer: *** NaN count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
                 if torch.isinf(tensor).any():
                     inf_count = torch.isinf(tensor).sum().item()
                     total_elements = tensor.numel()
-                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: Inf detected in output '{name}'! Count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
-
+                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: Inf detected in output '{name}'! ***")
+                    logger.error(f"[DEBUG] Engine.infer: *** Inf count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
+                if (tensor == 0).all():
+                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: All values in output '{name}' are zero! ***")
+                
+                output_tensors[name] = tensor
+        
         logger.debug(f"[DEBUG] Engine.infer: Inference completed, returning tensors")
-        return self.tensors
+        return output_tensors
 
 
 def decode_images(images: torch.Tensor):
@@ -538,6 +548,143 @@ def build_engine(
     return engine
 
 
+class SDXLUNetWrapper(torch.nn.Module):
+    """Wrapper for SDXL UNet to handle optional conditioning in legacy TensorRT"""
+    
+    def __init__(self, unet):
+        super().__init__()
+        self.unet = unet
+        self.base_unet = self._get_base_unet(unet)
+        self.supports_added_cond = self._test_added_cond_support()
+        
+    def _get_base_unet(self, unet):
+        """Extract the base UNet from wrappers like ControlNetUNetWrapper"""
+        # Handle ControlNet wrapper
+        if hasattr(unet, 'unet_model') and hasattr(unet.unet_model, 'config'):
+            return unet.unet_model
+        elif hasattr(unet, 'unet') and hasattr(unet.unet, 'config'):
+            return unet.unet
+        elif hasattr(unet, 'config'):
+            return unet
+        else:
+            # Fallback: try to find any attribute that has config
+            for attr_name in dir(unet):
+                if not attr_name.startswith('_'):
+                    attr = getattr(unet, attr_name, None)
+                    if hasattr(attr, 'config') and hasattr(attr.config, 'addition_embed_type'):
+                        return attr
+            return unet
+        
+    def _test_added_cond_support(self):
+        """Test if this SDXL model supports added_cond_kwargs"""
+        try:
+            # Create minimal test inputs
+            sample = torch.randn(1, 4, 8, 8, device='cuda', dtype=torch.float16)
+            timestep = torch.tensor([0.5], device='cuda', dtype=torch.float32)
+            encoder_hidden_states = torch.randn(1, 77, 2048, device='cuda', dtype=torch.float16)
+            
+            # Test with added_cond_kwargs
+            test_added_cond = {
+                'text_embeds': torch.randn(1, 1280, device='cuda', dtype=torch.float16),
+                'time_ids': torch.randn(1, 6, device='cuda', dtype=torch.float16)
+            }
+            
+            with torch.no_grad():
+                _ = self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=test_added_cond)
+            
+            print("✅ SDXL model supports added_cond_kwargs")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ SDXL model does not support added_cond_kwargs: {e}")
+            return False
+        
+    def forward(self, *args, **kwargs):
+        """Forward pass that handles SDXL conditioning gracefully"""
+        print(f"[SDXL_WRAPPER] forward: Called with {len(args)} args and {len(kwargs)} kwargs")
+        print(f"[SDXL_WRAPPER] forward: Args shapes: {[arg.shape if hasattr(arg, 'shape') else type(arg) for arg in args]}")
+        print(f"[SDXL_WRAPPER] forward: Kwargs keys: {list(kwargs.keys())}")
+        print(f"[SDXL_WRAPPER] forward: self.supports_added_cond: {self.supports_added_cond}")
+        print(f"[SDXL_WRAPPER] forward: Underlying UNet type: {type(self.unet)}")
+        
+        try:
+            # Ensure added_cond_kwargs is never None to prevent TypeError
+            if 'added_cond_kwargs' in kwargs and kwargs['added_cond_kwargs'] is None:
+                print(f"[SDXL_WRAPPER] forward: Setting added_cond_kwargs from None to empty dict")
+                kwargs['added_cond_kwargs'] = {}
+            
+            # Auto-generate SDXL conditioning if missing and model needs it
+            if (len(args) >= 3 and 'added_cond_kwargs' not in kwargs and 
+                hasattr(self.base_unet.config, 'addition_embed_type') and 
+                self.base_unet.config.addition_embed_type == 'text_time'):
+                
+                sample = args[0]
+                device = sample.device
+                batch_size = sample.shape[0]
+                
+                print("🔧 Auto-generating required SDXL conditioning...")
+                kwargs['added_cond_kwargs'] = {
+                    'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
+                    'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
+                }
+                
+            # If model supports added conditioning and we have the kwargs, use them
+            if self.supports_added_cond and 'added_cond_kwargs' in kwargs:
+                print(f"[SDXL_WRAPPER] forward: Using full SDXL call with added_cond_kwargs")
+                print(f"[SDXL_WRAPPER] forward: About to call self.unet(*args, **kwargs)")
+                print(f"[SDXL_WRAPPER] forward: 🚀 Starting underlying UNet call...")
+                
+                import time
+                start_time = time.time()
+                result = self.unet(*args, **kwargs)
+                elapsed_time = time.time() - start_time
+                
+                print(f"[SDXL_WRAPPER] forward: ✅ Underlying UNet call completed in {elapsed_time:.3f}s")
+                return result
+            elif len(args) >= 3:
+                print(f"[SDXL_WRAPPER] forward: Using basic SDXL call (no added_cond_kwargs)")
+                print(f"[SDXL_WRAPPER] forward: About to call self.unet(args[0], args[1], args[2])")
+                
+                import time
+                start_time = time.time()
+                result = self.unet(args[0], args[1], args[2])
+                elapsed_time = time.time() - start_time
+                
+                print(f"[SDXL_WRAPPER] forward: ✅ Basic UNet call completed in {elapsed_time:.3f}s")
+                return result
+            else:
+                print(f"[SDXL_WRAPPER] forward: Using fallback call")
+                # Fallback
+                return self.unet(*args, **kwargs)
+                
+        except (TypeError, AttributeError) as e:
+            print(f"[SDXL_WRAPPER] forward: Exception caught: {e}")
+            if "NoneType" in str(e) or "iterable" in str(e) or "text_embeds" in str(e):
+                # Handle SDXL-Turbo models that need proper conditioning
+                print(f"🔧 Providing minimal SDXL conditioning due to: {e}")
+                if len(args) >= 3:
+                    sample, timestep, encoder_hidden_states = args[0], args[1], args[2]
+                    device = sample.device
+                    batch_size = sample.shape[0]
+                    
+                    # Create minimal valid SDXL conditioning
+                    minimal_conditioning = {
+                        'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
+                        'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
+                    }
+                    
+                    try:
+                        print(f"[SDXL_WRAPPER] forward: Trying with minimal conditioning...")
+                        return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
+                    except Exception as final_e:
+                        print(f"🔧 Final fallback to basic call: {final_e}")
+                        return self.unet(sample, timestep, encoder_hidden_states)
+                else:
+                    return self.unet(*args)
+            else:
+                raise e
+
+
 def export_onnx(
     model,
     onnx_path: str,
@@ -547,10 +694,46 @@ def export_onnx(
     opt_batch_size: int,
     onnx_opset: int,
 ):
+    # Use our advanced SDXL support for better handling
+    from .sdxl_support import SDXLModelDetector, create_sdxl_tensorrt_wrapper
+    
+    detector = SDXLModelDetector()
+    
+    # Check if this is an SDXL model that might need wrapping
+    is_sdxl_by_data = (hasattr(model_data, 'embedding_dim') and 
+                       model_data.embedding_dim in [2048, 1024])
+    
+    # Check if this is a UNet model that needs SDXL handling
+    is_unet = hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim')
+    
+    wrapped_model = model
+    
+    if is_unet and (is_sdxl_by_data or detector.detect_unet_type(model)['is_sdxl']):
+        print("🔧 Detected SDXL model, using advanced wrapper for robust ONNX export...")
+        
+        # Try to get model path for better detection
+        model_path = getattr(model_data, 'model_path', '') or getattr(model, 'model_path', '')
+        
+        # Use our advanced SDXL wrapper
+        wrapped_model = create_sdxl_tensorrt_wrapper(model, model_path)
+        
+        print(f"   SDXL detection - by data: {is_sdxl_by_data}")
+        print(f"   Model path: {model_path}")
+    
+    # For legacy compatibility, still wrap other potential SDXL models
+    elif is_sdxl_by_data and hasattr(model, 'forward'):
+        print("🔧 Using legacy SDXL wrapper for ONNX export...")
+        wrapped_model = SDXLUNetWrapper(model)
+    
     with torch.inference_mode(), torch.autocast("cuda"):
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
+        
+        # Determine if we need external data format for large models (like SDXL)
+        is_large_model = is_sdxl_by_data or (hasattr(model, 'config') and getattr(model.config, 'sample_size', 32) >= 64)
+        
+        # Export ONNX normally first
         torch.onnx.export(
-            model,
+            wrapped_model,
             inputs,
             onnx_path,
             export_params=True,
@@ -560,7 +743,37 @@ def export_onnx(
             output_names=model_data.get_output_names(),
             dynamic_axes=model_data.get_dynamic_axes(),
         )
-    del model
+        
+        # Convert to external data format for large models (SDXL)
+        if is_large_model:
+            print("🔧 Converting ONNX to external data format for large model (SDXL)...")
+            import os
+            
+            # Load the exported model
+            onnx_model = onnx.load(onnx_path)
+            
+            # Check if model is large enough to need external data
+            if onnx_model.ByteSize() > 2147483648:  # 2GB
+                print(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - converting to external data format")
+                
+                # Create directory for external data
+                onnx_dir = os.path.dirname(onnx_path)
+                
+                # Re-save with external data format
+                onnx.save_model(
+                    onnx_model,
+                    onnx_path,
+                    save_as_external_data=True,
+                    all_tensors_to_one_file=True,
+                    location="weights.pb",
+                    convert_attribute=False,
+                )
+                print(f"✅ Converted to external data format with weights in weights.pb")
+            else:
+                print(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - keeping standard format")
+            
+            del onnx_model
+    del wrapped_model
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -570,8 +783,50 @@ def optimize_onnx(
     onnx_opt_path: str,
     model_data: BaseModel,
 ):
-    onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
-    onnx.save(onnx_opt_graph, onnx_opt_path)
+    import os
+    import shutil
+    
+    # Check if external data files exist (indicating external data format was used)
+    onnx_dir = os.path.dirname(onnx_path)
+    external_data_files = [f for f in os.listdir(onnx_dir) if f.endswith('.pb')]
+    uses_external_data = len(external_data_files) > 0
+    
+    if uses_external_data:
+        print(f"🔧 Optimizing ONNX model with external data format...")
+        print(f"   Found {len(external_data_files)} external data files")
+        
+        # Load model with external data
+        onnx_model = onnx.load(onnx_path, load_external_data=True)
+        onnx_opt_graph = model_data.optimize(onnx_model)
+        
+        # Create output directory
+        opt_dir = os.path.dirname(onnx_opt_path)
+        os.makedirs(opt_dir, exist_ok=True)
+        
+        # Clean up existing files in output directory
+        if os.path.exists(opt_dir):
+            for f in os.listdir(opt_dir):
+                if f.endswith('.pb') or f.endswith('.onnx'):
+                    os.remove(os.path.join(opt_dir, f))
+        
+        # Save optimized model with external data format
+        print(f"🔧 Saving optimized model with external data to: {onnx_opt_path}")
+        onnx.save_model(
+            onnx_opt_graph,
+            onnx_opt_path,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location="weights.pb",
+            convert_attribute=False,
+        )
+        print(f"✅ ONNX optimization complete with external data")
+        
+    else:
+        print(f"🔧 Optimizing ONNX model (standard format)...")
+        # Standard optimization for smaller models
+        onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
+        onnx.save(onnx_opt_graph, onnx_opt_path)
+    
     del onnx_opt_graph
     gc.collect()
     torch.cuda.empty_cache()

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class ControlNetModelEngine:
     """TensorRT-accelerated ControlNet inference engine"""
     
-    def __init__(self, engine_path: str, stream: cuda.Stream, use_cuda_graph: bool = False):
+    def __init__(self, engine_path: str, stream: 'cuda.Stream', use_cuda_graph: bool = False):
         """Initialize ControlNet TensorRT engine"""
         self.engine = Engine(engine_path)
         self.stream = stream
@@ -143,7 +143,7 @@ class HybridControlNet:
                  model_id: str,
                  engine_path: Optional[str] = None,
                  pytorch_model: Optional[Any] = None,
-                 stream: Optional[cuda.Stream] = None,
+                 stream: Optional['cuda.Stream'] = None,
                  enable_pytorch_fallback: bool = False):
         """Initialize hybrid ControlNet wrapper"""
         self.model_id = model_id
