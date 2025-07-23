@@ -139,42 +139,42 @@ class UNet2DConditionModelEngine:
 
         # Allocate buffers and run inference
         logger.debug(f"UNetEngine: Allocating TensorRT buffers...")
-        print(f"[UNET_ENGINE] About to allocate TensorRT buffers with shape_dict: {[(k, v) for k, v in shape_dict.items()]}")
+        logger.debug(f"[UNET_ENGINE] About to allocate TensorRT buffers with shape_dict: {[(k, v) for k, v in shape_dict.items()]}")
         
         # Check VRAM before allocation
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             cached = torch.cuda.memory_reserved() / 1024**3
-            print(f"[UNET_ENGINE] VRAM before allocation - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
+            logger.debug(f"[UNET_ENGINE] VRAM before allocation - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
         
         try:
             self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
-            print(f"[UNET_ENGINE] ✅ Buffer allocation completed successfully")
+            logger.debug(f"[UNET_ENGINE] ✅ Buffer allocation completed successfully")
             
             # Check VRAM after allocation
             if torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 cached = torch.cuda.memory_reserved() / 1024**3
-                print(f"[UNET_ENGINE] VRAM after allocation - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
+                logger.debug(f"[UNET_ENGINE] VRAM after allocation - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
         except Exception as e:
-            print(f"[UNET_ENGINE] *** ERROR: Buffer allocation failed: {e} ***")
+            logger.debug(f"[UNET_ENGINE] *** ERROR: Buffer allocation failed: {e} ***")
             raise
 
         logger.debug(f"UNetEngine: Running TensorRT inference...")
-        print(f"[UNET_ENGINE] About to call TensorRT engine.infer()...")
-        print(f"[UNET_ENGINE] Input dict keys: {list(input_dict.keys())}")
-        print(f"[UNET_ENGINE] Input dict shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in input_dict.items()]}")
-        print(f"[UNET_ENGINE] use_cuda_graph: {self.use_cuda_graph}")
+        logger.debug(f"[UNET_ENGINE] About to call TensorRT engine.infer()...")
+        logger.debug(f"[UNET_ENGINE] Input dict keys: {list(input_dict.keys())}")
+        logger.debug(f"[UNET_ENGINE] Input dict shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in input_dict.items()]}")
+        logger.debug(f"[UNET_ENGINE] use_cuda_graph: {self.use_cuda_graph}")
         
         # Check VRAM before inference
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             cached = torch.cuda.memory_reserved() / 1024**3
-            print(f"[UNET_ENGINE] VRAM before inference - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
+            logger.debug(f"[UNET_ENGINE] VRAM before inference - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
         
         try:
-            print(f"[UNET_ENGINE] 🚀 Starting TensorRT inference...")
-            print(f"[UNET_ENGINE] This call may hang if there are VRAM issues...")
+            logger.debug(f"[UNET_ENGINE] 🚀 Starting TensorRT inference...")
+            logger.debug(f"[UNET_ENGINE] This call may hang if there are VRAM issues...")
             
             # Set a timeout hint for debugging
             import time
@@ -187,31 +187,31 @@ class UNet2DConditionModelEngine:
             )
             
             elapsed_time = time.time() - start_time
-            print(f"[UNET_ENGINE] ✅ TensorRT inference completed successfully in {elapsed_time:.3f}s!")
-            print(f"[UNET_ENGINE] Output keys: {list(outputs.keys())}")
+            logger.debug(f"[UNET_ENGINE] ✅ TensorRT inference completed successfully in {elapsed_time:.3f}s!")
+            logger.debug(f"[UNET_ENGINE] Output keys: {list(outputs.keys())}")
             
             # Check VRAM after inference
             if torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 cached = torch.cuda.memory_reserved() / 1024**3
-                print(f"[UNET_ENGINE] VRAM after inference - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
+                logger.debug(f"[UNET_ENGINE] VRAM after inference - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
                 
         except Exception as e:
-            print(f"[UNET_ENGINE] *** ERROR: TensorRT inference failed: {e} ***")
+            logger.debug(f"[UNET_ENGINE] *** ERROR: TensorRT inference failed: {e} ***")
             import traceback
             traceback.print_exc()
             raise
         
         if "latent" not in outputs:
             logger.error(f"*** ERROR: 'latent' output not found in TensorRT outputs! Available keys: {list(outputs.keys())} ***")
-            print(f"[UNET_ENGINE] *** ERROR: Expected 'latent' output not found! ***")
+            logger.debug(f"[UNET_ENGINE] *** ERROR: Expected 'latent' output not found! ***")
             raise ValueError("TensorRT engine did not produce expected 'latent' output")
         
         noise_pred = outputs["latent"]
         logger.debug(f"TensorRT inference completed")
         logger.debug(f"Output shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
         logger.debug(f"Output range: [{noise_pred.min().item():.6f}, {noise_pred.max().item():.6f}]")
-        print(f"[UNET_ENGINE] Output tensor - shape: {noise_pred.shape}, range: [{noise_pred.min().item():.6f}, {noise_pred.max().item():.6f}]")
+        logger.debug(f"[UNET_ENGINE] Output tensor - shape: {noise_pred.shape}, range: [{noise_pred.min().item():.6f}, {noise_pred.max().item():.6f}]")
         
         # Check for NaN/Inf in outputs  
         if torch.isnan(noise_pred).any():
@@ -219,15 +219,15 @@ class UNet2DConditionModelEngine:
             nan_count = torch.isnan(noise_pred).sum().item()
             total_elements = noise_pred.numel()
             logger.error(f"*** NaN count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
-            print(f"[UNET_ENGINE] *** ERROR: NaN values detected in output! ***")
+            logger.error(f"[UNET_ENGINE] *** ERROR: NaN values detected in output! ***")
         if torch.isinf(noise_pred).any():
             logger.error(f"*** ERROR: Inf detected in TensorRT output! ***")
             inf_count = torch.isinf(noise_pred).sum().item()
             total_elements = noise_pred.numel()
             logger.error(f"*** Inf count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
-            print(f"[UNET_ENGINE] *** ERROR: Inf values detected in output! ***")
+            logger.error(f"[UNET_ENGINE] *** ERROR: Inf values detected in output! ***")
         
-        print(f"[UNET_ENGINE] Returning UNet2DConditionOutput...")
+        logger.debug(f"[UNET_ENGINE] Returning UNet2DConditionOutput...")
         return UNet2DConditionOutput(sample=noise_pred)
 
     def _add_controlnet_conditioning_dict(self, 
