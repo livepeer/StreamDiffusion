@@ -13,7 +13,6 @@ num_inference_steps: 2  # SD-XL Turbo typically uses 2-4 steps
 # Note: strength parameter removed - use t_index_list above to control denoising amount
 
 # SD-XL Turbo optimizations
-use_taesd: true  # Use Tiny AutoEncoder XL for faster decoding
 safety_checker: false
 
 # Advanced parameters

@@ -31,7 +31,6 @@ class Args(NamedTuple):
 MAX_QUEUE_SIZE = int(os.environ.get("MAX_QUEUE_SIZE", 0))
 TIMEOUT = float(os.environ.get("TIMEOUT", 0))
 SAFETY_CHECKER = os.environ.get("SAFETY_CHECKER", None) == "True"
-USE_TAESD = os.environ.get("USE_TAESD", "True") == "True"
 ENGINE_DIR = os.environ.get("ENGINE_DIR", "engines")
 ACCELERATION = os.environ.get("ACCELERATION", "tensorrt")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
@@ -130,6 +129,5 @@ parser.add_argument(
     choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
 )
-parser.set_defaults(taesd=USE_TAESD)
 config = Args(**vars(parser.parse_args()))
 config.pretty_print()
