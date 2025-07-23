@@ -580,6 +580,16 @@ class App:
                         if success:
                             pipeline_updated = True
                             print("upload_style_image: Successfully applied to existing pipeline")
+                            
+                            # Force prompt re-encoding to apply new style image embeddings
+                            try:
+                                current_prompts = self.pipeline.stream.get_current_prompts()
+                                if current_prompts:
+                                    print("upload_style_image: Forcing prompt re-encoding to apply new style image")
+                                    self.pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                                    print("upload_style_image: Prompt re-encoding completed")
+                            except Exception as e:
+                                print(f"upload_style_image: Failed to force prompt re-encoding: {e}")
                         else:
                             print("upload_style_image: Failed to apply to existing pipeline")
                     elif self.pipeline:
@@ -1447,6 +1457,16 @@ class App:
             success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
             if success:
                 print("_create_pipeline_with_config: Style image applied successfully")
+                
+                # Force prompt re-encoding to apply style image embeddings
+                try:
+                    current_prompts = new_pipeline.stream.get_current_prompts()
+                    if current_prompts:
+                        print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
+                        new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                        print("_create_pipeline_with_config: Prompt re-encoding completed")
+                except Exception as e:
+                    print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
             else:
                 print("_create_pipeline_with_config: Failed to apply style image")
         
@@ -1591,6 +1611,16 @@ class App:
             success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
             if success:
                 print("_update_resolution: Style image applied successfully")
+                
+                # Force prompt re-encoding to apply style image embeddings
+                try:
+                    current_prompts = new_pipeline.stream.get_current_prompts()
+                    if current_prompts:
+                        print("_update_resolution: Forcing prompt re-encoding to apply style image")
+                        new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                        print("_update_resolution: Prompt re-encoding completed")
+                except Exception as e:
+                    print(f"_update_resolution: Failed to force prompt re-encoding: {e}")
             else:
                 print("_update_resolution: Failed to apply style image")
         
