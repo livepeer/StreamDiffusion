@@ -216,155 +216,102 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
     """Setup IPAdapter pipeline from configuration"""
-    print("_setup_ipadapter_from_config: Starting IPAdapter setup...")
-    
-    # Check if IPAdapter models were already pre-loaded by the wrapper (for TensorRT)
-    if hasattr(wrapper, 'stream') and hasattr(wrapper.stream, '_preloaded_with_weights') and wrapper.stream._preloaded_with_weights:
-        print("_setup_ipadapter_from_config: Detected pre-loaded IPAdapter models from wrapper")
-        print("_setup_ipadapter_from_config: Setting up IPAdapter pipeline to reuse pre-loaded models...")
-        
-        try:
-            # Import here to avoid circular imports
-            from .ipadapter import IPAdapterPipeline
-            
-            # Create IPAdapter pipeline
-            device = config.get('device', 'cuda')
-            dtype = _parse_dtype(config.get('dtype', 'float16'))
-            
-            ipadapter_pipeline = IPAdapterPipeline(
-                stream_diffusion=wrapper.stream,
-                device=device,
-                dtype=dtype
-            )
-            
-            # Reuse the pre-loaded IPAdapter instead of creating new one
-            if hasattr(wrapper.stream, '_preloaded_ipadapters') and wrapper.stream._preloaded_ipadapters:
-                print("_setup_ipadapter_from_config: Reusing pre-loaded IPAdapter...")
-                ipadapter_pipeline.ipadapter = wrapper.stream._preloaded_ipadapters[0]  # Use first (should only be one)
-                
-                # Set up style image and scale from config (use first config only)
-                ipadapter_configs = _prepare_ipadapter_configs(config)
-                if ipadapter_configs and len(ipadapter_configs) > 0:
-                    ip_config = ipadapter_configs[0]  # Use only first IPAdapter config
-                    if ip_config.get('enabled', True):
-                        # Process style image if provided
-                        style_image_path = ip_config.get('style_image')
-                        if style_image_path:
-                            from PIL import Image
-                            style_image = Image.open(style_image_path).convert("RGB")
-                            ipadapter_pipeline.style_image = style_image
-                        
-                        # Set scale
-                        scale = ip_config.get('scale', 1.0)
-                        ipadapter_pipeline.scale = scale
-                        if hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
-                            ipadapter_pipeline.ipadapter.set_scale(scale)
-                        
-                        print(f"_setup_ipadapter_from_config: Configured pre-loaded IPAdapter with scale {scale}")
-                        
-                        # CRITICAL: Register the IPAdapter enhancer with StreamParameterUpdater
-                        # This step was missing in the preloaded path, causing TensorRT token mismatch
-                        ipadapter_pipeline.stream._param_updater.register_embedding_enhancer(
-                            ipadapter_pipeline._enhance_embeddings_with_ipadapter,
-                            name="IPAdapter"
-                        )
-                        
-                        if len(ipadapter_configs) > 1:
-                            print(f"_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
-            
-            # Copy wrapper attributes to maintain compatibility
-            ipadapter_pipeline.batch_size = getattr(wrapper, 'batch_size', 1)
-            
-            # Store reference to original wrapper for attribute forwarding
-            ipadapter_pipeline._original_wrapper = wrapper
-            print("_setup_ipadapter_from_config: IPAdapter pipeline setup completed using pre-loaded models")
-            
-            return ipadapter_pipeline
-            
-        except Exception as e:
-            print(f"_setup_ipadapter_from_config: Error setting up pipeline with pre-loaded models: {e}")
-            import traceback
-            traceback.print_exc()
-            raise RuntimeError(f"_setup_ipadapter_from_config: Failed to setup IPAdapter pipeline with pre-loaded models: {e}") from e
+    # Ensure Diffusers_IPAdapter is in path
+    _ensure_ipadapter_path()
     
     try:
-        print("_setup_ipadapter_from_config: Attempting to import IPAdapterPipeline...")
-        
-        # Add Diffusers_IPAdapter to path before importing
-        import pathlib
-        current_file = pathlib.Path(__file__)
-        # Diffusers_IPAdapter is now located in the ipadapter directory
-        diffusers_ipadapter_path = current_file.parent / "ipadapter" / "Diffusers_IPAdapter"
-        if diffusers_ipadapter_path.exists():
-            sys.path.insert(0, str(diffusers_ipadapter_path))
-        else:
-            print(f"_setup_ipadapter_from_config: WARNING: Diffusers_IPAdapter directory not found at {diffusers_ipadapter_path}")
-        
-        # Import here to avoid circular imports
         from .ipadapter import IPAdapterPipeline
-        import torch
         
-        # Create IPAdapter pipeline
+        # Create pipeline
         device = config.get('device', 'cuda')
         dtype = _parse_dtype(config.get('dtype', 'float16'))
+        pipeline = IPAdapterPipeline(wrapper.stream, device, dtype)
         
-        ipadapter_pipeline = IPAdapterPipeline(
-            stream_diffusion=wrapper.stream,
-            device=device,
-            dtype=dtype
-        )
+        # Handle preloaded models vs fresh setup
+        if _has_preloaded_models(wrapper):
+            _configure_preloaded_pipeline(pipeline, config)
+        else:
+            _configure_fresh_pipeline(pipeline, config)
         
-        # Set up the IPAdapter (use first config only)
-        ipadapter_configs = _prepare_ipadapter_configs(config)
+        # Setup pipeline attributes
+        pipeline.batch_size = getattr(wrapper, 'batch_size', 1)
+        pipeline._original_wrapper = wrapper
         
-        if ipadapter_configs and len(ipadapter_configs) > 0:
-            ip_config = ipadapter_configs[0]  # Use only first IPAdapter config
-            if ip_config.get('enabled', True):
-                ipadapter_pipeline.set_ipadapter(
-                    ipadapter_model_path=ip_config['ipadapter_model_path'],
-                    image_encoder_path=ip_config['image_encoder_path'],
-                    style_image=ip_config.get('style_image'),
-                    scale=ip_config.get('scale', 1.0)
-                )
-                
-                if len(ipadapter_configs) > 1:
-                    print(f"_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
-        
-        # Replace wrapper with IPAdapter-enabled pipeline
-        # Copy wrapper attributes to maintain compatibility
-        ipadapter_pipeline.batch_size = getattr(wrapper, 'batch_size', 1)
-        
-        # Store reference to original wrapper for attribute forwarding
-        ipadapter_pipeline._original_wrapper = wrapper
-        
-        return ipadapter_pipeline
+        return pipeline
         
     except ImportError as e:
-        print(f"_setup_ipadapter_from_config: ImportError - {e}")
-        print(f"_setup_ipadapter_from_config: Failed to import IPAdapter module")
-        
-        # Check if the ipadapter directory exists
-        import pathlib
-        current_file = pathlib.Path(__file__)
-        ipadapter_path = current_file.parent / "ipadapter"
-        print(f"_setup_ipadapter_from_config: Looking for IPAdapter at: {ipadapter_path}")
-        print(f"_setup_ipadapter_from_config: IPAdapter directory exists: {ipadapter_path.exists()}")
-        
-        if ipadapter_path.exists():
-            print(f"_setup_ipadapter_from_config: Contents of IPAdapter directory:")
-            try:
-                for item in ipadapter_path.iterdir():
-                    print(f"_setup_ipadapter_from_config:   - {item.name}")
-            except Exception as dir_e:
-                print(f"_setup_ipadapter_from_config: Error listing directory: {dir_e}")
-        
-        raise ImportError(f"_setup_ipadapter_from_config: IPAdapter module not found. IPAdapter directory exists: {ipadapter_path.exists()}. Original error: {e}") from e
+        raise ImportError(f"_setup_ipadapter_from_config: IPAdapter module not found: {e}") from e
     except Exception as e:
-        print(f"_setup_ipadapter_from_config: Unexpected error - {type(e).__name__}: {e}")
-        import traceback
-        print("_setup_ipadapter_from_config: Full traceback:")
-        traceback.print_exc()
-        raise RuntimeError(f"_setup_ipadapter_from_config: Failed to setup IPAdapter: {e}") from e
+        print(f"_setup_ipadapter_from_config: Failed to setup IPAdapter: {e}")
+        raise
+
+
+def _ensure_ipadapter_path():
+    """Ensure Diffusers_IPAdapter is in Python path"""
+    from pathlib import Path
+    diffusers_path = Path(__file__).parent / "ipadapter" / "Diffusers_IPAdapter"
+    if diffusers_path.exists() and str(diffusers_path) not in sys.path:
+        sys.path.insert(0, str(diffusers_path))
+
+
+def _has_preloaded_models(wrapper) -> bool:
+    """Check if wrapper has preloaded IPAdapter models"""
+    return (hasattr(wrapper, 'stream') and 
+            hasattr(wrapper.stream, '_preloaded_with_weights') and 
+            wrapper.stream._preloaded_with_weights and
+            hasattr(wrapper.stream, '_preloaded_ipadapters') and 
+            wrapper.stream._preloaded_ipadapters)
+
+
+def _configure_preloaded_pipeline(pipeline, config: Dict[str, Any]):
+    """Configure pipeline using preloaded models"""
+    pipeline.ipadapter = pipeline.stream._preloaded_ipadapters[0]
+    
+    ipadapter_configs = _prepare_ipadapter_configs(config)
+    if ipadapter_configs:
+        ip_config = ipadapter_configs[0]
+        if ip_config.get('enabled', True):
+            _apply_ipadapter_config(pipeline, ip_config)
+            
+            # Register enhancer for TensorRT compatibility
+            pipeline.stream._param_updater.register_embedding_enhancer(
+                pipeline._enhance_embeddings_with_ipadapter, name="IPAdapter"
+            )
+            
+            if len(ipadapter_configs) > 1:
+                print("_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
+
+
+def _configure_fresh_pipeline(pipeline, config: Dict[str, Any]):
+    """Configure pipeline with fresh IPAdapter setup"""
+    ipadapter_configs = _prepare_ipadapter_configs(config)
+    if ipadapter_configs:
+        ip_config = ipadapter_configs[0]
+        if ip_config.get('enabled', True):
+            pipeline.set_ipadapter(
+                ipadapter_model_path=ip_config['ipadapter_model_path'],
+                image_encoder_path=ip_config['image_encoder_path'],
+                style_image=ip_config.get('style_image'),
+                scale=ip_config.get('scale', 1.0)
+            )
+            
+            if len(ipadapter_configs) > 1:
+                print("_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
+
+
+def _apply_ipadapter_config(pipeline, ip_config: Dict[str, Any]):
+    """Apply configuration to existing IPAdapter"""
+    # Set style image
+    style_image_path = ip_config.get('style_image')
+    if style_image_path:
+        from PIL import Image
+        pipeline.style_image = Image.open(style_image_path).convert("RGB")
+    
+    # Set scale
+    scale = ip_config.get('scale', 1.0)
+    pipeline.scale = scale
+    if pipeline.ipadapter:
+        pipeline.ipadapter.set_scale(scale)
 
 
 def create_prompt_blending_config(
