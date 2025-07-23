@@ -958,7 +958,6 @@ class StreamDiffusionWrapper:
                 # Create IPAdapter pipeline and pre-load models for TensorRT if needed
                 ipadapter_pipeline = None
                 if has_ipadapter:
-                    print("_load_model: Creating IPAdapter pipeline for TensorRT integration...")
                     try:
                         from streamdiffusion.ipadapter import IPAdapterPipeline
                         ipadapter_pipeline = IPAdapterPipeline(
@@ -966,7 +965,6 @@ class StreamDiffusionWrapper:
                             device=self.device,
                             dtype=self.dtype
                         )
-                        print("_load_model: Pre-loading IPAdapter models before TensorRT compilation...")
                         ipadapter_pipeline.preload_models_for_tensorrt(ipadapter_config)
                     except Exception as e:
                         print(f"_load_model: Error creating IPAdapter pipeline: {e}")
@@ -979,20 +977,10 @@ class StreamDiffusionWrapper:
                     if has_ipadapter:
                         use_ipadapter_trt = True
                         cross_attention_dim = stream.unet.config.cross_attention_dim
-                        print(f"IPAdapter detected - enabling TensorRT IPAdapter support for {model_type}")
-                        
-                        # Determine IPAdapter variant from loaded instance
-                        if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
-                            detected_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
-                            variant = "Plus" if detected_tokens == 16 else "Standard"
-                            print(f"IPAdapter: {variant} IPAdapter ({detected_tokens} tokens), cross_attention_dim={cross_attention_dim}")
-                        else:
-                            print(f"IPAdapter: cross_attention_dim={cross_attention_dim}")
                     
                     # Enable ControlNet TensorRT if configured (independent of IPAdapter)
                     if use_controlnet and controlnet_config:
                         use_controlnet_trt = True
-                        print(f"ControlNet detected - enabling TensorRT ControlNet support for {model_type}")
                     
                     # Set up architecture info for enabled modes
                     if use_controlnet_trt and not use_ipadapter_trt:
@@ -1007,7 +995,6 @@ class StreamDiffusionWrapper:
                         unet_arch = extract_unet_architecture(stream.unet)
                         unet_arch = validate_architecture(unet_arch, model_type)
                         unet_arch["context_dim"] = stream.unet.config.cross_attention_dim
-                        print(f"Combined ControlNet + IPAdapter mode enabled for {model_type}")
                     else:
                         # Neither enabled: Standard UNet
                         unet_arch = {}
@@ -1108,7 +1095,6 @@ class StreamDiffusionWrapper:
                         if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
                             raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
                         num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
-                        print(f"_load_model: IPAdapter token count validated: {num_tokens}")
                     
                     # Create UNet model with consistent token count
                     unet_model = UNet(

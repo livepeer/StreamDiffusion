@@ -88,12 +88,8 @@ class StreamParameterUpdater:
             name: Optional name for the enhancer (for debugging)
         """
         self._embedding_enhancers.append((enhancer_func, name))
-        print(f"register_embedding_enhancer: Registered '{name}' enhancer with StreamParameterUpdater")
-        
         # IMMEDIATELY apply enhancer to existing embeddings if they exist (fixes TensorRT timing issue)
         if hasattr(self.stream, 'prompt_embeds') and self.stream.prompt_embeds is not None:
-            print(f"register_embedding_enhancer: Applying '{name}' enhancer to existing embeddings")
-            print(f"register_embedding_enhancer: Current prompt_embeds shape: {self.stream.prompt_embeds.shape}")
             try:
                 current_negative_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
                 enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
@@ -102,7 +98,6 @@ class StreamParameterUpdater:
                 self.stream.prompt_embeds = enhanced_prompt_embeds
                 if enhanced_negative_embeds is not None:
                     self.stream.negative_prompt_embeds = enhanced_negative_embeds
-                print(f"register_embedding_enhancer: Enhanced prompt_embeds shape: {self.stream.prompt_embeds.shape}")
             except Exception as e:
                 print(f"register_embedding_enhancer: Error applying '{name}' enhancer immediately: {e}")
                 import traceback
@@ -113,15 +108,13 @@ class StreamParameterUpdater:
         original_length = len(self._embedding_enhancers)
         self._embedding_enhancers = [(func, name) for func, name in self._embedding_enhancers if func != enhancer_func]
         removed_count = original_length - len(self._embedding_enhancers)
-        if removed_count > 0:
-            print(f"unregister_embedding_enhancer: Removed {removed_count} enhancer(s) from StreamParameterUpdater")
+
     
     def clear_embedding_enhancers(self) -> None:
         """Clear all embedding enhancers."""
         enhancer_count = len(self._embedding_enhancers)
         self._embedding_enhancers.clear()
-        if enhancer_count > 0:
-            print(f"clear_embedding_enhancers: Removed {enhancer_count} enhancer(s) from StreamParameterUpdater")
+
 
     def _normalize_weights(self, weights: List[float], normalize: bool) -> torch.Tensor:
         """Generic weight normalization helper"""
@@ -366,14 +359,11 @@ class StreamParameterUpdater:
         
         # Apply embedding enhancers (e.g., IPAdapter)
         if self._embedding_enhancers:
-            print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: Applying {len(self._embedding_enhancers)} enhancer(s)")
-            print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: Input final_prompt_embeds shape: {final_prompt_embeds.shape}")
             for enhancer_func, enhancer_name in self._embedding_enhancers:
                 try:
                     enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
                         final_prompt_embeds, final_negative_embeds
                     )
-                    print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: After '{enhancer_name}' enhancement: {enhanced_prompt_embeds.shape}")
                     final_prompt_embeds = enhanced_prompt_embeds
                     if enhanced_negative_embeds is not None:
                         final_negative_embeds = enhanced_negative_embeds
@@ -381,11 +371,8 @@ class StreamParameterUpdater:
                     print(f"_apply_prompt_blending: Error in enhancer '{enhancer_name}': {e}")
                     import traceback
                     traceback.print_exc()
-        else:
-            print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: No enhancers to apply")
         
         # Set final embeddings on stream
-        print(f"[DEBUG] StreamParameterUpdater._apply_prompt_blending: Setting final_prompt_embeds shape: {final_prompt_embeds.shape}")
         self.stream.prompt_embeds = final_prompt_embeds
         if final_negative_embeds is not None:
             self.stream.negative_prompt_embeds = final_negative_embeds

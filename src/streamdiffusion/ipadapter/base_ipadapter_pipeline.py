@@ -245,8 +245,7 @@ class BaseIPAdapterPipeline:
             resolved_ipadapter_path = self._resolve_model_path(model_path, "ipadapter", filename)
             resolved_encoder_path = self._resolve_model_path(encoder_path, "image_encoder")
             
-            print(f"preload_models_for_tensorrt: Resolved IPAdapter path: {resolved_ipadapter_path}")
-            print(f"preload_models_for_tensorrt: Resolved image encoder path: {resolved_encoder_path}")
+
             
             # Create IPAdapter instance - this will install processors with weights
             self.ipadapter = IPAdapter(
@@ -260,11 +259,7 @@ class BaseIPAdapterPipeline:
             # Set the correct scale from config BEFORE TensorRT compilation
             self.ipadapter.set_scale(scale)
             
-            # Log detected IPAdapter type
-            detected_tokens = getattr(self.ipadapter, 'num_tokens', 4)
-            variant = "Plus" if detected_tokens == 16 else "Standard"
-            print(f"preload_models_for_tensorrt: Detected {variant} IPAdapter ({detected_tokens} tokens)")
-            print(f"preload_models_for_tensorrt: Set IPAdapter scale to {scale} before TensorRT compilation")
+            # Set the correct scale from config BEFORE TensorRT compilation
             
             # Store reference to pre-loaded IPAdapter for later use
             if not hasattr(self.stream, '_preloaded_ipadapters'):
@@ -278,8 +273,7 @@ class BaseIPAdapterPipeline:
             # Mark that stream was pre-loaded with weights
             self.stream._preloaded_with_weights = True
             
-            print("preload_models_for_tensorrt: IPAdapter models loaded successfully with weights")
-            print("preload_models_for_tensorrt: UNet now has IPAdapter processors with weights installed")
+
             
         except Exception as e:
             print(f"preload_models_for_tensorrt: Error loading IPAdapter models: {e}")
@@ -351,10 +345,7 @@ class BaseIPAdapterPipeline:
         # Update token count for attention processors
         self.ipadapter.set_tokens(image_prompt_embeds.shape[0] * self.ipadapter.num_tokens)
         
-        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Input prompt_embeds shape: {prompt_embeds.shape}")
-        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Image embeds shape: {image_prompt_embeds.shape}")
-        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Enhanced embeddings - Text: {prompt_embeds.shape[1]} tokens, Image: {image_prompt_embeds.shape[1]} tokens, Total: {enhanced_prompt_embeds.shape[1]} tokens")
-        print(f"[DEBUG] IPAdapter._enhance_embeddings_with_ipadapter: Returning enhanced_prompt_embeds shape: {enhanced_prompt_embeds.shape}")
+
         
         return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     

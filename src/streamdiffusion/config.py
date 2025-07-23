@@ -217,8 +217,6 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
     """Setup IPAdapter pipeline from configuration"""
     print("_setup_ipadapter_from_config: Starting IPAdapter setup...")
-    print(f"_setup_ipadapter_from_config: Python path: {sys.path[:3]}...")  # Show first 3 entries
-    print(f"_setup_ipadapter_from_config: Current working directory: {os.getcwd()}")
     
     # Check if IPAdapter models were already pre-loaded by the wrapper (for TensorRT)
     if hasattr(wrapper, 'stream') and hasattr(wrapper.stream, '_preloaded_with_weights') and wrapper.stream._preloaded_with_weights:
@@ -297,57 +295,40 @@ def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
         current_file = pathlib.Path(__file__)
         # Diffusers_IPAdapter is now located in the ipadapter directory
         diffusers_ipadapter_path = current_file.parent / "ipadapter" / "Diffusers_IPAdapter"
-        print(f"_setup_ipadapter_from_config: Adding Diffusers_IPAdapter to path: {diffusers_ipadapter_path}")
-        print(f"_setup_ipadapter_from_config: Diffusers_IPAdapter exists: {diffusers_ipadapter_path.exists()}")
-        
         if diffusers_ipadapter_path.exists():
             sys.path.insert(0, str(diffusers_ipadapter_path))
-            print("_setup_ipadapter_from_config: Successfully added Diffusers_IPAdapter to Python path")
         else:
-            print("_setup_ipadapter_from_config: WARNING: Diffusers_IPAdapter directory not found!")
-            print(f"_setup_ipadapter_from_config: Expected location: {diffusers_ipadapter_path}")
+            print(f"_setup_ipadapter_from_config: WARNING: Diffusers_IPAdapter directory not found at {diffusers_ipadapter_path}")
         
         # Import here to avoid circular imports
         from .ipadapter import IPAdapterPipeline
-        print("_setup_ipadapter_from_config: Successfully imported IPAdapterPipeline")
-        
         import torch
-        print("_setup_ipadapter_from_config: Successfully imported torch")
         
         # Create IPAdapter pipeline
         device = config.get('device', 'cuda')
         dtype = _parse_dtype(config.get('dtype', 'float16'))
-        print(f"_setup_ipadapter_from_config: Creating IPAdapterPipeline with device={device}, dtype={dtype}")
         
         ipadapter_pipeline = IPAdapterPipeline(
             stream_diffusion=wrapper.stream,
             device=device,
             dtype=dtype
         )
-        print("_setup_ipadapter_from_config: Successfully created IPAdapterPipeline")
         
         # Set up the IPAdapter (use first config only)
         ipadapter_configs = _prepare_ipadapter_configs(config)
-        print(f"_setup_ipadapter_from_config: Found {len(ipadapter_configs)} IPAdapter configs")
         
         if ipadapter_configs and len(ipadapter_configs) > 0:
             ip_config = ipadapter_configs[0]  # Use only first IPAdapter config
             if ip_config.get('enabled', True):
-                print(f"_setup_ipadapter_from_config: Setting IPAdapter: {ip_config['ipadapter_model_path']}")
                 ipadapter_pipeline.set_ipadapter(
                     ipadapter_model_path=ip_config['ipadapter_model_path'],
                     image_encoder_path=ip_config['image_encoder_path'],
                     style_image=ip_config.get('style_image'),
                     scale=ip_config.get('scale', 1.0)
                 )
-                print(f"_setup_ipadapter_from_config: Successfully set IPAdapter")
                 
                 if len(ipadapter_configs) > 1:
                     print(f"_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
-            else:
-                print(f"_setup_ipadapter_from_config: IPAdapter is disabled")
-        else:
-            print(f"_setup_ipadapter_from_config: No IPAdapter configs found")
         
         # Replace wrapper with IPAdapter-enabled pipeline
         # Copy wrapper attributes to maintain compatibility
@@ -355,7 +336,6 @@ def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
         
         # Store reference to original wrapper for attribute forwarding
         ipadapter_pipeline._original_wrapper = wrapper
-        print("_setup_ipadapter_from_config: IPAdapter setup completed successfully")
         
         return ipadapter_pipeline
         
