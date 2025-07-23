@@ -3,6 +3,8 @@ import torch
 import torch.nn.functional as F
 import gc
 
+import logging
+logger = logging.getLogger(__name__)
 
 class CacheStats:
     """Helper class to track cache statistics"""
@@ -83,11 +85,11 @@ class StreamParameterUpdater:
     def _validate_index(self, index: int, item_list: List, operation_name: str) -> bool:
         """Generic index validation helper"""
         if not item_list:
-            print(f"{operation_name}: Warning: No current item list")
+            logger.warning(f"{operation_name}: Warning: No current item list")
             return False
 
         if index < 0 or index >= len(item_list):
-            print(f"{operation_name}: Warning: Index {index} out of range (0-{len(item_list)-1})")
+            logger.warning(f"{operation_name}: Warning: Index {index} out of range (0-{len(item_list)-1})")
             return False
 
         return True
@@ -130,7 +132,7 @@ class StreamParameterUpdater:
 
         if guidance_scale is not None:
             if self.stream.cfg_type == "none" and guidance_scale > 1.0:
-                print("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
+                logger.warning("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
             self.stream.guidance_scale = guidance_scale
 
         if delta is not None:
@@ -141,11 +143,11 @@ class StreamParameterUpdater:
         
         if normalize_prompt_weights is not None:
             self.normalize_prompt_weights = normalize_prompt_weights
-            print(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
+            logger.info(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
 
         if normalize_seed_weights is not None:
             self.normalize_seed_weights = normalize_seed_weights
-            print(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
+            logger.info(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
 
         # Handle prompt blending if prompt_list is provided
         if prompt_list is not None:
@@ -173,11 +175,11 @@ class StreamParameterUpdater:
     ) -> None:
         """Update weights for current prompt list without re-encoding prompts."""
         if not self._current_prompt_list:
-            print("update_prompt_weights: Warning: No current prompt list to update weights for")
+            logger.warning("update_prompt_weights: Warning: No current prompt list to update weights for")
             return
 
         if len(prompt_weights) != len(self._current_prompt_list):
-            print(f"update_prompt_weights: Warning: Weight count {len(prompt_weights)} doesn't match prompt count {len(self._current_prompt_list)}")
+            logger.warning(f"update_prompt_weights: Warning: Weight count {len(prompt_weights)} doesn't match prompt count {len(self._current_prompt_list)}")
             return
 
         # Update the current prompt list with new weights
@@ -198,11 +200,11 @@ class StreamParameterUpdater:
     ) -> None:
         """Update weights for current seed list without regenerating noise."""
         if not self._current_seed_list:
-            print("update_seed_weights: Warning: No current seed list to update weights for")
+            logger.warning("update_seed_weights: Warning: No current seed list to update weights for")
             return
 
         if len(seed_weights) != len(self._current_seed_list):
-            print(f"update_seed_weights: Warning: Weight count {len(seed_weights)} doesn't match seed count {len(self._current_seed_list)}")
+            logger.warning(f"update_seed_weights: Warning: Weight count {len(seed_weights)} doesn't match seed count {len(self._current_seed_list)}")
             return
 
         # Update the current seed list with new weights
@@ -272,7 +274,7 @@ class StreamParameterUpdater:
                 weights.append(weight)
 
         if not embeddings:
-            print("_apply_prompt_blending: Warning: No cached embeddings found")
+            logger.warning("_apply_prompt_blending: Warning: No cached embeddings found")
             return
 
         # Normalize weights
@@ -399,7 +401,7 @@ class StreamParameterUpdater:
                 weights.append(weight)
 
         if not noise_tensors:
-            print("_apply_seed_blending: Warning: No cached noise tensors found")
+            logger.warning("_apply_seed_blending: Warning: No cached noise tensors found")
             return
 
         # Normalize weights
@@ -735,7 +737,7 @@ class StreamParameterUpdater:
         new_index = len(self._current_seed_list)
         self._current_seed_list.append((seed, weight))
 
-        print(f"add_seed: Added seed {new_index}: {seed} with weight {weight}")
+        logger.info(f"add_seed: Added seed {new_index}: {seed} with weight {weight}")
 
         # Cache the new seed noise
         generator = torch.Generator(device=self.stream.device)

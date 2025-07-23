@@ -6,8 +6,11 @@ from typing import Dict, List, Literal, Optional, Union, Any, Tuple
 
 import numpy as np
 import torch
-from diffusers import AutoencoderTiny, StableDiffusionPipeline
+from diffusers import AutoencoderTiny, StableDiffusionPipeline, StableDiffusionXLPipeline, AutoPipelineForText2Image
 from PIL import Image
+
+import logging
+logger = logging.getLogger(__name__)
 
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
@@ -383,11 +386,11 @@ class StreamDiffusionWrapper:
             # Single prompt mode
             current_prompts = self.stream._param_updater.get_current_prompts()
             if current_prompts and len(current_prompts) > 1 and warn_about_conflicts:
-                print("update_prompt: WARNING: Active prompt blending detected!")
-                print(f"  Current blended prompts: {len(current_prompts)} prompts")
-                print("  Switching to single prompt mode.")
+                logger.warning("update_prompt: WARNING: Active prompt blending detected!")
+                logger.warning(f"  Current blended prompts: {len(current_prompts)} prompts")
+                logger.warning("  Switching to single prompt mode.")
                 if clear_blending:
-                    print("  Clearing prompt blending cache...")
+                    logger.warning("  Clearing prompt blending cache...")
 
             if clear_blending:
                 # Clear the blending caches to avoid conflicts
@@ -403,7 +406,7 @@ class StreamDiffusionWrapper:
 
             current_prompts = self.stream._param_updater.get_current_prompts()
             if len(current_prompts) <= 1 and warn_about_conflicts:
-                print("update_prompt: Switching from single prompt to prompt blending mode.")
+                logger.warning("update_prompt: Switching from single prompt to prompt blending mode.")
 
             # Apply prompt blending
             self.stream.update_stream_params(
@@ -817,10 +820,7 @@ class StreamDiffusionWrapper:
         try:
             self.cleanup_gpu_memory()
         except Exception as e:
-            print(f"⚠️ GPU cleanup warning: {e}")
-
-        # Try different loading methods in order - prioritize AutoPipeline for safety
-        from diffusers import StableDiffusionXLPipeline, AutoPipelineForText2Image
+            logger.warning(f"⚠️ GPU cleanup warning: {e}")
 
         loading_methods = [
             (AutoPipelineForText2Image.from_pretrained, "AutoPipeline from_pretrained"),
@@ -832,23 +832,26 @@ class StreamDiffusionWrapper:
         last_error = None
         for method, method_name in loading_methods:
             try:
-                print(f"_load_model: Attempting to load with {method_name}...")
+                logger.info(f"_load_model: Attempting to load with {method_name}...")
                 pipe = method(model_id_or_path).to(device=self.device, dtype=self.dtype)
-                print(f"_load_model: Successfully loaded using {method_name}")
+                logger.info(f"_load_model: Successfully loaded using {method_name}")
                 break
             except Exception as e:
-                print(f"_load_model: {method_name} failed: {e}")
+                logger.warning(f"_load_model: {method_name} failed: {e}")
                 last_error = e
                 continue
 
         if pipe is None:
             error_msg = f"_load_model: All loading methods failed for model '{model_id_or_path}'. Last error: {last_error}"
-            print(error_msg)
+            logger.error(error_msg)
             if last_error:
-                print("Full traceback of last error:")
+                logger.warning("Full traceback of last error:")
                 import traceback
                 traceback.print_exc()
             raise RuntimeError(error_msg)
+
+        # If we get here, the model loaded successfully - break out of retry loop
+        logger.info(f"✅ Model loading succeeded")
 
         # Use existing model detection instead of guessing from config
         model_type = detect_model_from_diffusers_unet(pipe.unet)
@@ -957,32 +960,32 @@ class StreamDiffusionWrapper:
                     model_type = detect_model_from_diffusers_unet(stream.unet)
                     
                     if is_sdxl_model:
-                        print(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
-                        print(f"   Turbo variant: {sdxl_config['is_turbo']}")
-                        print(f"   Conditioning spec: {sdxl_config['conditioning_spec']}")
+                        logger.info(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
+                        logger.info(f"   Turbo variant: {sdxl_config['is_turbo']}")
+                        logger.info(f"   Conditioning spec: {sdxl_config['conditioning_spec']}")
                     else:
-                        print(f"🎯 Building TensorRT engines for {model_type}")
+                        logger.info(f"🎯 Building TensorRT engines for {model_type}")
                     
                     # Only enable ControlNet for legacy TensorRT if ControlNet is actually being used
                     if self.use_controlnet:
                         # Temporary: Disable ControlNet TensorRT for SDXL models due to architectural differences
                         if model_type == "SDXL":
                             use_controlnet_trt = False
-                            print(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models")
-                            print(f"   ControlNet will run in PyTorch mode for better stability")
+                            logger.warning(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models")
+                            logger.warning(f"   ControlNet will run in PyTorch mode for better stability")
                         else:
                             try:
                                 unet_arch = extract_unet_architecture(stream.unet)
                                 unet_arch = validate_architecture(unet_arch, model_type)
                                 use_controlnet_trt = True
-                                print(f"   Including ControlNet support for {model_type}")
+                                logger.info(f"   Including ControlNet support for {model_type}")
                             except Exception as e:
-                                print(f"   ControlNet architecture detection failed: {e}")
+                                logger.warning(f"   ControlNet architecture detection failed: {e}")
                                 use_controlnet_trt = False
                         
                 except Exception as e:
-                    print(f"⚠️ Advanced model detection failed: {e}")
-                    print("   Falling back to basic TensorRT")
+                    logger.error(f"⚠️ Advanced model detection failed: {e}")
+                    logger.error("   Falling back to basic TensorRT")
                     
                     # Fallback to basic detection
                     try:
@@ -991,7 +994,7 @@ class StreamDiffusionWrapper:
                             # Temporary: Disable ControlNet TensorRT for SDXL models
                             if model_type == "SDXL":
                                 use_controlnet_trt = False
-                                print(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models (fallback)")
+                                logger.warning(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models (fallback)")
                             else:
                                 unet_arch = extract_unet_architecture(stream.unet)
                                 unet_arch = validate_architecture(unet_arch, model_type)
@@ -1000,7 +1003,7 @@ class StreamDiffusionWrapper:
                         pass
                 
                 if not use_controlnet_trt and not self.use_controlnet:
-                    print("ControlNet not enabled, building engines without ControlNet support")
+                    logger.info("ControlNet not enabled, building engines without ControlNet support")
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = Path(engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines'))
@@ -1057,9 +1060,9 @@ class StreamDiffusionWrapper:
 
                 if missing_engines:
                     if build_engines_if_missing:
-                        print(f"Missing TensorRT engines, building them...")
+                        logger.info(f"Missing TensorRT engines, building them...")
                         for engine in missing_engines:
-                            print(f"  - {engine}")
+                            logger.info(f"  - {engine}")
                     else:
                         error_msg = f"Required TensorRT engines are missing and build_engines_if_missing=False:\n"
                         for engine in missing_engines:
@@ -1070,17 +1073,17 @@ class StreamDiffusionWrapper:
                 if not os.path.exists(unet_path):
                     os.makedirs(os.path.dirname(unet_path), exist_ok=True)
 
-                    print(f"Creating UNet model for image size: {self.width}x{self.height}")
+                    logger.info(f"Creating UNet model for image size: {self.width}x{self.height}")
 
                     # Determine correct embedding dimension based on model type
                     if model_type == "SDXL":
                         # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
                         embedding_dim = 2048
-                        print(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
+                        logger.info(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
                     else:
                         # SD1.5, SD2.1, etc. use single text encoder
                         embedding_dim = stream.text_encoder.config.hidden_size
-                        print(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
+                        logger.info(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
 
                     unet_model = UNet(
                         fp16=True,
@@ -1197,32 +1200,113 @@ class StreamDiffusionWrapper:
                 vae_config = stream.vae.config
                 vae_dtype = stream.vae.dtype
 
-                stream.unet = UNet2DConditionModelEngine(
-                    unet_path, cuda_stream, use_cuda_graph=False
-                )
+                # Try to load TensorRT UNet engine with OOM recovery
+                tensorrt_unet_loaded = False
+                try:
+                    logger.info("🚀 Loading TensorRT UNet engine...")
+                    stream.unet = UNet2DConditionModelEngine(
+                        unet_path, cuda_stream, use_cuda_graph=False
+                    )
 
-                # Always set ControlNet support to True for universal TensorRT engines
-                # This allows the engine to accept dummy inputs when no ControlNets are used
-                stream.unet.use_control = True
-                if use_controlnet_trt and unet_arch:
-                    stream.unet.unet_arch = unet_arch
-                    stream.unet.unet_arch = unet_arch
+                    # Always set ControlNet support to True for universal TensorRT engines
+                    # This allows the engine to accept dummy inputs when no ControlNets are used
+                    stream.unet.use_control = True
+                    if use_controlnet_trt and unet_arch:
+                        stream.unet.unet_arch = unet_arch
+                        stream.unet.unet_arch = unet_arch
+                    
+                    tensorrt_unet_loaded = True
+                    logger.info("✅ TensorRT UNet engine loaded successfully")
+                    
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    is_oom_error = ('out of memory' in error_msg or 'outofmemory' in error_msg or 
+                                   'oom' in error_msg or 'cuda error' in error_msg)
+                    
+                    if is_oom_error:
+                        logger.error(f"❌ TensorRT UNet engine OOM: {e}")
+                        logger.info("🔄 Falling back to PyTorch UNet (no TensorRT acceleration)")
+                        logger.info("💡 This will be slower but should work with less memory")
+                        
+                        # Clean up any partial TensorRT state
+                        if hasattr(stream, 'unet'):
+                            try:
+                                del stream.unet
+                            except:
+                                pass
+                        
+                        self.cleanup_gpu_memory()
+                        
+                        # Fall back to original PyTorch UNet
+                        try:
+                            logger.info("📦 Loading PyTorch UNet as fallback...")
+                            # Keep the original UNet from the pipe
+                            if hasattr(stream, 'pipe') and hasattr(stream.pipe, 'unet'):
+                                stream.unet = stream.pipe.unet
+                                logger.info("✅ PyTorch UNet fallback successful")
+                            else:
+                                raise RuntimeError("No PyTorch UNet available for fallback")
+                        except Exception as fallback_error:
+                            logger.error(f"❌ PyTorch UNet fallback also failed: {fallback_error}")
+                            raise RuntimeError(f"Both TensorRT and PyTorch UNet loading failed. TensorRT error: {e}, Fallback error: {fallback_error}")
+                    else:
+                        # Non-OOM error, re-raise
+                        logger.error(f"❌ TensorRT UNet engine loading failed (non-OOM): {e}")
+                        raise e
 
-                stream.vae = AutoencoderKLEngine(
-                    vae_encoder_path,
-                    vae_decoder_path,
-                    cuda_stream,
-                    stream.pipe.vae_scale_factor,
-                    use_cuda_graph=False,
-                )
-                stream.vae.config = vae_config
-                stream.vae.dtype = vae_dtype
-                stream.vae.config = vae_config
-                stream.vae.dtype = vae_dtype
-
-                gc.collect()
-                torch.cuda.empty_cache()
-
+                # Try to load TensorRT VAE engines with OOM recovery
+                tensorrt_vae_loaded = False
+                try:
+                    logger.info("🚀 Loading TensorRT VAE engines...")
+                    stream.vae = AutoencoderKLEngine(
+                        vae_encoder_path,
+                        vae_decoder_path,
+                        cuda_stream,
+                        stream.pipe.vae_scale_factor,
+                        use_cuda_graph=False,
+                    )
+                    stream.vae.config = vae_config
+                    stream.vae.dtype = vae_dtype
+                    
+                    tensorrt_vae_loaded = True
+                    logger.info("✅ TensorRT VAE engines loaded successfully")
+                    
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    is_oom_error = ('out of memory' in error_msg or 'outofmemory' in error_msg or 
+                                   'oom' in error_msg or 'cuda error' in error_msg)
+                    
+                    if is_oom_error:
+                        logger.error(f"❌ TensorRT VAE engine OOM: {e}")
+                        logger.info("🔄 Falling back to PyTorch VAE (no TensorRT acceleration)")
+                        logger.info("💡 This will be slower but should work with less memory")
+                        
+                        # Clean up any partial TensorRT state
+                        if hasattr(stream, 'vae'):
+                            try:
+                                del stream.vae
+                            except:
+                                pass
+                        
+                        self.cleanup_gpu_memory()
+                        
+                        # Fall back to original PyTorch VAE
+                        try:
+                            logger.info("📦 Loading PyTorch VAE as fallback...")
+                            # Keep the original VAE from the pipe
+                            if hasattr(stream, 'pipe') and hasattr(stream.pipe, 'vae'):
+                                stream.vae = stream.pipe.vae
+                                logger.info("✅ PyTorch VAE fallback successful")
+                            else:
+                                raise RuntimeError("No PyTorch VAE available for fallback")
+                        except Exception as fallback_error:
+                            logger.error(f"❌ PyTorch VAE fallback also failed: {fallback_error}")
+                            raise RuntimeError(f"Both TensorRT and PyTorch VAE loading failed. TensorRT error: {e}, Fallback error: {fallback_error}")
+                    else:
+                        # Non-OOM error, re-raise
+                        logger.error(f"❌ TensorRT VAE engine loading failed (non-OOM): {e}")
+                        raise e
+                    
             if acceleration == "sfast":
                 from streamdiffusion.acceleration.sfast import (
                     accelerate_with_stable_fast,
@@ -1232,11 +1316,11 @@ class StreamDiffusionWrapper:
         except Exception:
             import traceback
             traceback.print_exc()
-            print("Acceleration has failed. Falling back to normal mode.")
+            logger.error("Acceleration has failed. Falling back to normal mode.")
             if not self.enable_pytorch_fallback:
                 raise NotImplementedError("Acceleration has failed. Automatic pytorch inference fallback disabled.")
             else:
-                print("Acceleration has failed. Falling back to PyTorch inference.")
+                logger.error("Acceleration has failed. Falling back to PyTorch inference.")
 
         if seed < 0:  # Random seed
             seed = np.random.randint(0, 1000000)
@@ -1315,10 +1399,10 @@ class StreamDiffusionWrapper:
             controlnet_pipeline._use_tensorrt = True
             # Also set on stream where ControlNet pipeline expects to find it
             stream.controlnet_engine_pool = controlnet_pool
-            print("Initialized ControlNet TensorRT engine pool")
+            logger.info("Initialized ControlNet TensorRT engine pool")
         else:
             controlnet_pipeline._use_tensorrt = False
-            print("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
+            logger.info("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
 
 
         # Setup ControlNets from config
@@ -1349,9 +1433,9 @@ class StreamDiffusionWrapper:
 
                 # Add ControlNet with control image if provided
                 controlnet_pipeline.add_controlnet(cn_config, control_image)
-                print(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
+                logger.info(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
             except Exception as e:
-                print(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
+                logger.error(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -1500,55 +1584,154 @@ class StreamDiffusionWrapper:
         import gc
         import torch
         
-        print("🧹 Cleaning up GPU memory...")
+        logger.info("🧹 Cleaning up GPU memory...")
         
         # Clear prompt caches
         if hasattr(self, 'stream') and self.stream:
             try:
                 self.stream._param_updater.clear_caches()
-                print("   ✅ Cleared prompt caches")
+                logger.info("   ✅ Cleared prompt caches")
             except:
                 pass
         
-        # Cleanup TensorRT engines if they exist
+        # Enhanced TensorRT engine cleanup
         if hasattr(self, 'stream') and self.stream:
             try:
-                # Check if stream has TensorRT engines
-                if hasattr(self.stream, 'unet') and hasattr(self.stream.unet, 'context'):
-                    # This indicates a TensorRT engine
-                    print("   🔧 Cleaning up TensorRT UNet engine...")
-                    del self.stream.unet
+                # Cleanup UNet TensorRT engine
+                if hasattr(self.stream, 'unet'):
+                    unet_engine = self.stream.unet
+                    logger.info("   🔧 Cleaning up TensorRT UNet engine...")
                     
-                if hasattr(self.stream, 'vae') and hasattr(self.stream.vae, 'context'):
-                    print("   🔧 Cleaning up TensorRT VAE engines...")
+                    # Check if it's a TensorRT engine and cleanup properly
+                    if hasattr(unet_engine, 'engine') and hasattr(unet_engine.engine, '__del__'):
+                        try:
+                            # Call the engine's destructor explicitly
+                            unet_engine.engine.__del__()
+                        except:
+                            pass
+                    
+                    # Clear all engine-related attributes
+                    if hasattr(unet_engine, 'context'):
+                        try:
+                            del unet_engine.context
+                        except:
+                            pass
+                    if hasattr(unet_engine, 'engine'):
+                        try:
+                            del unet_engine.engine.engine  # TensorRT runtime engine
+                            del unet_engine.engine
+                        except:
+                            pass
+                    
+                    del self.stream.unet
+                    logger.info("   ✅ UNet engine cleanup completed")
+                    
+                # Cleanup VAE TensorRT engines
+                if hasattr(self.stream, 'vae'):
+                    vae_engine = self.stream.vae
+                    logger.info("   🔧 Cleaning up TensorRT VAE engines...")
+                    
+                    # VAE has encoder and decoder engines
+                    for engine_name in ['vae_encoder', 'vae_decoder']:
+                        if hasattr(vae_engine, engine_name):
+                            engine = getattr(vae_engine, engine_name)
+                            if hasattr(engine, 'engine') and hasattr(engine.engine, '__del__'):
+                                try:
+                                    engine.engine.__del__()
+                                except:
+                                    pass
+                            try:
+                                delattr(vae_engine, engine_name)
+                            except:
+                                pass
+                    
                     del self.stream.vae
+                    logger.info("   ✅ VAE engines cleanup completed")
+                
+                # Cleanup ControlNet engine pool if it exists
+                if hasattr(self.stream, 'controlnet_engine_pool'):
+                    logger.info("   🔧 Cleaning up ControlNet engine pool...")
+                    try:
+                        self.stream.controlnet_engine_pool.cleanup()
+                        del self.stream.controlnet_engine_pool
+                        logger.info("   ✅ ControlNet engine pool cleanup completed")
+                    except:
+                        pass
                     
             except Exception as e:
-                print(f"   ⚠️ TensorRT cleanup warning: {e}")
+                logger.error(f"   ⚠️ TensorRT cleanup warning: {e}")
         
         # Clear the entire stream object to free all models
         if hasattr(self, 'stream'):
             try:
                 del self.stream
-                print("   ✅ Cleared stream object")
+                logger.info("   ✅ Cleared stream object")
             except:
                 pass
             self.stream = None
         
-        # Force garbage collection
-        gc.collect()
+        # Force multiple garbage collection cycles for thorough cleanup
+        for i in range(3):
+            gc.collect()
         
-        # Clear CUDA cache
+        # Clear CUDA cache multiple times
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             
+            # Force additional memory cleanup
+            torch.cuda.ipc_collect()
+            torch.cuda.empty_cache()
+            
             # Get memory info
             allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
             cached = torch.cuda.memory_reserved() / (1024**3)     # GB
-            print(f"   📊 GPU Memory: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
+            logger.info(f"   📊 GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
         
-        print("   ✅ GPU memory cleanup complete")
+        logger.info("   ✅ Enhanced GPU memory cleanup complete")
+
+    def check_gpu_memory_for_engine(self, engine_size_gb: float) -> bool:
+        """
+        Check if there's enough GPU memory to load a TensorRT engine.
+        
+        Args:
+            engine_size_gb: Expected engine size in GB
+            
+        Returns:
+            True if enough memory is available, False otherwise
+        """
+        if not torch.cuda.is_available():
+            return True  # Assume OK if CUDA not available
+        
+        try:
+            # Get current memory status
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            cached = torch.cuda.memory_reserved() / (1024**3)
+            
+            # Get total GPU memory
+            total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            free_memory = total_memory - allocated
+            
+            # Add 20% overhead for safety
+            required_memory = engine_size_gb * 1.2
+            
+            logger.info(f"📊 GPU Memory Check:")
+            logger.info(f"   Total: {total_memory:.2f}GB")
+            logger.info(f"   Allocated: {allocated:.2f}GB") 
+            logger.info(f"   Cached: {cached:.2f}GB")
+            logger.info(f"   Free: {free_memory:.2f}GB")
+            logger.info(f"   Required: {required_memory:.2f}GB (engine: {engine_size_gb:.2f}GB + 20% overhead)")
+            
+            if free_memory >= required_memory:
+                logger.info(f"   ✅ Sufficient memory available")
+                return True
+            else:
+                logger.error(f"   ❌ Insufficient memory! Need {required_memory:.2f}GB but only {free_memory:.2f}GB available")
+                return False
+                
+        except Exception as e:
+            logger.error(f"   ⚠️ Memory check failed: {e}")
+            return True  # Assume OK if check fails
 
     def cleanup_engines_and_rebuild(self, reduce_batch_size: bool = True, reduce_resolution: bool = False) -> None:
         """
@@ -1564,7 +1747,7 @@ class StreamDiffusionWrapper:
         import shutil
         import os
         
-        print("🔧 Cleaning up engines and rebuilding with smaller settings...")
+        logger.info("🔧 Cleaning up engines and rebuilding with smaller settings...")
         
         # Clean up GPU memory first
         self.cleanup_gpu_memory()
@@ -1574,22 +1757,22 @@ class StreamDiffusionWrapper:
         if os.path.exists(engines_dir):
             try:
                 shutil.rmtree(engines_dir)
-                print(f"   ✅ Removed engines directory: {engines_dir}")
+                logger.info(f"   ✅ Removed engines directory: {engines_dir}")
             except Exception as e:
-                print(f"   ⚠️ Failed to remove engines: {e}")
+                logger.error(f"   ⚠️ Failed to remove engines: {e}")
         
         # Reduce settings
         if reduce_batch_size:
             if hasattr(self, 'batch_size') and self.batch_size > 1:
                 old_batch = self.batch_size
                 self.batch_size = 1
-                print(f"   🔧 Reduced batch size: {old_batch} → {self.batch_size}")
+                logger.info(f"   🔧 Reduced batch size: {old_batch} → {self.batch_size}")
             
             # Also reduce frame buffer size if needed
             if hasattr(self, 'frame_buffer_size') and self.frame_buffer_size > 1:
                 old_buffer = self.frame_buffer_size
                 self.frame_buffer_size = 1  
-                print(f"   🔧 Reduced frame buffer size: {old_buffer} → {self.frame_buffer_size}")
+                logger.info(f"   🔧 Reduced frame buffer size: {old_buffer} → {self.frame_buffer_size}")
         
         if reduce_resolution:
             if hasattr(self, 'width') and hasattr(self, 'height'):
@@ -1599,9 +1782,9 @@ class StreamDiffusionWrapper:
                 # Round to multiples of 64 for compatibility
                 self.width = (self.width // 64) * 64
                 self.height = (self.height // 64) * 64
-                print(f"   🔧 Reduced resolution: {old_width}x{old_height} → {self.width}x{self.height}")
+                logger.info(f"   🔧 Reduced resolution: {old_width}x{old_height} → {self.width}x{self.height}")
         
-        print("   💡 Next model load will rebuild engines with these smaller settings")
+        logger.info("   💡 Next model load will rebuild engines with these smaller settings")
 
     def update_prompt_at_index(
         self,

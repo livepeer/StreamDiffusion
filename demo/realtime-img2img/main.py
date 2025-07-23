@@ -801,10 +801,6 @@ class App:
                 logger.debug(f"update_prompt_blending: prompt_list = {prompt_list}")
                 logger.debug(f"update_prompt_blending: interpolation_method = {interpolation_method}")
                 
-                print(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
-                print(f"update_prompt_blending: prompt_list = {prompt_list}")
-                print(f"update_prompt_blending: interpolation_method = {prompt_interpolation_method}")
-                
                 if prompt_list is None:
                     raise HTTPException(status_code=400, detail="Missing prompt_list parameter")
                 

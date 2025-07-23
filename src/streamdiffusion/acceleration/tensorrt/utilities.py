@@ -592,25 +592,25 @@ class SDXLUNetWrapper(torch.nn.Module):
             with torch.no_grad():
                 _ = self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=test_added_cond)
             
-            print("✅ SDXL model supports added_cond_kwargs")
+            logger.info("✅ SDXL model supports added_cond_kwargs")
             return True
             
         except Exception as e:
-            print(f"⚠️ SDXL model does not support added_cond_kwargs: {e}")
+            logger.error(f"⚠️ SDXL model does not support added_cond_kwargs: {e}")
             return False
         
     def forward(self, *args, **kwargs):
         """Forward pass that handles SDXL conditioning gracefully"""
-        print(f"[SDXL_WRAPPER] forward: Called with {len(args)} args and {len(kwargs)} kwargs")
-        print(f"[SDXL_WRAPPER] forward: Args shapes: {[arg.shape if hasattr(arg, 'shape') else type(arg) for arg in args]}")
-        print(f"[SDXL_WRAPPER] forward: Kwargs keys: {list(kwargs.keys())}")
-        print(f"[SDXL_WRAPPER] forward: self.supports_added_cond: {self.supports_added_cond}")
-        print(f"[SDXL_WRAPPER] forward: Underlying UNet type: {type(self.unet)}")
+        logger.debug(f"[SDXL_WRAPPER] forward: Called with {len(args)} args and {len(kwargs)} kwargs")
+        logger.debug(f"[SDXL_WRAPPER] forward: Args shapes: {[arg.shape if hasattr(arg, 'shape') else type(arg) for arg in args]}")
+        logger.debug(f"[SDXL_WRAPPER] forward: Kwargs keys: {list(kwargs.keys())}")
+        logger.debug(f"[SDXL_WRAPPER] forward: self.supports_added_cond: {self.supports_added_cond}")
+        logger.debug(f"[SDXL_WRAPPER] forward: Underlying UNet type: {type(self.unet)}")
         
         try:
             # Ensure added_cond_kwargs is never None to prevent TypeError
             if 'added_cond_kwargs' in kwargs and kwargs['added_cond_kwargs'] is None:
-                print(f"[SDXL_WRAPPER] forward: Setting added_cond_kwargs from None to empty dict")
+                logger.debug(f"[SDXL_WRAPPER] forward: Setting added_cond_kwargs from None to empty dict")
                 kwargs['added_cond_kwargs'] = {}
             
             # Auto-generate SDXL conditioning if missing and model needs it
@@ -622,7 +622,7 @@ class SDXLUNetWrapper(torch.nn.Module):
                 device = sample.device
                 batch_size = sample.shape[0]
                 
-                print("🔧 Auto-generating required SDXL conditioning...")
+                logger.info("🔧 Auto-generating required SDXL conditioning...")
                 kwargs['added_cond_kwargs'] = {
                     'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
                     'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
@@ -630,38 +630,38 @@ class SDXLUNetWrapper(torch.nn.Module):
                 
             # If model supports added conditioning and we have the kwargs, use them
             if self.supports_added_cond and 'added_cond_kwargs' in kwargs:
-                print(f"[SDXL_WRAPPER] forward: Using full SDXL call with added_cond_kwargs")
-                print(f"[SDXL_WRAPPER] forward: About to call self.unet(*args, **kwargs)")
-                print(f"[SDXL_WRAPPER] forward: 🚀 Starting underlying UNet call...")
+                logger.debug(f"[SDXL_WRAPPER] forward: Using full SDXL call with added_cond_kwargs")
+                logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(*args, **kwargs)")
+                logger.debug(f"[SDXL_WRAPPER] forward: 🚀 Starting underlying UNet call...")
                 
                 import time
                 start_time = time.time()
                 result = self.unet(*args, **kwargs)
                 elapsed_time = time.time() - start_time
                 
-                print(f"[SDXL_WRAPPER] forward: ✅ Underlying UNet call completed in {elapsed_time:.3f}s")
+                logger.debug(f"[SDXL_WRAPPER] forward: ✅ Underlying UNet call completed in {elapsed_time:.3f}s")
                 return result
             elif len(args) >= 3:
-                print(f"[SDXL_WRAPPER] forward: Using basic SDXL call (no added_cond_kwargs)")
-                print(f"[SDXL_WRAPPER] forward: About to call self.unet(args[0], args[1], args[2])")
+                logger.debug(f"[SDXL_WRAPPER] forward: Using basic SDXL call (no added_cond_kwargs)")
+                logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(args[0], args[1], args[2])")
                 
                 import time
                 start_time = time.time()
                 result = self.unet(args[0], args[1], args[2])
                 elapsed_time = time.time() - start_time
                 
-                print(f"[SDXL_WRAPPER] forward: ✅ Basic UNet call completed in {elapsed_time:.3f}s")
+                logger.debug(f"[SDXL_WRAPPER] forward: ✅ Basic UNet call completed in {elapsed_time:.3f}s")
                 return result
             else:
-                print(f"[SDXL_WRAPPER] forward: Using fallback call")
+                logger.debug(f"[SDXL_WRAPPER] forward: Using fallback call")
                 # Fallback
                 return self.unet(*args, **kwargs)
                 
         except (TypeError, AttributeError) as e:
-            print(f"[SDXL_WRAPPER] forward: Exception caught: {e}")
+            logger.error(f"[SDXL_WRAPPER] forward: Exception caught: {e}")
             if "NoneType" in str(e) or "iterable" in str(e) or "text_embeds" in str(e):
                 # Handle SDXL-Turbo models that need proper conditioning
-                print(f"🔧 Providing minimal SDXL conditioning due to: {e}")
+                logger.info(f"🔧 Providing minimal SDXL conditioning due to: {e}")
                 if len(args) >= 3:
                     sample, timestep, encoder_hidden_states = args[0], args[1], args[2]
                     device = sample.device
@@ -674,10 +674,10 @@ class SDXLUNetWrapper(torch.nn.Module):
                     }
                     
                     try:
-                        print(f"[SDXL_WRAPPER] forward: Trying with minimal conditioning...")
+                        logger.debug(f"[SDXL_WRAPPER] forward: Trying with minimal conditioning...")
                         return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
                     except Exception as final_e:
-                        print(f"🔧 Final fallback to basic call: {final_e}")
+                        logger.info(f"🔧 Final fallback to basic call: {final_e}")
                         return self.unet(sample, timestep, encoder_hidden_states)
                 else:
                     return self.unet(*args)
@@ -709,7 +709,7 @@ def export_onnx(
     wrapped_model = model
     
     if is_unet and (is_sdxl_by_data or detector.detect_unet_type(model)['is_sdxl']):
-        print("🔧 Detected SDXL model, using advanced wrapper for robust ONNX export...")
+        logger.info("🔧 Detected SDXL model, using advanced wrapper for robust ONNX export...")
         
         # Try to get model path for better detection
         model_path = getattr(model_data, 'model_path', '') or getattr(model, 'model_path', '')
@@ -717,12 +717,12 @@ def export_onnx(
         # Use our advanced SDXL wrapper
         wrapped_model = create_sdxl_tensorrt_wrapper(model, model_path)
         
-        print(f"   SDXL detection - by data: {is_sdxl_by_data}")
-        print(f"   Model path: {model_path}")
+        logger.debug(f"   SDXL detection - by data: {is_sdxl_by_data}")
+        logger.debug(f"   Model path: {model_path}")
     
     # For legacy compatibility, still wrap other potential SDXL models
     elif is_sdxl_by_data and hasattr(model, 'forward'):
-        print("🔧 Using legacy SDXL wrapper for ONNX export...")
+        logger.info("🔧 Using legacy SDXL wrapper for ONNX export...")
         wrapped_model = SDXLUNetWrapper(model)
     
     with torch.inference_mode(), torch.autocast("cuda"):
@@ -754,7 +754,7 @@ def export_onnx(
             
             # Check if model is large enough to need external data
             if onnx_model.ByteSize() > 2147483648:  # 2GB
-                print(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - converting to external data format")
+                logger.debug(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - converting to external data format")
                 
                 # Create directory for external data
                 onnx_dir = os.path.dirname(onnx_path)
@@ -768,9 +768,9 @@ def export_onnx(
                     location="weights.pb",
                     convert_attribute=False,
                 )
-                print(f"✅ Converted to external data format with weights in weights.pb")
+                logger.info(f"✅ Converted to external data format with weights in weights.pb")
             else:
-                print(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - keeping standard format")
+                logger.debug(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - keeping standard format")
             
             del onnx_model
     del wrapped_model
@@ -792,8 +792,8 @@ def optimize_onnx(
     uses_external_data = len(external_data_files) > 0
     
     if uses_external_data:
-        print(f"🔧 Optimizing ONNX model with external data format...")
-        print(f"   Found {len(external_data_files)} external data files")
+        logger.debug(f"🔧 Optimizing ONNX model with external data format...")
+        logger.debug(f"   Found {len(external_data_files)} external data files")
         
         # Load model with external data
         onnx_model = onnx.load(onnx_path, load_external_data=True)
@@ -810,7 +810,7 @@ def optimize_onnx(
                     os.remove(os.path.join(opt_dir, f))
         
         # Save optimized model with external data format
-        print(f"🔧 Saving optimized model with external data to: {onnx_opt_path}")
+        logger.debug(f"🔧 Saving optimized model with external data to: {onnx_opt_path}")
         onnx.save_model(
             onnx_opt_graph,
             onnx_opt_path,
@@ -819,10 +819,10 @@ def optimize_onnx(
             location="weights.pb",
             convert_attribute=False,
         )
-        print(f"✅ ONNX optimization complete with external data")
+        logger.info(f"✅ ONNX optimization complete with external data")
         
     else:
-        print(f"🔧 Optimizing ONNX model (standard format)...")
+        logger.debug(f"🔧 Optimizing ONNX model (standard format)...")
         # Standard optimization for smaller models
         onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
         onnx.save(onnx_opt_graph, onnx_opt_path)

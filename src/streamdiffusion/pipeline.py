@@ -581,23 +581,36 @@ class StreamDiffusion:
             
             try:
                 logger.debug(f"[PIPELINE] unet_step: 🚀 Starting SDXL UNet call...")
-                logger.debug(f"[PIPELINE] unet_step: Calling TensorRT engine with correct argument format...")
                 
                 # Add timing to detect hang
                 import time
                 start_time = time.time()
                 
-                # Call TensorRT engine with correct argument format
-                # Convert diffusers-style kwargs to TensorRT engine format
+                # Detect UNet type and use appropriate calling convention
                 added_cond_kwargs = unet_kwargs.get('added_cond_kwargs', {})
                 
-                logger.debug(f"[PIPELINE] unet_step: Calling engine with positional args and added_cond_kwargs")
-                model_pred = self.unet(
-                    unet_kwargs['sample'],                    # latent_model_input (positional)
-                    unet_kwargs['timestep'],                  # timestep (positional)
-                    unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
-                    **added_cond_kwargs                       # SDXL conditioning as kwargs
-                )[0]
+                # Check if this is a TensorRT engine or PyTorch UNet
+                is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
+                
+                if is_tensorrt_engine:
+                    logger.debug(f"[PIPELINE] unet_step: Detected TensorRT engine - using TensorRT calling convention")
+                    # TensorRT engine expects positional args + kwargs
+                    model_pred = self.unet(
+                        unet_kwargs['sample'],                    # latent_model_input (positional)
+                        unet_kwargs['timestep'],                  # timestep (positional)
+                        unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
+                        **added_cond_kwargs                       # SDXL conditioning as kwargs
+                    )[0]
+                else:
+                    logger.debug(f"[PIPELINE] unet_step: Detected PyTorch UNet - using diffusers calling convention")
+                    # PyTorch UNet expects diffusers-style named arguments
+                    model_pred = self.unet(
+                        sample=unet_kwargs['sample'],
+                        timestep=unet_kwargs['timestep'],
+                        encoder_hidden_states=unet_kwargs['encoder_hidden_states'],
+                        added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                    )[0]
                 
                 elapsed_time = time.time() - start_time
                 logger.debug(f"[PIPELINE] unet_step: ✅ SDXL UNet call completed in {elapsed_time:.3f}s!")
