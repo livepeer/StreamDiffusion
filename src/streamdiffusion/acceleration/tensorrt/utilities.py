@@ -41,11 +41,7 @@ from polygraphy.backend.trt import (
 )
 from polygraphy.backend.trt import util as trt_util
 
-try:
-    from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
-except ImportError:
-    # Handle case when running as standalone script
-    from models import CLIP, VAE, BaseModel, UNet, VAEEncoder
+from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)

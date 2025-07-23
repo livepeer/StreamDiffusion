@@ -7,10 +7,7 @@ from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTinyOutput
 from diffusers.models.autoencoders.autoencoder_kl import DecoderOutput
 from polygraphy import cuda
 
-try:
-    from .utilities import Engine
-except ImportError:
-    from utilities import Engine
+from .utilities import Engine
 
 
 class UNet2DConditionModelEngine:
