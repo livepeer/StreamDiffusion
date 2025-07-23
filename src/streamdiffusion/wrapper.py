@@ -841,7 +841,7 @@ class StreamDiffusionWrapper:
         for method, method_name in loading_methods:
             try:
                 pipe = method(model_id_or_path).to(device=self.device, dtype=self.dtype)
-                print(f"_load_model: Successfully loaded using {method_name}")
+        
                 break
             except Exception as e:
                 continue
@@ -1000,7 +1000,7 @@ class StreamDiffusionWrapper:
                         unet_arch = {}
                         
                 except Exception as e:
-                    print(f"Architecture detection failed: {e}, compiling without special support")
+                    pass
 
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
@@ -1115,11 +1115,9 @@ class StreamDiffusionWrapper:
                     if use_controlnet_trt:
                         control_input_names = unet_model.get_input_names()
                     
-                    # Log configuration
-                    conditioning_config = f"ControlNet={'ON' if use_controlnet_trt else 'OFF'}, IPAdapter={'ON' if use_ipadapter_trt else 'OFF'}"
-                    print(f"Compiling UNet with unified conditioning: {conditioning_config}")
+
                     
-                    # Single unified wrapper for all configurations
+
                     wrapped_unet = ConditioningWrapper(
                         stream.unet,
                         use_controlnet=use_controlnet_trt,
@@ -1222,12 +1220,7 @@ class StreamDiffusionWrapper:
                 if use_ipadapter_trt:
                     setattr(stream.unet, 'ipadapter_arch', unet_arch)
                 
-                # Log final configuration
-                config_parts = []
-                if use_controlnet_trt: config_parts.append("ControlNet")
-                if use_ipadapter_trt: config_parts.append("IPAdapter")
-                config_desc = " + ".join(config_parts) if config_parts else "standard UNet"
-                print(f"TensorRT UNet engine configured for: {config_desc}")
+
                 stream.vae = AutoencoderKLEngine(
                     vae_encoder_path,
                     vae_decoder_path,

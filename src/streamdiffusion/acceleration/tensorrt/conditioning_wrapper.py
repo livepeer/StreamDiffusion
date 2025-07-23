@@ -29,14 +29,14 @@ class ConditioningWrapper(torch.nn.Module):
             if 'install_processors' not in ipadapter_kwargs:
                 ipadapter_kwargs['install_processors'] = True
             
-            print(f"ConditioningWrapper: Applying IPAdapter with {num_tokens} tokens")
+
             self.ipadapter_wrapper = create_ipadapter_wrapper(unet, num_tokens=num_tokens, **ipadapter_kwargs)
             self.unet = self.ipadapter_wrapper.unet
         
         # Apply ControlNet second (wraps whatever UNet we have)
         if use_controlnet and control_input_names:
             controlnet_kwargs = {k: v for k, v in kwargs.items() if k in ['num_controlnets', 'conditioning_scales']}
-            print(f"ConditioningWrapper: Applying ControlNet with {len(control_input_names)} inputs")
+
             self.controlnet_wrapper = create_controlnet_wrapper(self.unet, control_input_names, **controlnet_kwargs)
         
         # Set up forward strategy based on what we created
@@ -46,12 +46,7 @@ class ConditioningWrapper(torch.nn.Module):
             self._forward_impl = lambda sample, timestep, encoder_hidden_states, *control_args: \
                 self.unet(sample=sample, timestep=timestep, encoder_hidden_states=encoder_hidden_states, return_dict=False)
         
-        # Log final configuration
-        config_parts = []
-        if use_controlnet: config_parts.append("ControlNet")
-        if use_ipadapter: config_parts.append("IPAdapter")
-        config_desc = " + ".join(config_parts) if config_parts else "raw UNet"
-        print(f"ConditioningWrapper: Initialized with {config_desc}")
+
         
     def forward(self, 
                 sample: torch.Tensor,

@@ -284,9 +284,7 @@ class UNet(BaseModel):
             # Could use dynamic shapes: min=77 (text only), max=93 (text + 16 tokens)
             # This would allow a single engine to handle all IPAdapter types instead of separate engines
             self.text_maxlen = text_maxlen + self.num_image_tokens
-            print(f"UNet: IPAdapter enabled with baked-in processors")
-            print(f"UNet: {self.num_image_tokens} tokens, embedding_dim={self.embedding_dim}")
-            print(f"UNet: Extended text_maxlen to {self.text_maxlen} (text + image tokens)")
+
         
         if self.use_control and self.unet_arch:
             self.control_inputs = self.get_control(image_height, image_width)
