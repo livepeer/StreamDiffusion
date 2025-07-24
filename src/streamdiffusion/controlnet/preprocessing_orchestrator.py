@@ -155,8 +155,6 @@ class PreprocessingOrchestrator:
         Returns:
             List of (positive_embeds, negative_embeds) tuples
         """
-        print(f"process_embedding_preprocessors: Processing {len(embedding_preprocessors)} embedding preprocessors")
-        
         if not embedding_preprocessors:
             return []
         
@@ -168,17 +166,14 @@ class PreprocessingOrchestrator:
         
         # Process in parallel if multiple preprocessors, otherwise process directly
         if len(embedding_preprocessors) > 1:
-            print(f"process_embedding_preprocessors: Processing {len(embedding_preprocessors)} preprocessors in parallel")
             results = self._process_embedding_preprocessors_parallel(
                 embedding_preprocessors, control_variants, stream_width, stream_height
             )
         else:
-            print("process_embedding_preprocessors: Processing single preprocessor")
             results = self._process_embedding_preprocessors_sequential(
                 embedding_preprocessors, control_variants, stream_width, stream_height
             )
         
-        print(f"process_embedding_preprocessors: Returning {len(results) if results else 0} results")
         return results
     
     def process_embedding_preprocessors_pipelined(self, 
@@ -194,8 +189,6 @@ class PreprocessingOrchestrator:
         Returns:
             List of (positive_embeds, negative_embeds) tuples
         """
-        print(f"process_embedding_preprocessors_pipelined: Processing {len(embedding_preprocessors)} embedding preprocessors with pipelining")
-        
         if not embedding_preprocessors:
             return []
         
@@ -216,8 +209,6 @@ class PreprocessingOrchestrator:
                                                 stream_width: int,
                                                 stream_height: int) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         """Process multiple embedding preprocessors in parallel"""
-        print(f"_process_embedding_preprocessors_parallel: Starting parallel processing")
-        
         futures = [
             self._preprocessor_executor.submit(
                 self._process_single_embedding_preprocessor,
@@ -234,7 +225,6 @@ class PreprocessingOrchestrator:
                 index = result['index']
                 embeddings = result['embeddings']
                 results[index] = embeddings
-                print(f"_process_embedding_preprocessors_parallel: Preprocessor {index} completed")
         
         return results
     
@@ -244,17 +234,13 @@ class PreprocessingOrchestrator:
                                                   stream_width: int,
                                                   stream_height: int) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         """Process single embedding preprocessor directly"""
-        print("_process_embedding_preprocessors_sequential: Processing single preprocessor")
-        
         result = self._process_single_embedding_preprocessor(
             0, embedding_preprocessors[0], control_variants, stream_width, stream_height
         )
         
         if result and result['embeddings'] is not None:
-            print("_process_embedding_preprocessors_sequential: Processing completed")
             return [result['embeddings']]
         else:
-            print("_process_embedding_preprocessors_sequential: Processing failed")
             return [None]
     
     def _process_single_embedding_preprocessor(self,
@@ -265,13 +251,10 @@ class PreprocessingOrchestrator:
                                              stream_height: int) -> Optional[Dict[str, Any]]:
         """Process a single embedding preprocessor"""
         try:
-            print(f"_process_single_embedding_preprocessor: Processing preprocessor {index}")
-            
             # Use tensor processing if available and input is tensor
             if (hasattr(preprocessor, 'process_tensor') and 
                 control_variants['tensor'] is not None):
                 embeddings = preprocessor.process_tensor(control_variants['tensor'])
-                print(f"_process_single_embedding_preprocessor: Tensor path succeeded for {index}")
                 return {
                     'index': index,
                     'embeddings': embeddings
@@ -280,17 +263,14 @@ class PreprocessingOrchestrator:
             # Use PIL processing for non-tensor inputs
             if control_variants['image'] is not None:
                 embeddings = preprocessor.process(control_variants['image'])
-                print(f"_process_single_embedding_preprocessor: PIL path succeeded for {index}")
                 return {
                     'index': index,
                     'embeddings': embeddings
                 }
             
-            print(f"_process_single_embedding_preprocessor: No valid input for {index}")
             return None
             
         except Exception as e:
-            print(f"_process_single_embedding_preprocessor: Preprocessor {index} failed: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -814,8 +794,6 @@ class PreprocessingOrchestrator:
             self._next_embedding_future = None
             return
         
-        print(f"_start_next_frame_embedding_preprocessing: Starting background preprocessing for {len(embedding_preprocessors)} preprocessors")
-        
         # Prepare processing data
         control_variants = self._prepare_input_variants_optimized(input_image)
         
@@ -835,7 +813,6 @@ class PreprocessingOrchestrator:
                                                   stream_height: int) -> Dict[str, Any]:
         """Background embedding preprocessing in separate thread"""
         try:
-            print(f"_process_embedding_preprocessors_background: Processing {len(embedding_preprocessors)} preprocessors in background")
             
             if len(embedding_preprocessors) > 1:
                 # Parallel processing for multiple preprocessors
@@ -866,7 +843,6 @@ class PreprocessingOrchestrator:
             }
             
         except Exception as e:
-            print(f"_process_embedding_preprocessors_background: Error in background processing: {e}")
             import traceback
             traceback.print_exc()
             return {
@@ -880,12 +856,9 @@ class PreprocessingOrchestrator:
             try:
                 # Reduced timeout: 50ms for real-time performance
                 self._next_embedding_result = self._next_embedding_future.result(timeout=0.05)
-                print("_wait_for_previous_embedding_preprocessing: Background preprocessing completed")
             except concurrent.futures.TimeoutError:
-                print("_wait_for_previous_embedding_preprocessing: Preprocessing timeout")
                 raise RuntimeError("_wait_for_previous_embedding_preprocessing: Background embedding preprocessing timed out")
             except Exception as e:
-                print(f"_wait_for_previous_embedding_preprocessing: Preprocessing error: {e}")
                 raise RuntimeError(f"_wait_for_previous_embedding_preprocessing: Background embedding preprocessing failed: {e}")
         else:
             self._next_embedding_result = None
@@ -895,12 +868,10 @@ class PreprocessingOrchestrator:
         """Apply embedding preprocessing results from previous iteration"""
         if not hasattr(self, '_next_embedding_result') or self._next_embedding_result is None:
             # First frame - no background results available yet
-            print("_apply_current_frame_embedding_preprocessing: First frame - no background results available")
             return [None] * len(embedding_preprocessors)
         
         result = self._next_embedding_result
         if result['status'] != 'success':
             raise RuntimeError(f"_apply_current_frame_embedding_preprocessing: Background processing failed: {result.get('error', 'Unknown error')}")
         
-        print(f"_apply_current_frame_embedding_preprocessing: Applying {len(result['results'])} background results")
         return result['results']

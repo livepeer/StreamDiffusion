@@ -8,28 +8,20 @@ from pathlib import Path
 
 # Using relative import - no sys.path modification needed
 
-print("base_ipadapter_pipeline: Starting imports")
-
-print("base_ipadapter_pipeline: Importing IPAdapter...")
 try:
     from .Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
-    print("base_ipadapter_pipeline: IPAdapter imported successfully")
 except Exception as e:
     print(f"base_ipadapter_pipeline: Failed to import IPAdapter: {e}")
     raise
 
-print("base_ipadapter_pipeline: Importing StreamDiffusion...")
 try:
     from ..pipeline import StreamDiffusion
-    print("base_ipadapter_pipeline: StreamDiffusion imported successfully")
 except Exception as e:
     print(f"base_ipadapter_pipeline: Failed to import StreamDiffusion: {e}")
     raise
 
-print("base_ipadapter_pipeline: Importing IPAdapterEmbeddingPreprocessor...")
 try:
     from ..controlnet.preprocessors.ipadapter_embedding import IPAdapterEmbeddingPreprocessor
-    print("base_ipadapter_pipeline: IPAdapterEmbeddingPreprocessor imported successfully")
 except Exception as e:
     print(f"base_ipadapter_pipeline: Failed to import IPAdapterEmbeddingPreprocessor: {e}")
     raise
@@ -66,8 +58,6 @@ class BaseIPAdapterPipeline:
         
         # Style image key for embedding preprocessing
         self._style_image_key = "ipadapter_main"
-        
-        print(f"BaseIPAdapterPipeline.__init__: Initialized with style image key '{self._style_image_key}'")
         
         # No caching needed - StreamParameterUpdater handles that
         
@@ -119,9 +109,6 @@ class BaseIPAdapterPipeline:
                 embedding_preprocessor, 
                 self._style_image_key
             )
-            print(f"set_ipadapter: Registered embedding preprocessor with StreamParameterUpdater")
-        else:
-            print(f"set_ipadapter: Embedding preprocessor already registered, skipping")
         
         # Process style image if provided
         if style_image is not None:
@@ -131,7 +118,6 @@ class BaseIPAdapterPipeline:
                 self.style_image = style_image
             
             # Immediately process embeddings synchronously to ensure they're cached
-            print(f"set_ipadapter: Processing style image embeddings synchronously")
             self.stream._param_updater.update_style_image(
                 self._style_image_key, 
                 self.style_image
@@ -169,7 +155,6 @@ class BaseIPAdapterPipeline:
         
         # Unregister embedding preprocessor from StreamParameterUpdater
         self.stream._param_updater.unregister_embedding_preprocessor(self._style_image_key)
-        print(f"clear_ipadapter: Unregistered embedding preprocessor from StreamParameterUpdater")
         
         self.ipadapter = None
         self.style_image = None
@@ -221,7 +206,6 @@ class BaseIPAdapterPipeline:
         
         # Check if it's a local path that exists
         if os.path.exists(model_path):
-            print(f"_resolve_model_path: Using local {model_type} path: {model_path}")
             return model_path
         
         # Check if it looks like a HuggingFace model ID with specific file (repo/file.bin)
@@ -240,14 +224,12 @@ class BaseIPAdapterPipeline:
                     raise ValueError(f"_resolve_model_path: Could not download {file_path} from {repo_id}: {e}")
             
             # Standard repo ID format
-            print(f"_resolve_model_path: Downloading {model_type} from HuggingFace: {model_path}")
             
             if model_type == "ipadapter":
                 # Use specific filename if provided, otherwise try common patterns
                 if filename:
                     try:
                         downloaded_path = hf_hub_download(repo_id=model_path, filename=filename)
-                        print(f"_resolve_model_path: IPAdapter downloaded to: {downloaded_path}")
                         return downloaded_path
                     except Exception as e:
                         raise ValueError(f"_resolve_model_path: Could not download {filename} from {model_path}: {e}")
@@ -261,7 +243,6 @@ class BaseIPAdapterPipeline:
                     ]:
                         try:
                             downloaded_path = hf_hub_download(repo_id=model_path, filename=filename_pattern)
-                            print(f"_resolve_model_path: IPAdapter downloaded to: {downloaded_path}")
                             return downloaded_path
                         except:
                             continue
@@ -275,7 +256,6 @@ class BaseIPAdapterPipeline:
                         allow_patterns=["models/image_encoder/*"]
                     )
                     encoder_path = os.path.join(repo_path, "models", "image_encoder")
-                    print(f"_resolve_model_path: Image encoder downloaded to: {encoder_path}")
                     return encoder_path
                 except Exception as e:
                     raise ValueError(f"_resolve_model_path: Could not download image encoder from {model_path}: {e}")
@@ -293,7 +273,7 @@ class BaseIPAdapterPipeline:
         Args:
             ipadapter_config: Optional IPAdapter configuration
         """
-        print("preload_models_for_tensorrt: Loading IPAdapter models with weights...")
+
         
         try:
             # Use the config if provided, otherwise use default h94/IP-Adapter
@@ -334,7 +314,6 @@ class BaseIPAdapterPipeline:
             
             # Create and register embedding preprocessor for parallel processing (if not already registered)
             if not self._has_registered_preprocessor():
-                print("preload_models_for_tensorrt: Creating embedding preprocessor")
                 embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
                     ipadapter=self.ipadapter,
                     device=self.device,
@@ -346,9 +325,6 @@ class BaseIPAdapterPipeline:
                     embedding_preprocessor, 
                     self._style_image_key
                 )
-                print(f"preload_models_for_tensorrt: Registered embedding preprocessor with StreamParameterUpdater")
-            else:
-                print(f"preload_models_for_tensorrt: Embedding preprocessor already registered, skipping")
             
             # Store reference to pre-loaded IPAdapter for later use
             if not hasattr(self.stream, '_preloaded_ipadapters'):
@@ -365,7 +341,6 @@ class BaseIPAdapterPipeline:
 
             
         except Exception as e:
-            print(f"preload_models_for_tensorrt: Error loading IPAdapter models: {e}")
             raise RuntimeError(f"Failed to load IPAdapter models: {e}. Check model paths and file formats.")
 
     def get_tensorrt_info(self) -> Dict[str, Any]:
@@ -416,7 +391,6 @@ class BaseIPAdapterPipeline:
         if cached_embeddings is None:
             raise RuntimeError(f"_enhance_embeddings_with_ipadapter: No cached embeddings found for key '{self._style_image_key}'. Embedding preprocessing must complete before enhancement.")
         
-        print("_enhance_embeddings_with_ipadapter: Using cached parallel-processed embeddings")
         image_prompt_embeds, negative_image_prompt_embeds = cached_embeddings
         
         # Ensure image embeddings have the same batch size as text embeddings
@@ -437,8 +411,6 @@ class BaseIPAdapterPipeline:
         
         # Update token count for attention processors
         self.ipadapter.set_tokens(image_prompt_embeds.shape[0] * self.ipadapter.num_tokens)
-        
-        print(f"_enhance_embeddings_with_ipadapter: Enhanced embeddings from {prompt_embeds.shape} to {enhanced_prompt_embeds.shape}")
         
         return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     

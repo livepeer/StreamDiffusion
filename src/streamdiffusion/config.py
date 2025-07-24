@@ -216,15 +216,11 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
     """Setup IPAdapter pipeline from configuration"""
-    print("_setup_ipadapter_from_config: Starting IPAdapter setup")
     # Ensure Diffusers_IPAdapter is in path
     _ensure_ipadapter_path()
-    print("_setup_ipadapter_from_config: Path ensured, attempting import")
     
     try:
-        print("_setup_ipadapter_from_config: Importing IPAdapterPipeline...")
         from .ipadapter import IPAdapterPipeline
-        print("_setup_ipadapter_from_config: IPAdapterPipeline imported successfully")
         
         # Create pipeline
         device = config.get('device', 'cuda')
