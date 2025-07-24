@@ -8,6 +8,7 @@ from .passthrough import PassthroughPreprocessor
 from .external import ExternalPreprocessor
 from .soft_edge import SoftEdgePreprocessor
 from .hed import HEDPreprocessor
+from .ipadapter_embedding import IPAdapterEmbeddingPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -113,6 +114,7 @@ __all__ = [
     "ExternalPreprocessor",
     "SoftEdgePreprocessor",
     "HEDPreprocessor",
+    "IPAdapterEmbeddingPreprocessor",
     "get_preprocessor",
     "register_preprocessor",
     "list_preprocessors",

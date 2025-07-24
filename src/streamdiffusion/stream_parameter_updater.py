@@ -35,6 +35,12 @@ class StreamParameterUpdater:
         
         # Enhancement hooks (e.g., for IPAdapter)
         self._embedding_enhancers = []
+        
+        # IPAdapter embedding preprocessing
+        self._embedding_preprocessors = []
+        self._embedding_cache: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._current_style_images: Dict[str, Any] = {}
+        self._embedding_orchestrator = None
     
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
@@ -67,6 +73,11 @@ class StreamParameterUpdater:
         self._seed_cache.clear()
         self._current_seed_list.clear()
         self._seed_cache_stats = CacheStats()
+        
+        # Clear embedding caches
+        self._embedding_cache.clear()
+        self._current_style_images.clear()
+        print("clear_caches: Cleared embedding caches")
 
     def get_normalize_prompt_weights(self) -> bool:
         """Get the current prompt weight normalization setting."""
@@ -114,6 +125,133 @@ class StreamParameterUpdater:
         """Clear all embedding enhancers."""
         enhancer_count = len(self._embedding_enhancers)
         self._embedding_enhancers.clear()
+
+    def register_embedding_preprocessor(self, preprocessor: Any, style_image_key: str) -> None:
+        """
+        Register an embedding preprocessor for parallel processing.
+        
+        Args:
+            preprocessor: IPAdapterEmbeddingPreprocessor instance
+            style_image_key: Unique key for the style image this preprocessor handles
+        """
+        if self._embedding_orchestrator is None:
+            from .controlnet.preprocessing_orchestrator import PreprocessingOrchestrator
+            self._embedding_orchestrator = PreprocessingOrchestrator(
+                device=self.stream.device,
+                dtype=self.stream.dtype,
+                max_workers=4
+            )
+            print("register_embedding_preprocessor: Created embedding orchestrator")
+        
+        self._embedding_preprocessors.append((preprocessor, style_image_key))
+        print(f"register_embedding_preprocessor: Registered preprocessor for key '{style_image_key}'")
+    
+    def unregister_embedding_preprocessor(self, style_image_key: str) -> None:
+        """Unregister an embedding preprocessor by style image key."""
+        original_count = len(self._embedding_preprocessors)
+        self._embedding_preprocessors = [
+            (preprocessor, key) for preprocessor, key in self._embedding_preprocessors 
+            if key != style_image_key
+        ]
+        removed_count = original_count - len(self._embedding_preprocessors)
+        print(f"unregister_embedding_preprocessor: Removed {removed_count} preprocessors")
+        
+        # Clear cached embeddings for this key
+        if style_image_key in self._embedding_cache:
+            del self._embedding_cache[style_image_key]
+        if style_image_key in self._current_style_images:
+            del self._current_style_images[style_image_key]
+    
+    def update_style_image(self, style_image_key: str, style_image: Any, is_stream: bool = False) -> None:
+        """
+        Update a style image and trigger embedding preprocessing.
+        
+        Args:
+            style_image_key: Unique key for the style image
+            style_image: The style image (PIL Image, path, etc.)
+            is_stream: If True, use pipelined processing (1-frame lag, high throughput)
+                      If False, use synchronous processing (immediate results, lower throughput)
+        """
+        print(f"update_style_image: Updating style image for key '{style_image_key}' (is_stream={is_stream})")
+        
+        # Store the style image
+        self._current_style_images[style_image_key] = style_image
+        
+        # Trigger preprocessing for this style image
+        self._preprocess_style_image_parallel(style_image_key, style_image, is_stream)
+    
+    def _preprocess_style_image_parallel(self, style_image_key: str, style_image: Any, is_stream: bool = False) -> None:
+        """
+        Preprocessing for a specific style image with mode selection
+        
+        Args:
+            style_image_key: Unique key for the style image
+            style_image: The style image to process
+            is_stream: If True, use pipelined processing; if False, use synchronous processing
+        """
+        if not self._embedding_preprocessors or self._embedding_orchestrator is None:
+            print(f"_preprocess_style_image_parallel: No preprocessors available for key '{style_image_key}'")
+            return
+        
+        # Find preprocessors for this key
+        relevant_preprocessors = [
+            preprocessor for preprocessor, key in self._embedding_preprocessors 
+            if key == style_image_key
+        ]
+        
+        if not relevant_preprocessors:
+            print(f"_preprocess_style_image_parallel: No preprocessors found for key '{style_image_key}'")
+            return
+        
+        # Choose processing mode based on is_stream parameter
+        try:
+            if is_stream:
+                # Pipelined processing - optimized for throughput with 1-frame lag
+                print(f"_preprocess_style_image_parallel: Using pipelined processing for key '{style_image_key}'")
+                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors_pipelined(
+                    input_image=style_image,
+                    embedding_preprocessors=relevant_preprocessors,
+                    stream_width=self.stream.width,
+                    stream_height=self.stream.height
+                )
+            else:
+                # Synchronous processing - immediate results for discrete updates
+                print(f"_preprocess_style_image_parallel: Using synchronous processing for key '{style_image_key}'")
+                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors(
+                    input_image=style_image,
+                    embedding_preprocessors=relevant_preprocessors,
+                    stream_width=self.stream.width,
+                    stream_height=self.stream.height
+                )
+            
+            # Cache results for this style image key
+            print(f"_preprocess_style_image_parallel: Got {len(embedding_results) if embedding_results else 0} embedding results")
+            if embedding_results:
+                for i, result in enumerate(embedding_results):
+                    print(f"_preprocess_style_image_parallel: Result {i}: {type(result)} - {result is not None}")
+            
+            if embedding_results and embedding_results[0] is not None:
+                self._embedding_cache[style_image_key] = embedding_results[0]
+                print(f"_preprocess_style_image_parallel: Successfully cached embeddings for key '{style_image_key}' - shapes: {embedding_results[0][0].shape}, {embedding_results[0][1].shape}")
+            else:
+                print(f"_preprocess_style_image_parallel: No valid results to cache for key '{style_image_key}' - embedding_results: {embedding_results}")
+                # This is an error condition - we should always have results
+                raise RuntimeError(f"_preprocess_style_image_parallel: Failed to generate embeddings for style image '{style_image_key}'")
+                
+        except Exception as e:
+            print(f"_preprocess_style_image_parallel: Error processing style image '{style_image_key}': {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def get_cached_embeddings(self, style_image_key: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """Get cached embeddings for a style image key"""
+        cached_result = self._embedding_cache.get(style_image_key, None)
+        print(f"get_cached_embeddings: Looking for key '{style_image_key}' - found: {cached_result is not None}")
+        if cached_result is not None:
+            print(f"get_cached_embeddings: Returning cached embeddings with shapes: {cached_result[0].shape}, {cached_result[1].shape}")
+        else:
+            print(f"get_cached_embeddings: Available keys: {list(self._embedding_cache.keys())}")
+        return cached_result
 
 
     def _normalize_weights(self, weights: List[float], normalize: bool) -> torch.Tensor:

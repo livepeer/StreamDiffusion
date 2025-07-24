@@ -1,15 +1,38 @@
 import torch
 import sys
 import os
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Tuple
 from PIL import Image
 import numpy as np
 from pathlib import Path
 
 # Using relative import - no sys.path modification needed
 
-from .Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
-from ..pipeline import StreamDiffusion
+print("base_ipadapter_pipeline: Starting imports")
+
+print("base_ipadapter_pipeline: Importing IPAdapter...")
+try:
+    from .Diffusers_IPAdapter.ip_adapter.ip_adapter import IPAdapter
+    print("base_ipadapter_pipeline: IPAdapter imported successfully")
+except Exception as e:
+    print(f"base_ipadapter_pipeline: Failed to import IPAdapter: {e}")
+    raise
+
+print("base_ipadapter_pipeline: Importing StreamDiffusion...")
+try:
+    from ..pipeline import StreamDiffusion
+    print("base_ipadapter_pipeline: StreamDiffusion imported successfully")
+except Exception as e:
+    print(f"base_ipadapter_pipeline: Failed to import StreamDiffusion: {e}")
+    raise
+
+print("base_ipadapter_pipeline: Importing IPAdapterEmbeddingPreprocessor...")
+try:
+    from ..controlnet.preprocessors.ipadapter_embedding import IPAdapterEmbeddingPreprocessor
+    print("base_ipadapter_pipeline: IPAdapterEmbeddingPreprocessor imported successfully")
+except Exception as e:
+    print(f"base_ipadapter_pipeline: Failed to import IPAdapterEmbeddingPreprocessor: {e}")
+    raise
 
 class BaseIPAdapterPipeline:
     """
@@ -40,6 +63,11 @@ class BaseIPAdapterPipeline:
         self.ipadapter: Optional[IPAdapter] = None
         self.style_image: Optional[Image.Image] = None
         self.scale: float = 1.0
+        
+        # Style image key for embedding preprocessing
+        self._style_image_key = "ipadapter_main"
+        
+        print(f"BaseIPAdapterPipeline.__init__: Initialized with style image key '{self._style_image_key}'")
         
         # No caching needed - StreamParameterUpdater handles that
         
@@ -78,12 +106,36 @@ class BaseIPAdapterPipeline:
             dtype=self.dtype
         )
         
+        # Create embedding preprocessor for parallel processing (if not already registered)
+        if not self._has_registered_preprocessor():
+            embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
+                ipadapter=self.ipadapter,
+                device=self.device,
+                dtype=self.dtype
+            )
+            
+            # Register with StreamParameterUpdater for integrated processing
+            self.stream._param_updater.register_embedding_preprocessor(
+                embedding_preprocessor, 
+                self._style_image_key
+            )
+            print(f"set_ipadapter: Registered embedding preprocessor with StreamParameterUpdater")
+        else:
+            print(f"set_ipadapter: Embedding preprocessor already registered, skipping")
+        
         # Process style image if provided
         if style_image is not None:
             if isinstance(style_image, str):
                 self.style_image = Image.open(style_image).convert("RGB")
             else:
                 self.style_image = style_image
+            
+            # Immediately process embeddings synchronously to ensure they're cached
+            print(f"set_ipadapter: Processing style image embeddings synchronously")
+            self.stream._param_updater.update_style_image(
+                self._style_image_key, 
+                self.style_image
+            )
         else:
             self.style_image = None
         
@@ -97,6 +149,16 @@ class BaseIPAdapterPipeline:
             name="IPAdapter"
         )
     
+    def _has_registered_preprocessor(self) -> bool:
+        """Check if an embedding preprocessor is already registered for our style image key"""
+        if not hasattr(self.stream._param_updater, '_embedding_preprocessors'):
+            return False
+        
+        for preprocessor, key in self.stream._param_updater._embedding_preprocessors:
+            if key == self._style_image_key:
+                return True
+        return False
+
     def clear_ipadapter(self) -> None:
         """Remove the IPAdapter"""
         # Unregister enhancer from StreamParameterUpdater
@@ -104,6 +166,10 @@ class BaseIPAdapterPipeline:
             self.stream._param_updater.unregister_embedding_enhancer(
                 self._enhance_embeddings_with_ipadapter
             )
+        
+        # Unregister embedding preprocessor from StreamParameterUpdater
+        self.stream._param_updater.unregister_embedding_preprocessor(self._style_image_key)
+        print(f"clear_ipadapter: Unregistered embedding preprocessor from StreamParameterUpdater")
         
         self.ipadapter = None
         self.style_image = None
@@ -120,6 +186,13 @@ class BaseIPAdapterPipeline:
             self.style_image = Image.open(style_image).convert("RGB")
         else:
             self.style_image = style_image
+        
+        # Trigger parallel embedding preprocessing via StreamParameterUpdater
+        if self.style_image is not None:
+            self.stream._param_updater.update_style_image(
+                self._style_image_key, 
+                self.style_image
+            )
     
     def update_scale(self, scale: float) -> None:
         """
@@ -259,7 +332,23 @@ class BaseIPAdapterPipeline:
             # Set the correct scale from config BEFORE TensorRT compilation
             self.ipadapter.set_scale(scale)
             
-            # Set the correct scale from config BEFORE TensorRT compilation
+            # Create and register embedding preprocessor for parallel processing (if not already registered)
+            if not self._has_registered_preprocessor():
+                print("preload_models_for_tensorrt: Creating embedding preprocessor")
+                embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
+                    ipadapter=self.ipadapter,
+                    device=self.device,
+                    dtype=self.dtype
+                )
+                
+                # Register with StreamParameterUpdater for integrated processing
+                self.stream._param_updater.register_embedding_preprocessor(
+                    embedding_preprocessor, 
+                    self._style_image_key
+                )
+                print(f"preload_models_for_tensorrt: Registered embedding preprocessor with StreamParameterUpdater")
+            else:
+                print(f"preload_models_for_tensorrt: Embedding preprocessor already registered, skipping")
             
             # Store reference to pre-loaded IPAdapter for later use
             if not hasattr(self.stream, '_preloaded_ipadapters'):
@@ -309,6 +398,7 @@ class BaseIPAdapterPipeline:
         
         This method integrates IPAdapter image conditioning with text embeddings,
         maintaining compatibility with both single prompts and prompt blending.
+        Now uses cached parallel-processed embeddings when available.
         
         Args:
             prompt_embeds: Text prompt embeddings from StreamParameterUpdater
@@ -321,10 +411,13 @@ class BaseIPAdapterPipeline:
         if self.ipadapter is None or self.style_image is None:
             return prompt_embeds, negative_prompt_embeds
         
-        # Get IPAdapter image embeddings from the style image
-        image_prompt_embeds, negative_image_prompt_embeds = self.ipadapter.get_image_embeds(
-            images=[self.style_image]
-        )
+        # Get cached embeddings from StreamParameterUpdater (must be available)
+        cached_embeddings = self.stream._param_updater.get_cached_embeddings(self._style_image_key)
+        if cached_embeddings is None:
+            raise RuntimeError(f"_enhance_embeddings_with_ipadapter: No cached embeddings found for key '{self._style_image_key}'. Embedding preprocessing must complete before enhancement.")
+        
+        print("_enhance_embeddings_with_ipadapter: Using cached parallel-processed embeddings")
+        image_prompt_embeds, negative_image_prompt_embeds = cached_embeddings
         
         # Ensure image embeddings have the same batch size as text embeddings
         batch_size = prompt_embeds.shape[0]
@@ -345,7 +438,7 @@ class BaseIPAdapterPipeline:
         # Update token count for attention processors
         self.ipadapter.set_tokens(image_prompt_embeds.shape[0] * self.ipadapter.num_tokens)
         
-
+        print(f"_enhance_embeddings_with_ipadapter: Enhanced embeddings from {prompt_embeds.shape} to {enhanced_prompt_embeds.shape}")
         
         return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     
