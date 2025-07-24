@@ -410,7 +410,12 @@ class BaseIPAdapterPipeline:
             enhanced_negative_prompt_embeds = torch.cat([prompt_embeds, negative_image_prompt_embeds], dim=1)
         
         # Update token count for attention processors
-        self.ipadapter.set_tokens(image_prompt_embeds.shape[0] * self.ipadapter.num_tokens)
+        old_tokens = getattr(self.ipadapter, '_current_tokens', None)
+        new_tokens = image_prompt_embeds.shape[0] * self.ipadapter.num_tokens
+        
+        if old_tokens != new_tokens:
+            self.ipadapter.set_tokens(new_tokens)
+            self.ipadapter._current_tokens = new_tokens
         
         return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     
