@@ -220,12 +220,12 @@ def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
     _ensure_ipadapter_path()
     
     try:
-        from .ipadapter import IPAdapterPipeline
+        from .ipadapter import BaseIPAdapterPipeline
         
         # Create pipeline
         device = config.get('device', 'cuda')
         dtype = _parse_dtype(config.get('dtype', 'float16'))
-        pipeline = IPAdapterPipeline(wrapper.stream, device, dtype)
+        pipeline = BaseIPAdapterPipeline(wrapper.stream, device, dtype)
         
         # Handle preloaded models vs fresh setup
         if _has_preloaded_models(wrapper):

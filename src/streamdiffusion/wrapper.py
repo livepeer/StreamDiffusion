@@ -978,8 +978,8 @@ class StreamDiffusionWrapper:
                 ipadapter_pipeline = None
                 if has_ipadapter:
                     try:
-                        from streamdiffusion.ipadapter import IPAdapterPipeline
-                        ipadapter_pipeline = IPAdapterPipeline(
+                        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
+                        ipadapter_pipeline = BaseIPAdapterPipeline(
                             stream_diffusion=stream,
                             device=self.device,
                             dtype=self.dtype
