@@ -17,13 +17,20 @@ from .model_detection import detect_model_from_diffusers_unet
 class ControlNetEnginePool:
     """Manages multiple ControlNet TensorRT engines"""
     
-    def __init__(self, engine_dir: str, stream: Optional[cuda.Stream] = None, 
+    def __init__(self, engine_dir: str, stream: Optional['cuda.Stream'] = None, 
                  image_width: int = 512, image_height: int = 512, enable_pytorch_fallback: bool = False):
         """Initialize ControlNet engine pool"""
         self.engine_dir = Path(engine_dir)
         self.engine_dir.mkdir(parents=True, exist_ok=True)
         
-        self.stream = stream if stream is not None else cuda.Stream()
+        if stream is not None:
+            self.stream = stream
+        else:
+            try:
+                from polygraphy import cuda
+                self.stream = cuda.Stream()
+            except ImportError:
+                self.stream = None
         self.engines: Dict[str, HybridControlNet] = {}
         self.compiled_models: Set[str] = set()
         
