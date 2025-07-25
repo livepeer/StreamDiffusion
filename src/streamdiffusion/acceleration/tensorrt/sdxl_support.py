@@ -7,6 +7,12 @@ conditioning parameters, and Turbo variants
 import torch
 from typing import Dict, List, Optional, Tuple, Any, Union
 from diffusers import UNet2DConditionModel
+from .model_detection import (
+    detect_model_comprehensive, 
+    detect_unet_characteristics,
+    is_sdxl_model_path,
+    is_turbo_model_path
+)
 
 # Handle different diffusers versions for CLIPTextModel import
 try:
@@ -21,73 +27,6 @@ except ImportError:
             # If CLIPTextModel isn't available, we'll work without it
             CLIPTextModel = None
 
-
-class SDXLModelDetector:
-    """Detects SDXL models and their capabilities"""
-    
-    @staticmethod
-    def is_sdxl_model(model_path: str) -> bool:
-        """Check if model path indicates SDXL"""
-        sdxl_indicators = [
-            'sdxl', 'xl', 'stable-diffusion-xl', 
-            'stabilityai/stable-diffusion-xl',
-            'sd_xl', 'sdxl-turbo', 'sdxl_turbo'
-        ]
-        return any(indicator in model_path.lower() for indicator in sdxl_indicators)
-    
-    @staticmethod
-    def is_turbo_model(model_path: str) -> bool:
-        """Check if this is a Turbo variant"""
-        turbo_indicators = ['turbo', 'lcm', 'lightning']
-        return any(indicator in model_path.lower() for indicator in turbo_indicators)
-    
-    @staticmethod
-    def detect_unet_type(unet: UNet2DConditionModel) -> Dict[str, Any]:
-        """Detect UNet characteristics for TensorRT configuration"""
-        config = unet.config
-        
-        # Get cross attention dimensions to detect model type
-        cross_attention_dim = getattr(config, 'cross_attention_dim', None)
-        
-        # Detect SDXL by multiple indicators
-        is_sdxl = False
-        
-        # Check cross attention dimension
-        if isinstance(cross_attention_dim, (list, tuple)):
-            # SDXL typically has [1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280]
-            is_sdxl = any(dim >= 1280 for dim in cross_attention_dim)
-        elif isinstance(cross_attention_dim, int):
-            # Single value - SDXL uses 2048 for concatenated embeddings, or 1280+ for individual encoders
-            is_sdxl = cross_attention_dim >= 1280
-        
-        # Check addition_embed_type for SDXL detection (strong indicator)
-        addition_embed_type = getattr(config, 'addition_embed_type', None)
-        has_addition_embed = addition_embed_type is not None
-        
-        if addition_embed_type in ['text_time', 'text_time_guidance']:
-            is_sdxl = True  # This is a definitive SDXL indicator
-        
-        # Check if model has time conditioning projection (SDXL feature)
-        has_time_cond = hasattr(config, 'time_cond_proj_dim') and config.time_cond_proj_dim is not None
-        
-        # Additional SDXL detection checks
-        if hasattr(config, 'num_class_embeds') and config.num_class_embeds is not None:
-            is_sdxl = True  # SDXL often has class embeddings
-            
-        # Check sample size (SDXL typically uses 128 vs 64 for SD1.5)
-        sample_size = getattr(config, 'sample_size', 64)
-        if sample_size >= 128:
-            is_sdxl = True
-        
-        return {
-            'is_sdxl': is_sdxl,
-            'has_time_cond': has_time_cond, 
-            'has_addition_embed': has_addition_embed,
-            'cross_attention_dim': cross_attention_dim,
-            'addition_embed_type': addition_embed_type,
-            'in_channels': getattr(config, 'in_channels', 4),
-            'sample_size': getattr(config, 'sample_size', 64 if not is_sdxl else 128)
-        }
 
 
 class SDXLConditioningHandler:
@@ -223,17 +162,12 @@ class SDXLTensorRTWrapper(torch.nn.Module):
         self.unet = unet
         self.model_path = model_path
         
-        # Detect model capabilities
-        self.detector = SDXLModelDetector()
+        # Use comprehensive model detection
+        model_info = detect_model_comprehensive(unet, model_path)
         
-        # Enhanced SDXL detection - use both path and UNet analysis
-        self.unet_info = self.detector.detect_unet_type(unet)
-        path_is_sdxl = self.detector.is_sdxl_model(model_path) if model_path else False
-        arch_is_sdxl = self.unet_info['is_sdxl']
-        
-        # SDXL if either path or architecture indicates it
-        self.is_sdxl = path_is_sdxl or arch_is_sdxl
-        self.is_turbo = self.detector.is_turbo_model(model_path) if model_path else False
+        self.unet_info = model_info
+        self.is_sdxl = model_info['is_sdxl']
+        self.is_turbo = model_info['is_turbo']
         
         self.conditioning_handler = SDXLConditioningHandler(self.unet_info)
         
@@ -373,17 +307,10 @@ def create_sdxl_tensorrt_wrapper(unet: UNet2DConditionModel, model_path: str = "
 
 def get_sdxl_tensorrt_config(model_path: str, unet: UNet2DConditionModel) -> Dict[str, Any]:
     """Get complete TensorRT configuration for SDXL model"""
-    detector = SDXLModelDetector()
-    
-    config = {
-        'is_sdxl': detector.is_sdxl_model(model_path),
-        'is_turbo': detector.is_turbo_model(model_path),
-        'unet_info': detector.detect_unet_type(unet),
-        'model_path': model_path
-    }
+    config = detect_model_comprehensive(unet, model_path)
     
     # Add conditioning specification
-    conditioning_handler = SDXLConditioningHandler(config['unet_info'])
+    conditioning_handler = SDXLConditioningHandler(config)
     config['conditioning_spec'] = conditioning_handler.get_conditioning_spec()
     
     return config 

@@ -695,9 +695,8 @@ def export_onnx(
     onnx_opset: int,
 ):
     # Use our advanced SDXL support for better handling
-    from .sdxl_support import SDXLModelDetector, create_sdxl_tensorrt_wrapper
-    
-    detector = SDXLModelDetector()
+    from .sdxl_support import create_sdxl_tensorrt_wrapper
+    from .model_detection import detect_unet_characteristics
     
     # Check if this is an SDXL model that might need wrapping
     is_sdxl_by_data = (hasattr(model_data, 'embedding_dim') and 
@@ -708,7 +707,7 @@ def export_onnx(
     
     wrapped_model = model
     
-    if is_unet and (is_sdxl_by_data or detector.detect_unet_type(model)['is_sdxl']):
+    if is_unet and (is_sdxl_by_data or detect_unet_characteristics(model)['is_sdxl']):
         logger.info("🔧 Detected SDXL model, using advanced wrapper for robust ONNX export...")
         
         # Try to get model path for better detection
