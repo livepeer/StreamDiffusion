@@ -43,17 +43,32 @@ class ConditioningWrapper(torch.nn.Module):
         if self.controlnet_wrapper:
             self._forward_impl = self.controlnet_wrapper
         else:
-            self._forward_impl = lambda sample, timestep, encoder_hidden_states, *control_args: \
-                self.unet(sample=sample, timestep=timestep, encoder_hidden_states=encoder_hidden_states, return_dict=False)
+            self._forward_impl = self._basic_unet_forward
         
-
+    def _basic_unet_forward(self, sample, timestep, encoder_hidden_states, *control_args, **kwargs):
+        """Basic UNet forward that passes through all parameters to handle any model type"""
+        unet_kwargs = {
+            'sample': sample,
+            'timestep': timestep,
+            'encoder_hidden_states': encoder_hidden_states,
+            'return_dict': False,
+            **kwargs  # Pass through all additional parameters (SDXL, future model types, etc.)
+        }
+        return self.unet(**unet_kwargs)
         
     def forward(self, 
                 sample: torch.Tensor,
                 timestep: torch.Tensor, 
                 encoder_hidden_states: torch.Tensor,
-                *control_args) -> torch.Tensor:
-        return self._forward_impl(sample, timestep, encoder_hidden_states, *control_args)
+                *control_args,
+                **kwargs) -> torch.Tensor:
+        """Forward pass that handles any UNet parameters via **kwargs passthrough"""
+        if self.controlnet_wrapper:
+            # ControlNet wrapper handles the UNet call with all parameters
+            return self.controlnet_wrapper(sample, timestep, encoder_hidden_states, *control_args, **kwargs)
+        else:
+            # Basic UNet call with all parameters passed through
+            return self._basic_unet_forward(sample, timestep, encoder_hidden_states, *control_args, **kwargs)
 
 def create_conditioning_wrapper(unet: UNet2DConditionModel, 
                               use_controlnet: bool = False, 
