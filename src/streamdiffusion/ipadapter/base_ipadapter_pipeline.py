@@ -204,8 +204,11 @@ class BaseIPAdapterPipeline:
         """
         from huggingface_hub import hf_hub_download, snapshot_download
         
+        print(f"_resolve_model_path: Resolving {model_type} path: {model_path}")
+        
         # Check if it's a local path that exists
         if os.path.exists(model_path):
+            print(f"_resolve_model_path: Using local path: {model_path}")
             return model_path
         
         # Check if it looks like a HuggingFace model ID with specific file (repo/file.bin)
@@ -250,12 +253,27 @@ class BaseIPAdapterPipeline:
                     
             elif model_type == "image_encoder":
                 # Download image encoder directory
+                # Use the already detected SDXL flag from StreamDiffusion pipeline
+                is_sdxl_model = getattr(self.stream, 'is_sdxl', False)
+                print(f"_resolve_model_path: Using stream.is_sdxl: {is_sdxl_model}")
+                
+                if is_sdxl_model:
+                    # Use SDXL image encoder path
+                    allow_patterns = ["sdxl_models/image_encoder/*"]
+                    encoder_subpath = os.path.join("sdxl_models", "image_encoder")
+                else:
+                    # Use SD1.5 image encoder path
+                    allow_patterns = ["models/image_encoder/*"]
+                    encoder_subpath = os.path.join("models", "image_encoder")
+                
+                print(f"_resolve_model_path: Using allow_patterns: {allow_patterns}")
                 try:
                     repo_path = snapshot_download(
                         repo_id=model_path,
-                        allow_patterns=["models/image_encoder/*"]
+                        allow_patterns=allow_patterns
                     )
-                    encoder_path = os.path.join(repo_path, "models", "image_encoder")
+                    encoder_path = os.path.join(repo_path, encoder_subpath)
+                    print(f"_resolve_model_path: Image encoder path: {encoder_path}")
                     return encoder_path
                 except Exception as e:
                     raise ValueError(f"_resolve_model_path: Could not download image encoder from {model_path}: {e}")
