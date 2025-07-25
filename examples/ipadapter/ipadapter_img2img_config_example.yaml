@@ -28,30 +28,21 @@ guidance_scale: 1.0
 delta: 1  # Delta parameter for img2img
 
 use_controlnet: false
+
 # IPAdapter configuration
 ipadapters:
-  # Method 1: Specify exact model file path (recommended for Plus models)
-  - ipadapter_model_path: "h94/IP-Adapter/models/ip-adapter-plus_sd15.bin"
-    image_encoder_path: "h94/IP-Adapter"
+  # Explicit model paths (required)
+  - ipadapter_model_path: "h94/IP-Adapter/models/ip-adapter-plus_sd15.safetensors"
+    image_encoder_path: "h94/IP-Adapter/models/image_encoder"
     style_image: "../../images/inputs/gold.jpg"
     scale: 0.70
     enabled: true
     
-  # Method 2: Use repository ID with specific filename parameter
-  # - ipadapter_model_path: "h94/IP-Adapter"
-  #   filename: "models/ip-adapter-plus_sd15.safetensors"  # Specify exact file
-  #   image_encoder_path: "h94/IP-Adapter"
+  # For SDXL models:
+  # - ipadapter_model_path: "h94/IP-Adapter/sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors"
+  #   image_encoder_path: "h94/IP-Adapter/sdxl_models/image_encoder"
   #   style_image: "../../images/inputs/gold.jpg"
   #   scale: 0.70
   #   enabled: true
-    
-  # Method 3: Let auto-detection try common patterns (less reliable)
-  # - ipadapter_model_path: "h94/IP-Adapter"  # Will try Plus first, then Standard
-  #   image_encoder_path: "h94/IP-Adapter"
-  #   style_image: "../../images/inputs/gold.jpg"
-  #   scale: 0.70
-  #   enabled: true
-    
-  # This will create TensorRT engines with --tokens16 suffix for Plus models
 
 # python ipadapter_img2img_config_example.py --config .\ipadapter_img2img_config_example.yaml --input-image  ..\..\..\input\hand_up512.png

@@ -67,25 +67,22 @@ class BaseIPAdapterPipeline:
                      ipadapter_model_path: str,
                      image_encoder_path: str,
                      style_image: Optional[Union[str, Image.Image]] = None,
-                     scale: float = 1.0,
-                     filename: Optional[str] = None) -> None:
+                     scale: float = 1.0) -> None:
         """
         Set the IPAdapter for the pipeline (replaces any existing IPAdapter)
         
         Args:
-            ipadapter_model_path: HuggingFace model ID (e.g. "h94/IP-Adapter") or local path to IPAdapter weights
-                                 Can also be full path like "h94/IP-Adapter/models/ip-adapter-plus_sd15.safetensors"
-            image_encoder_path: HuggingFace model ID (e.g. "h94/IP-Adapter") or local path to CLIP image encoder
+            ipadapter_model_path: Full path to IPAdapter weights file (local path or HuggingFace repo/file path)
+            image_encoder_path: Full path to CLIP image encoder (local path or HuggingFace repo/file path)
             style_image: Style image for conditioning (optional)
             scale: Conditioning scale
-            filename: Optional specific filename to download (e.g. "models/ip-adapter-plus_sd15.safetensors")
         """
         # Clear any existing IPAdapter first
         self.clear_ipadapter()
         
-        # Resolve model paths (download if HuggingFace IDs)
-        resolved_ipadapter_path = self._resolve_model_path(ipadapter_model_path, "ipadapter", filename)
-        resolved_encoder_path = self._resolve_model_path(image_encoder_path, "image_encoder")
+        # Resolve model paths (download if HuggingFace paths)
+        resolved_ipadapter_path = self._resolve_model_path(ipadapter_model_path)
+        resolved_encoder_path = self._resolve_model_path(image_encoder_path)
         
         # Create IPAdapter instance using existing code
         self.ipadapter = IPAdapter(
@@ -190,96 +187,59 @@ class BaseIPAdapterPipeline:
             self.scale = scale
             self.ipadapter.set_scale(scale)
     
-    def _resolve_model_path(self, model_path: str, model_type: str, filename: Optional[str] = None) -> str:
+    def _resolve_model_path(self, model_path: str) -> str:
         """
-        Resolve model path - download from HuggingFace if it's a model ID, or use local path
+        Resolve model path - download from HuggingFace if it's a repo/file path, or use local path
         
         Args:
-            model_path: Either a HuggingFace model ID (e.g. "h94/IP-Adapter") or local file path
-            model_type: Type of model ("ipadapter" or "image_encoder")
-            filename: Optional specific filename to download (for ipadapter models)
+            model_path: Either a local file path or HuggingFace repo/file path (e.g. "h94/IP-Adapter/models/ip-adapter-plus_sd15.safetensors")
             
         Returns:
             Resolved local path to the model
         """
         from huggingface_hub import hf_hub_download, snapshot_download
         
-        print(f"_resolve_model_path: Resolving {model_type} path: {model_path}")
+        print(f"_resolve_model_path: Resolving path: {model_path}")
         
         # Check if it's a local path that exists
         if os.path.exists(model_path):
             print(f"_resolve_model_path: Using local path: {model_path}")
             return model_path
         
-        # Check if it looks like a HuggingFace model ID with specific file (repo/file.bin)
+        # Check if it looks like a HuggingFace repo/file path
         if "/" in model_path and not os.path.isabs(model_path):
             parts = model_path.split("/")
-            if len(parts) >= 3 and (parts[-1].endswith('.bin') or parts[-1].endswith('.safetensors')):
-                # Format: "h94/IP-Adapter/models/ip-adapter-plus_sd15.bin"
+            if len(parts) >= 3:
+                # Format: "repo/owner/path/to/file.bin" or "repo/owner/directory"
                 repo_id = "/".join(parts[:2])  # "h94/IP-Adapter"
-                file_path = "/".join(parts[2:])  # "models/ip-adapter-plus_sd15.bin"
-                print(f"_resolve_model_path: Downloading specific file {file_path} from {repo_id}")
-                try:
-                    downloaded_path = hf_hub_download(repo_id=repo_id, filename=file_path)
-                    print(f"_resolve_model_path: Downloaded to: {downloaded_path}")
-                    return downloaded_path
-                except Exception as e:
-                    raise ValueError(f"_resolve_model_path: Could not download {file_path} from {repo_id}: {e}")
-            
-            # Standard repo ID format
-            
-            if model_type == "ipadapter":
-                # Use specific filename if provided, otherwise try common patterns
-                if filename:
+                file_path = "/".join(parts[2:])  # "models/ip-adapter-plus_sd15.bin" or "models/image_encoder"
+                
+                # Check if it's a file (has extension) or directory
+                if "." in parts[-1]:
+                    # It's a file
+                    print(f"_resolve_model_path: Downloading file {file_path} from {repo_id}")
                     try:
-                        downloaded_path = hf_hub_download(repo_id=model_path, filename=filename)
+                        downloaded_path = hf_hub_download(repo_id=repo_id, filename=file_path)
+                        print(f"_resolve_model_path: Downloaded to: {downloaded_path}")
                         return downloaded_path
                     except Exception as e:
-                        raise ValueError(f"_resolve_model_path: Could not download {filename} from {model_path}: {e}")
+                        raise ValueError(f"_resolve_model_path: Could not download {file_path} from {repo_id}: {e}")
                 else:
-                    # Try common filename patterns
-                    for filename_pattern in [
-                        "models/ip-adapter-plus_sd15.safetensors",  # Plus model (safetensors)
-                        "models/ip-adapter-plus_sd15.bin",         # Plus model (bin)
-                        "models/ip-adapter_sd15.bin",              # Standard model
-                        "ip-adapter_sd15.bin",                     # Alternative location
-                    ]:
-                        try:
-                            downloaded_path = hf_hub_download(repo_id=model_path, filename=filename_pattern)
-                            return downloaded_path
-                        except:
-                            continue
-                    raise ValueError(f"_resolve_model_path: Could not find any IPAdapter model files in {model_path}")
-                    
-            elif model_type == "image_encoder":
-                # Download image encoder directory
-                # Use the already detected SDXL flag from StreamDiffusion pipeline
-                is_sdxl_model = getattr(self.stream, 'is_sdxl', False)
-                print(f"_resolve_model_path: Using stream.is_sdxl: {is_sdxl_model}")
-                
-                if is_sdxl_model:
-                    # Use SDXL image encoder path
-                    allow_patterns = ["sdxl_models/image_encoder/*"]
-                    encoder_subpath = os.path.join("sdxl_models", "image_encoder")
-                else:
-                    # Use SD1.5 image encoder path
-                    allow_patterns = ["models/image_encoder/*"]
-                    encoder_subpath = os.path.join("models", "image_encoder")
-                
-                print(f"_resolve_model_path: Using allow_patterns: {allow_patterns}")
-                try:
-                    repo_path = snapshot_download(
-                        repo_id=model_path,
-                        allow_patterns=allow_patterns
-                    )
-                    encoder_path = os.path.join(repo_path, encoder_subpath)
-                    print(f"_resolve_model_path: Image encoder path: {encoder_path}")
-                    return encoder_path
-                except Exception as e:
-                    raise ValueError(f"_resolve_model_path: Could not download image encoder from {model_path}: {e}")
+                    # It's a directory
+                    print(f"_resolve_model_path: Downloading directory {file_path} from {repo_id}")
+                    try:
+                        repo_path = snapshot_download(
+                            repo_id=repo_id,
+                            allow_patterns=[f"{file_path}/*"]
+                        )
+                        full_path = os.path.join(repo_path, file_path)
+                        print(f"_resolve_model_path: Downloaded directory to: {full_path}")
+                        return full_path
+                    except Exception as e:
+                        raise ValueError(f"_resolve_model_path: Could not download directory {file_path} from {repo_id}: {e}")
         
-        # If we get here, it's neither a valid local path nor a HuggingFace ID
-        raise ValueError(f"_resolve_model_path: Invalid model path: {model_path}. Must be either a local path or HuggingFace model ID.")
+        # If we get here, it's neither a valid local path nor a valid HuggingFace path
+        raise ValueError(f"_resolve_model_path: Invalid model path: {model_path}. Must be either a local path or HuggingFace repo/file path (e.g. 'h94/IP-Adapter/models/ip-adapter-plus_sd15.safetensors').")
 
     def preload_models_for_tensorrt(self, ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None) -> None:
         """
@@ -301,20 +261,18 @@ class BaseIPAdapterPipeline:
                 else:
                     config = ipadapter_config
                 
-                model_path = config.get('ipadapter_model_path', 'h94/IP-Adapter')
-                encoder_path = config.get('image_encoder_path', 'h94/IP-Adapter')
+                model_path = config.get('ipadapter_model_path', 'h94/IP-Adapter/models/ip-adapter-plus_sd15.bin')
+                encoder_path = config.get('image_encoder_path', 'h94/IP-Adapter/models/image_encoder')
                 scale = config.get('scale', 1.0)
-                filename = config.get('filename', None)  # Optional specific filename
             else:
                 # Default configuration
-                model_path = 'h94/IP-Adapter'
-                encoder_path = 'h94/IP-Adapter'
+                model_path = 'h94/IP-Adapter/models/ip-adapter-plus_sd15.safetensors'
+                encoder_path = 'h94/IP-Adapter/models/image_encoder'
                 scale = 1.0
-                filename = None
             
             # Resolve model paths using existing resolution logic
-            resolved_ipadapter_path = self._resolve_model_path(model_path, "ipadapter", filename)
-            resolved_encoder_path = self._resolve_model_path(encoder_path, "image_encoder")
+            resolved_ipadapter_path = self._resolve_model_path(model_path)
+            resolved_encoder_path = self._resolve_model_path(encoder_path)
             
 
             
