@@ -868,12 +868,15 @@ class StreamDiffusionWrapper:
         # If we get here, the model loaded successfully - break out of retry loop
         logger.info(f"✅ Model loading succeeded")
 
-        # Use existing model detection instead of guessing from config
-        model_type = detect_model_from_diffusers_unet(pipe.unet)
-        is_sdxl = model_type == "SDXL"
+        # Use comprehensive model detection instead of basic detection
+        from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
+        comprehensive_config = get_sdxl_tensorrt_config(model_id_or_path, pipe.unet)
+        model_type = comprehensive_config['model_type']
+        is_sdxl = comprehensive_config['is_sdxl']
 
-        # Store model info for later use (after TensorRT conversion)
+        # Store comprehensive model info for later use (after TensorRT conversion)
         self._detected_model_type = model_type
+        self._comprehensive_config = comprehensive_config
 
         stream = StreamDiffusion(
             pipe=pipe,
@@ -990,15 +993,17 @@ class StreamDiffusionWrapper:
                         has_ipadapter = False
                 
                 try:
-                    # Use improved SDXL detection and model analysis
-                    from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
+                    # Use comprehensive SDXL configuration already computed during model loading
+                    sdxl_config = getattr(self, '_comprehensive_config', None)
+                    if sdxl_config is None:
+                        # Fallback: recompute if not available
+                        from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
+                        sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
                     
-                    # Get comprehensive SDXL configuration
-                    sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
                     is_sdxl_model = sdxl_config['is_sdxl']
                     
-                    # Standard model detection for TensorRT
-                    model_type = detect_model_from_diffusers_unet(stream.unet)
+                    # Use comprehensive model type from sophisticated detection
+                    model_type = sdxl_config['model_type']
                     
                     if is_sdxl_model:
                         logger.info(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
@@ -1014,20 +1019,14 @@ class StreamDiffusionWrapper:
                     
                     # Only enable ControlNet for legacy TensorRT if ControlNet is actually being used
                     if self.use_controlnet:
-                        # Temporary: Disable ControlNet TensorRT for SDXL models due to architectural differences
-                        if model_type == "SDXL":
+                        try:
+                            unet_arch = extract_unet_architecture(stream.unet)
+                            unet_arch = validate_architecture(unet_arch, model_type)
+                            use_controlnet_trt = True
+                            logger.info(f"   Including ControlNet support for {model_type}")
+                        except Exception as e:
+                            logger.warning(f"   ControlNet architecture detection failed: {e}")
                             use_controlnet_trt = False
-                            logger.warning(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models")
-                            logger.warning(f"   ControlNet will run in PyTorch mode for better stability")
-                        else:
-                            try:
-                                unet_arch = extract_unet_architecture(stream.unet)
-                                unet_arch = validate_architecture(unet_arch, model_type)
-                                use_controlnet_trt = True
-                                logger.info(f"   Including ControlNet support for {model_type}")
-                            except Exception as e:
-                                logger.warning(f"   ControlNet architecture detection failed: {e}")
-                                use_controlnet_trt = False
                     
                     # Set up architecture info for enabled modes
                     if use_controlnet_trt and not use_ipadapter_trt:
@@ -1056,14 +1055,9 @@ class StreamDiffusionWrapper:
                     try:
                         model_type = detect_model_from_diffusers_unet(stream.unet)
                         if self.use_controlnet:
-                            # Temporary: Disable ControlNet TensorRT for SDXL models
-                            if model_type == "SDXL":
-                                use_controlnet_trt = False
-                                logger.warning(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models (fallback)")
-                            else:
-                                unet_arch = extract_unet_architecture(stream.unet)
-                                unet_arch = validate_architecture(unet_arch, model_type)
-                                use_controlnet_trt = True
+                            unet_arch = extract_unet_architecture(stream.unet)
+                            unet_arch = validate_architecture(unet_arch, model_type)
+                            use_controlnet_trt = True
                     except Exception:
                         pass
                 

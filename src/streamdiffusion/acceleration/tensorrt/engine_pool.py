@@ -174,8 +174,14 @@ class ControlNetEnginePool:
             else:
                 embedding_dim = 768
             
+            # Pass UNet and model path for sophisticated SDXL detection
+            unet = getattr(pytorch_model, 'unet', None) if hasattr(pytorch_model, 'unet') else None
+            model_path = getattr(self, '_model_path', "") 
+            
             controlnet_model = create_controlnet_model(
                 model_type=model_type,
+                unet=unet,
+                model_path=model_path,
                 max_batch=batch_size,
                 min_batch_size=1,
                 embedding_dim=embedding_dim

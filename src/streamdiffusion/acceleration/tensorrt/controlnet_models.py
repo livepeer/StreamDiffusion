@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Optional
 from .models import BaseModel
+from .sdxl_support import SDXLConditioningHandler, detect_model_comprehensive
 import torch
 
 
@@ -120,31 +121,71 @@ class ControlNetTRT(BaseModel):
 class ControlNetSDXLTRT(ControlNetTRT):
     """SDXL-specific ControlNet TensorRT model definition"""
     
-    def __init__(self, **kwargs):
-        kwargs.setdefault('embedding_dim', 2048)
+    def __init__(self, unet=None, model_path="", **kwargs):
+        # Use comprehensive model detection if UNet provided
+        if unet is not None:
+            model_info = detect_model_comprehensive(unet, model_path)
+            conditioning_handler = SDXLConditioningHandler(model_info)
+            conditioning_spec = conditioning_handler.get_conditioning_spec()
+            
+            # Set embedding_dim from sophisticated detection
+            kwargs.setdefault('embedding_dim', conditioning_spec['context_dim'])
+            
+            self.conditioning_handler = conditioning_handler
+            self.conditioning_spec = conditioning_spec
+        else:
+            # Fallback for cases where UNet not available
+            kwargs.setdefault('embedding_dim', 2048)
+            self.conditioning_handler = None
+            self.conditioning_spec = {
+                'context_dim': 2048,
+                'text_encoder_2_dim': 1280,
+                'pooled_embeds': True,
+                'time_ids': True
+            }
+        
         super().__init__(**kwargs)
         self.name = "ControlNet-SDXL"
     
     def get_input_names(self) -> List[str]:
-        """SDXL ControlNet has additional conditioning inputs"""
+        """SDXL ControlNet has additional conditioning inputs based on sophisticated detection"""
         base_inputs = super().get_input_names()
-        return base_inputs + [
-            "text_embeds",
-            "time_ids"
-        ]
+        
+        # Use conditioning spec to determine what inputs are needed
+        if self.conditioning_spec['pooled_embeds']:
+            base_inputs.append("text_embeds")
+        if self.conditioning_spec['time_ids']:
+            base_inputs.append("time_ids")
+        
+        return base_inputs
+    
+    def get_output_names(self) -> List[str]:
+        """SDXL has 3 down blocks = 3 outputs (1 per block)"""
+        down_names = [f"down_block_{i:02d}" for i in range(3)]
+        return down_names + ["mid_block"]
     
     def get_dynamic_axes(self) -> Dict[str, Dict[int, str]]:
-        """SDXL dynamic axes include additional inputs"""
-        base_axes = super().get_dynamic_axes()
-        base_axes.update({
-            "text_embeds": {0: "B"},
-            "time_ids": {0: "B"}
-        })
+        """SDXL dynamic axes include additional inputs and 3 down block outputs"""
+        base_axes = {
+            "sample": {0: "B", 2: "H", 3: "W"},
+            "encoder_hidden_states": {0: "B"},
+            "timestep": {0: "B"},
+            "controlnet_cond": {0: "B", 2: "H_ctrl", 3: "W_ctrl"},
+            **{f"down_block_{i:02d}": {0: "B", 2: "H", 3: "W"} for i in range(3)},
+            "mid_block": {0: "B", 2: "H", 3: "W"}
+        }
+        
+        # Add dynamic axes based on conditioning spec
+        if self.conditioning_spec['pooled_embeds']:
+            base_axes["text_embeds"] = {0: "B"}
+        if self.conditioning_spec['time_ids']:
+            base_axes["time_ids"] = {0: "B"}
+        
         return base_axes
     
     def get_input_profile(self, batch_size, image_height, image_width, 
                          static_batch, static_shape):
-        """SDXL input profiles with additional conditioning"""
+        """SDXL input profiles with sophisticated conditioning"""
         base_profile = super().get_input_profile(
             batch_size, image_height, image_width, static_batch, static_shape
         )
@@ -152,35 +193,57 @@ class ControlNetSDXLTRT(ControlNetTRT):
         min_batch = batch_size if static_batch else self.min_batch
         max_batch = batch_size if static_batch else self.max_batch
         
-        base_profile.update({
-            "text_embeds": [
-                (min_batch, 1280), (batch_size, 1280), (max_batch, 1280)
-            ],
-            "time_ids": [
+        # Add conditioning profiles based on sophisticated detection
+        if self.conditioning_spec['pooled_embeds']:
+            base_profile["text_embeds"] = [
+                (min_batch, self.conditioning_spec['text_encoder_2_dim']), 
+                (batch_size, self.conditioning_spec['text_encoder_2_dim']), 
+                (max_batch, self.conditioning_spec['text_encoder_2_dim'])
+            ]
+        
+        if self.conditioning_spec['time_ids']:
+            base_profile["time_ids"] = [
                 (min_batch, 6), (batch_size, 6), (max_batch, 6)
             ]
-        })
         
         return base_profile
     
     def get_sample_input(self, batch_size, image_height, image_width):
-        """Generate sample inputs for SDXL ControlNet ONNX export"""
+        """Generate sample inputs using sophisticated conditioning handler"""
         base_inputs = super().get_sample_input(batch_size, image_height, image_width)
         
-        dtype = torch.float16 if self.fp16 else torch.float32
-        
-        sdxl_inputs = (
-            torch.randn(batch_size, 1280, dtype=dtype, device=self.device),
-            torch.randn(batch_size, 6, dtype=dtype, device=self.device)
-        )
-        
-        return base_inputs + sdxl_inputs
+        # Use conditioning handler to create proper sample conditioning
+        if self.conditioning_handler:
+            conditioning = self.conditioning_handler.create_sample_conditioning(
+                batch_size=batch_size, device=self.device
+            )
+            
+            sdxl_inputs = ()
+            if self.conditioning_spec['pooled_embeds']:
+                sdxl_inputs += (conditioning['text_embeds'],)
+            if self.conditioning_spec['time_ids']:
+                sdxl_inputs += (conditioning['time_ids'],)
+            
+            return base_inputs + sdxl_inputs
+        else:
+            # Fallback to previous approach if handler not available
+            dtype = torch.float16 if self.fp16 else torch.float32
+            
+            sdxl_inputs = ()
+            if self.conditioning_spec['pooled_embeds']:
+                sdxl_inputs += (torch.randn(batch_size, self.conditioning_spec['text_encoder_2_dim'], 
+                                          dtype=dtype, device=self.device),)
+            if self.conditioning_spec['time_ids']:
+                sdxl_inputs += (torch.randn(batch_size, 6, dtype=dtype, device=self.device),)
+            
+            return base_inputs + sdxl_inputs
 
 
 def create_controlnet_model(model_type: str = "sd15", 
+                           unet=None, model_path: str = "",
                            **kwargs) -> ControlNetTRT:
     """Factory function to create appropriate ControlNet TensorRT model"""
     if model_type.lower() in ["sdxl", "sdxl-turbo"]:
-        return ControlNetSDXLTRT(**kwargs)
+        return ControlNetSDXLTRT(unet=unet, model_path=model_path, **kwargs)
     else:
         return ControlNetTRT(**kwargs) 
