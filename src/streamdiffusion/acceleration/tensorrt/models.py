@@ -305,10 +305,6 @@ class UNet(BaseModel):
         
         control_inputs = {}
         
-        # Use actual UNet architecture instead of hardcoded SD1.5 configuration
-        print(f"🔍 get_control: UNet block_out_channels = {block_out_channels}")
-        print(f"🔍 get_control: UNet architecture = {self.unet_arch}")
-        
         if len(block_out_channels) == 3:
             # SDXL architecture: Match UNet's exact down_block_res_samples structure
             # UNet down_block_res_samples = [initial_sample] + [block0_residuals] + [block1_residuals] + [block2_residuals]
@@ -332,17 +328,18 @@ class UNet(BaseModel):
                 (block_out_channels[2], 4),  # 1280 channels, 22x22
                 (block_out_channels[2], 4),  # 1280 channels, 22x22
             ]
-            print(f"🎯 get_control: Using SDXL architecture - 9 control inputs matching UNet down_block_res_samples structure")
-            print(f"🎯 get_control: SDXL channels: {block_out_channels[0]}, {block_out_channels[1]}, {block_out_channels[2]}")
         else:
-            # SD1.5/SD2.1 architecture: 4 down blocks  
-            down_block_configs = [
-                [(320, 1), (320, 1), (320, 1)],# Block 0: No downsampling from latent space (factor = 1)
-                [(320, 2), (640, 2), (640, 2)], # Block 1: 2x downsampling from latent space (factor = 2) 
-                [(640, 4), (1280, 4), (1280, 4)], # Block 2: 4x downsampling from latent space (factor = 4)
-                [(1280, 8), (1280, 8), (1280, 8)] # Block 3: 8x downsampling from latent space (factor = 8)
+            # SD1.5/SD2.1 architecture: 4 down blocks with 12 control tensors
+            control_tensors = [
+                # Block 0: No downsampling from latent space (factor = 1)
+                (320, 1), (320, 1), (320, 1),
+                # Block 1: 2x downsampling from latent space (factor = 2) 
+                (320, 2), (640, 2), (640, 2),
+                # Block 2: 4x downsampling from latent space (factor = 4)
+                (640, 4), (1280, 4), (1280, 4),
+                # Block 3: 8x downsampling from latent space (factor = 8)
+                (1280, 8), (1280, 8), (1280, 8)
             ]
-            print(f"🎯 get_control: Using SD1.5 architecture - 12 control inputs")
         
         # Generate control inputs with proper spatial dimensions
         for i, (channels, downsample_factor) in enumerate(control_tensors):
@@ -359,7 +356,6 @@ class UNet(BaseModel):
                 'width': control_width,
                 'downsampling_factor': downsample_factor
             }
-            print(f"🔧 get_control: {input_name} -> channels={channels}, spatial={control_height}x{control_width}, factor={downsample_factor}")
         
         # Middle block uses the most downsampled resolution based on architecture
         if len(block_out_channels) == 3:
