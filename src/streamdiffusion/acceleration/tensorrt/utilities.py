@@ -673,8 +673,7 @@ def export_onnx(
     opt_batch_size: int,
     onnx_opset: int,
 ):
-    # Use our advanced SDXL support for better handling
-    from .sdxl_support import create_sdxl_tensorrt_wrapper
+    # Use model detection for edge cases
     from .model_detection import detect_unet_characteristics
     
     # Check if this is an SDXL model that might need wrapping
@@ -700,22 +699,9 @@ def export_onnx(
     
     wrapped_model = model  # Default: use model as-is
     
-    # Only apply SDXL wrappers to UNet models, not ControlNet models
-    if is_unet and not is_controlnet and (is_sdxl_by_data or detect_unet_characteristics(model)['is_sdxl']):
-        logger.info("Detected SDXL UNet model, using advanced wrapper for robust ONNX export...")
-        
-        # Try to get model path for better detection
-        model_path = getattr(model_data, 'model_path', '') or getattr(model, 'model_path', '')
-        
-        # Use our advanced SDXL wrapper
-        wrapped_model = create_sdxl_tensorrt_wrapper(model, model_path)
-        
-        logger.debug(f"   SDXL detection - by data: {is_sdxl_by_data}")
-        logger.debug(f"   Model path: {model_path}")
-    
-    
-    elif is_sdxl_by_data and not is_controlnet and hasattr(model, 'forward'):
-        logger.info("Using SDXL UNet wrapper for ONNX export...")
+    # Apply SDXL wrapper for SDXL models (in practice, always ConditioningWrapper)
+    if is_sdxl_by_data and not is_controlnet and hasattr(model, 'forward'):
+        logger.info("Detected SDXL model, using wrapper for ONNX export...")
         wrapped_model = SDXLUNetWrapper(model)
     
     # SDXL ControlNet models need special wrapper for added_cond_kwargs
