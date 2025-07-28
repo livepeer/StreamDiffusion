@@ -869,7 +869,7 @@ class StreamDiffusionWrapper:
         logger.info(f"✅ Model loading succeeded")
 
         # Use comprehensive model detection instead of basic detection
-        from streamdiffusion.acceleration.tensorrt.export_wrappers.sdxl_export import get_sdxl_tensorrt_config
+        from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_sdxl_export import get_sdxl_tensorrt_config
         comprehensive_config = get_sdxl_tensorrt_config(model_id_or_path, pipe.unet)
         model_type = comprehensive_config['model_type']
         is_sdxl = comprehensive_config['is_sdxl']
@@ -943,8 +943,8 @@ class StreamDiffusionWrapper:
                     extract_unet_architecture,
                     validate_architecture
                 )
-                from streamdiffusion.acceleration.tensorrt.export_wrappers.controlnet_export import create_controlnet_export_wrapper
-                from streamdiffusion.acceleration.tensorrt.export_wrappers.ipadapter_export import create_ipadapter_export_wrapper
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_controlnet_export import create_controlnet_export_wrapper
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_ipadapter_export import create_ipadapter_export_wrapper
 
                 # Legacy TensorRT implementation (fallback)
                 def create_prefix(
@@ -997,7 +997,7 @@ class StreamDiffusionWrapper:
                     sdxl_config = getattr(self, '_comprehensive_config', None)
                     if sdxl_config is None:
                         # Fallback: recompute if not available
-                        from streamdiffusion.acceleration.tensorrt.export_wrappers.sdxl_export import get_sdxl_tensorrt_config
+                        from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_sdxl_export import get_sdxl_tensorrt_config
                         sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
                     
                     is_sdxl_model = sdxl_config['is_sdxl']
@@ -1186,7 +1186,7 @@ class StreamDiffusionWrapper:
                         control_input_names = unet_model.get_input_names()
                     
                     # Unified compilation path using ConditioningWrapper
-                    from streamdiffusion.acceleration.tensorrt.export_wrappers.unified_export import UnifiedExportWrapper
+                    from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
 
                     wrapped_unet = UnifiedExportWrapper(
                         stream.unet,

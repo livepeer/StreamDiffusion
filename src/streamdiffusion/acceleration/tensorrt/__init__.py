@@ -12,9 +12,9 @@ from .utilities.builder import EngineBuilder, create_onnx_path
 from .engines.unet_engine import AutoencoderKLEngine, UNet2DConditionModelEngine
 from .models.base_models import VAE, BaseModel, UNet, VAEEncoder
 from .utilities.model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
-from .export_wrappers.controlnet_export import create_controlnet_export_wrapper
+from .export_wrappers.unet_controlnet_export import create_controlnet_export_wrapper
 from .engines.engine_pool import ControlNetEnginePool
-from .export_wrappers.ipadapter_export import create_ipadapter_export_wrapper
+from .export_wrappers.unet_ipadapter_export import create_ipadapter_export_wrapper
 
 
 def _has_ipadapter_processors(unet: UNet2DConditionModel) -> bool:

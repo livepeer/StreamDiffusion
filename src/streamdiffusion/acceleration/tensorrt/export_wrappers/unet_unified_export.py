@@ -1,8 +1,8 @@
 import torch
 from diffusers import UNet2DConditionModel
 from typing import Optional, List
-from .controlnet_export import create_controlnet_export_wrapper
-from .ipadapter_export import create_ipadapter_export_wrapper
+from .unet_controlnet_export import create_controlnet_export_wrapper
+from .unet_ipadapter_export import create_ipadapter_export_wrapper
 
 class UnifiedExportWrapper(torch.nn.Module):
     """

@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Optional
 from .base_models import BaseModel
-from ..export_wrappers.sdxl_export import SDXLConditioningHandler, detect_model_comprehensive
+from ..export_wrappers.unet_sdxl_export import SDXLConditioningHandler, detect_model_comprehensive
 import torch
 
 

@@ -44,7 +44,8 @@ from polygraphy.backend.trt import (
 from polygraphy.backend.trt import util as trt_util
 
 from ..models.base_models import CLIP, VAE, BaseModel, UNet, VAEEncoder
-from ..export_wrappers.sdxl_export import SDXLExportWrapper, SDXLControlNetWrapper
+from ..export_wrappers.unet_sdxl_export import SDXLExportWrapper
+from ..export_wrappers.controlnet_export import SDXLControlNetWrapper
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
