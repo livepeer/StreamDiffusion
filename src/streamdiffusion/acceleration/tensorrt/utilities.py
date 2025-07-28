@@ -256,12 +256,10 @@ class Engine:
     def allocate_buffers(self, shape_dict=None, device="cuda"):
         # Check if we can reuse existing buffers (OPTIMIZATION)
         if self._can_reuse_buffers(shape_dict, device):
-            logger.debug(f"[DEBUG] Engine.allocate_buffers: Reusing existing buffers")
+            logger.debug(f"Engine.allocate_buffers: Reusing existing buffers")
             return
         
-        logger.debug(f"[DEBUG] Engine.allocate_buffers: Allocating new buffers")
-        logger.debug(f"[DEBUG] Engine.allocate_buffers: Device = {device}")
-        logger.debug(f"[DEBUG] Engine.allocate_buffers: Engine has {self.engine.num_io_tensors} I/O tensors")
+        logger.debug(f"Engine.allocate_buffers: Allocating new buffers on {device} with {self.engine.num_io_tensors} I/O tensors")
             
         # Clear existing buffers before reallocating
         self.tensors.clear()
@@ -277,23 +275,20 @@ class Engine:
             dtype_np = trt.nptype(self.engine.get_tensor_dtype(name))
             mode = self.engine.get_tensor_mode(name)
 
-            logger.debug(f"[DEBUG] Engine.allocate_buffers: Tensor[{idx}] '{name}' - shape: {shape}, dtype: {dtype_np}, mode: {mode}")
+            logger.debug(f"Engine.allocate_buffers: Tensor[{idx}] '{name}' - shape: {shape}, dtype: {dtype_np}, mode: {mode}")
 
             if mode == trt.TensorIOMode.INPUT:
-                logger.debug(f"[DEBUG] Engine.allocate_buffers: Setting input shape for '{name}': {shape}")
                 self.context.set_input_shape(name, shape)
 
             tensor = torch.empty(tuple(shape),
                                  dtype=numpy_to_torch_dtype_dict[dtype_np]) \
                           .to(device=device)
             self.tensors[name] = tensor
-            
-            logger.debug(f"[DEBUG] Engine.allocate_buffers: Allocated tensor '{name}' with shape {tensor.shape} and dtype {tensor.dtype}")
         
         # Cache allocation parameters for reuse check
         self._last_shape_dict = shape_dict.copy() if shape_dict else None
         self._last_device = device
-        logger.debug(f"[DEBUG] Engine.allocate_buffers: Buffer allocation completed")
+        logger.debug(f"Engine.allocate_buffers: Buffer allocation completed")
     
     def _can_reuse_buffers(self, shape_dict=None, device="cuda"):
         """
@@ -338,54 +333,47 @@ class Engine:
         return True
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
-        logger.debug(f"[DEBUG] Engine.infer: Starting inference")
-        logger.debug(f"[DEBUG] Engine.infer: feed_dict keys: {list(feed_dict.keys())}")
-        logger.debug(f"[DEBUG] Engine.infer: use_cuda_graph: {use_cuda_graph}")
+        logger.debug(f"Engine.infer: Starting inference with {len(feed_dict)} inputs, use_cuda_graph={use_cuda_graph}")
         
         # Copy input data to allocated tensors
         for name, buf in feed_dict.items():
             if name not in self.tensors:
-                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: Input '{name}' not found in allocated tensors! ***")
-                logger.warning(f"[DEBUG] Engine.infer: Available tensors: {list(self.tensors.keys())}")
+                logger.warning(f"Engine.infer: Input '{name}' not found in allocated tensors. Available: {list(self.tensors.keys())}")
                 continue
                 
-            logger.debug(f"[DEBUG] Engine.infer: Copying input '{name}' - shape: {buf.shape}, dtype: {buf.dtype}")
-            logger.debug(f"[DEBUG] Engine.infer: Input '{name}' range: [{buf.min().item():.6f}, {buf.max().item():.6f}]")
+            logger.debug(f"Engine.infer: Copying input '{name}' - shape: {buf.shape}, dtype: {buf.dtype}, range: [{buf.min().item():.6f}, {buf.max().item():.6f}]")
             
             # Check for NaN/Inf in inputs
             if torch.isnan(buf).any():
-                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: NaN detected in input '{name}'! ***")
                 nan_count = torch.isnan(buf).sum().item()
                 total_elements = buf.numel()
-                logger.warning(f"[DEBUG] Engine.infer: *** NaN count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
+                logger.warning(f"Engine.infer: NaN detected in input '{name}': {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%)")
             if torch.isinf(buf).any():
-                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: Inf detected in input '{name}'! ***")
                 inf_count = torch.isinf(buf).sum().item()
                 total_elements = buf.numel()
-                logger.warning(f"[DEBUG] Engine.infer: *** Inf count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
+                logger.warning(f"Engine.infer: Inf detected in input '{name}': {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%)")
             if (buf == 0).all():
-                logger.warning(f"[DEBUG] Engine.infer: *** WARNING: All values in input '{name}' are zero! ***")
+                logger.debug(f"Engine.infer: All values in input '{name}' are zero (expected for some inputs)")
             
             self.tensors[name].copy_(buf)
 
         # Set tensor addresses for TensorRT context
-        logger.debug(f"[DEBUG] Engine.infer: Setting tensor addresses for TensorRT context")
+        logger.debug(f"Engine.infer: Setting tensor addresses for TensorRT context")
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
-            logger.debug(f"[DEBUG] Engine.infer: Set address for tensor '{name}' at {hex(tensor.data_ptr())}")
 
         # Execute inference
         if use_cuda_graph:
-            logger.debug(f"[DEBUG] Engine.infer: Using CUDA Graph execution")
+            logger.debug(f"Engine.infer: Using CUDA Graph execution")
             if self.cuda_graph_instance is not None:
                 CUASSERT(cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr))
                 CUASSERT(cudart.cudaStreamSynchronize(stream.ptr))
             else:
-                logger.debug(f"[DEBUG] Engine.infer: Capturing CUDA Graph (first run)")
+                logger.debug(f"Engine.infer: Capturing CUDA Graph (first run)")
                 # do inference before CUDA graph capture
                 noerror = self.context.execute_async_v3(stream.ptr)
                 if not noerror:
-                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: Initial inference failed during CUDA graph capture! ***")
+                    logger.error(f"Engine.infer: Initial inference failed during CUDA graph capture")
                     raise ValueError("ERROR: inference failed.")
                 # capture cuda graph
                 CUASSERT(
@@ -395,43 +383,34 @@ class Engine:
                 self.graph = CUASSERT(cudart.cudaStreamEndCapture(stream.ptr))
                 self.cuda_graph_instance = CUASSERT(cudart.cudaGraphInstantiate(self.graph, 0))
         else:
-            logger.debug(f"[DEBUG] Engine.infer: Using standard TensorRT execution")
+            logger.debug(f"Engine.infer: Using standard TensorRT execution")
             noerror = self.context.execute_async_v3(stream.ptr)
             if not noerror:
-                logger.error(f"[DEBUG] Engine.infer: *** ERROR: TensorRT inference execution failed! ***")
-                logger.error(f"[DEBUG] Engine.infer: This could indicate:")
-                logger.error(f"[DEBUG] Engine.infer: - Invalid input shapes or types")
-                logger.error(f"[DEBUG] Engine.infer: - Memory allocation issues")
-                logger.error(f"[DEBUG] Engine.infer: - Engine compatibility problems")
+                logger.error(f"Engine.infer: TensorRT inference execution failed")
                 raise ValueError("ERROR: inference failed.")
-            else:
-                logger.debug(f"[DEBUG] Engine.infer: TensorRT execution completed successfully")
 
         # Check output tensors
-        logger.debug(f"[DEBUG] Engine.infer: Checking output tensors")
+        logger.debug(f"Engine.infer: Checking output tensors")
         output_tensors = {}
         for name, tensor in self.tensors.items():
             if name not in feed_dict:  # This is an output tensor
-                logger.debug(f"[DEBUG] Engine.infer: Output '{name}' - shape: {tensor.shape}, dtype: {tensor.dtype}")
-                logger.debug(f"[DEBUG] Engine.infer: Output '{name}' range: [{tensor.min().item():.6f}, {tensor.max().item():.6f}]")
+                logger.debug(f"Engine.infer: Output '{name}' - shape: {tensor.shape}, dtype: {tensor.dtype}, range: [{tensor.min().item():.6f}, {tensor.max().item():.6f}]")
                 
                 # Check for problematic values in outputs
                 if torch.isnan(tensor).any():
                     nan_count = torch.isnan(tensor).sum().item()
                     total_elements = tensor.numel()
-                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: NaN detected in output '{name}'! ***")
-                    logger.error(f"[DEBUG] Engine.infer: *** NaN count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
+                    logger.error(f"Engine.infer: NaN detected in output '{name}': {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%)")
                 if torch.isinf(tensor).any():
                     inf_count = torch.isinf(tensor).sum().item()
                     total_elements = tensor.numel()
-                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: Inf detected in output '{name}'! ***")
-                    logger.error(f"[DEBUG] Engine.infer: *** Inf count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
+                    logger.error(f"Engine.infer: Inf detected in output '{name}': {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%)")
                 if (tensor == 0).all():
-                    logger.error(f"[DEBUG] Engine.infer: *** ERROR: All values in output '{name}' are zero! ***")
+                    logger.error(f"Engine.infer: All values in output '{name}' are zero")
                 
                 output_tensors[name] = tensor
         
-        logger.debug(f"[DEBUG] Engine.infer: Inference completed, returning tensors")
+        logger.debug(f"Engine.infer: Inference completed, returning {len(output_tensors)} output tensors")
         return output_tensors
 
 
@@ -592,11 +571,11 @@ class SDXLUNetWrapper(torch.nn.Module):
             with torch.no_grad():
                 _ = self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=test_added_cond)
             
-            logger.info("✅ SDXL model supports added_cond_kwargs")
+            logger.info("SDXL model supports added_cond_kwargs")
             return True
             
         except Exception as e:
-            logger.error(f"⚠️ SDXL model does not support added_cond_kwargs: {e}")
+            logger.error(f"SDXL model does not support added_cond_kwargs: {e}")
             return False
         
     def forward(self, *args, **kwargs):
@@ -622,7 +601,7 @@ class SDXLUNetWrapper(torch.nn.Module):
                 device = sample.device
                 batch_size = sample.shape[0]
                 
-                logger.info("🔧 Auto-generating required SDXL conditioning...")
+                logger.info("Auto-generating required SDXL conditioning...")
                 kwargs['added_cond_kwargs'] = {
                     'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
                     'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
@@ -632,14 +611,14 @@ class SDXLUNetWrapper(torch.nn.Module):
             if self.supports_added_cond and 'added_cond_kwargs' in kwargs:
                 logger.debug(f"[SDXL_WRAPPER] forward: Using full SDXL call with added_cond_kwargs")
                 logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(*args, **kwargs)")
-                logger.debug(f"[SDXL_WRAPPER] forward: 🚀 Starting underlying UNet call...")
+                logger.debug(f"[SDXL_WRAPPER] forward: Starting underlying UNet call...")
                 
                 import time
                 start_time = time.time()
                 result = self.unet(*args, **kwargs)
                 elapsed_time = time.time() - start_time
                 
-                logger.debug(f"[SDXL_WRAPPER] forward: ✅ Underlying UNet call completed in {elapsed_time:.3f}s")
+                logger.debug(f"[SDXL_WRAPPER] forward: Underlying UNet call completed in {elapsed_time:.3f}s")
                 return result
             elif len(args) >= 3:
                 logger.debug(f"[SDXL_WRAPPER] forward: Using basic SDXL call (no added_cond_kwargs)")
@@ -650,7 +629,7 @@ class SDXLUNetWrapper(torch.nn.Module):
                 result = self.unet(args[0], args[1], args[2])
                 elapsed_time = time.time() - start_time
                 
-                logger.debug(f"[SDXL_WRAPPER] forward: ✅ Basic UNet call completed in {elapsed_time:.3f}s")
+                logger.debug(f"[SDXL_WRAPPER] forward: Basic UNet call completed in {elapsed_time:.3f}s")
                 return result
             else:
                 logger.debug(f"[SDXL_WRAPPER] forward: Using fallback call")
@@ -661,7 +640,7 @@ class SDXLUNetWrapper(torch.nn.Module):
             logger.error(f"[SDXL_WRAPPER] forward: Exception caught: {e}")
             if "NoneType" in str(e) or "iterable" in str(e) or "text_embeds" in str(e):
                 # Handle SDXL-Turbo models that need proper conditioning
-                logger.info(f"🔧 Providing minimal SDXL conditioning due to: {e}")
+                logger.info(f"Providing minimal SDXL conditioning due to: {e}")
                 if len(args) >= 3:
                     sample, timestep, encoder_hidden_states = args[0], args[1], args[2]
                     device = sample.device
@@ -677,7 +656,7 @@ class SDXLUNetWrapper(torch.nn.Module):
                         logger.debug(f"[SDXL_WRAPPER] forward: Trying with minimal conditioning...")
                         return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
                     except Exception as final_e:
-                        logger.info(f"🔧 Final fallback to basic call: {final_e}")
+                        logger.info(f"Final fallback to basic call: {final_e}")
                         return self.unet(sample, timestep, encoder_hidden_states)
                 else:
                     return self.unet(*args)
@@ -723,7 +702,7 @@ def export_onnx(
     
     # Only apply SDXL wrappers to UNet models, not ControlNet models
     if is_unet and not is_controlnet and (is_sdxl_by_data or detect_unet_characteristics(model)['is_sdxl']):
-        logger.info("🔧 Detected SDXL UNet model, using advanced wrapper for robust ONNX export...")
+        logger.info("Detected SDXL UNet model, using advanced wrapper for robust ONNX export...")
         
         # Try to get model path for better detection
         model_path = getattr(model_data, 'model_path', '') or getattr(model, 'model_path', '')
@@ -734,14 +713,14 @@ def export_onnx(
         logger.debug(f"   SDXL detection - by data: {is_sdxl_by_data}")
         logger.debug(f"   Model path: {model_path}")
     
-    # For legacy compatibility, still wrap other potential SDXL UNet models (not ControlNets)
+    
     elif is_sdxl_by_data and not is_controlnet and hasattr(model, 'forward'):
-        logger.info("🔧 Using legacy SDXL wrapper for ONNX export...")
+        logger.info("Using SDXL UNet wrapper for ONNX export...")
         wrapped_model = SDXLUNetWrapper(model)
     
     # SDXL ControlNet models need special wrapper for added_cond_kwargs
     elif is_sdxl_controlnet:
-        logger.info("🔧 Detected SDXL ControlNet model, using specialized wrapper...")
+        logger.info("Detected SDXL ControlNet model, using specialized wrapper...")
         
         class SDXLControlNetWrapper(torch.nn.Module):
             """Wrapper for SDXL ControlNet models to handle added_cond_kwargs properly during ONNX export"""
@@ -829,7 +808,7 @@ def export_onnx(
     
     # Regular ControlNet models are exported directly
     elif is_controlnet:
-        logger.info("🔧 Detected ControlNet model, exporting directly...")
+        logger.info("Detected ControlNet model, exporting directly...")
         wrapped_model = model
     
     with torch.inference_mode(), torch.autocast("cuda"):
@@ -874,7 +853,7 @@ def export_onnx(
                     location="weights.pb",
                     convert_attribute=False,
                 )
-                logger.info(f"✅ Converted to external data format with weights in weights.pb")
+                logger.info(f"Converted to external data format with weights in weights.pb")
             else:
                 logger.debug(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - keeping standard format")
             
@@ -898,7 +877,7 @@ def optimize_onnx(
     uses_external_data = len(external_data_files) > 0
     
     if uses_external_data:
-        logger.debug(f"🔧 Optimizing ONNX model with external data format...")
+        logger.debug(f"Optimizing ONNX model with external data format...")
         logger.debug(f"   Found {len(external_data_files)} external data files")
         
         # Load model with external data
@@ -916,7 +895,7 @@ def optimize_onnx(
                     os.remove(os.path.join(opt_dir, f))
         
         # Save optimized model with external data format
-        logger.debug(f"🔧 Saving optimized model with external data to: {onnx_opt_path}")
+        logger.debug(f"Saving optimized model with external data to: {onnx_opt_path}")
         onnx.save_model(
             onnx_opt_graph,
             onnx_opt_path,
@@ -925,10 +904,10 @@ def optimize_onnx(
             location="weights.pb",
             convert_attribute=False,
         )
-        logger.info(f"✅ ONNX optimization complete with external data")
+        logger.info(f"ONNX optimization complete with external data")
         
     else:
-        logger.debug(f"🔧 Optimizing ONNX model (standard format)...")
+        logger.debug(f"Optimizing ONNX model (standard format)...")
         # Standard optimization for smaller models
         onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
         onnx.save(onnx_opt_graph, onnx_opt_path)
