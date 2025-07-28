@@ -5,7 +5,7 @@ from typing import *
 import torch
 from diffusers.models import ControlNetModel
 
-from .models import BaseModel
+from ..models.base_models import BaseModel
 from .utilities import (
     build_engine,
     export_onnx,

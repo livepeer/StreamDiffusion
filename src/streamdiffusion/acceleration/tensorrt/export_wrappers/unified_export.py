@@ -1,8 +1,8 @@
 import torch
 from diffusers import UNet2DConditionModel
 from typing import Optional, List
-from .controlnet_wrapper import create_controlnet_export_wrapper
-from .ipadapter_wrapper import create_ipadapter_export_wrapper
+from .controlnet_export import create_controlnet_export_wrapper
+from .ipadapter_export import create_ipadapter_export_wrapper
 
 class UnifiedExportWrapper(torch.nn.Module):
     """
@@ -70,7 +70,7 @@ class UnifiedExportWrapper(torch.nn.Module):
             # Basic UNet call with all parameters passed through
             return self._basic_unet_forward(sample, timestep, encoder_hidden_states, *control_args, **kwargs)
 
-def create_conditioning_wrapper(unet: UNet2DConditionModel, 
+def create_unified_export_wrapper(unet: UNet2DConditionModel, 
                               use_controlnet: bool = False, 
                               use_ipadapter: bool = False,
                               control_input_names: Optional[List[str]] = None,

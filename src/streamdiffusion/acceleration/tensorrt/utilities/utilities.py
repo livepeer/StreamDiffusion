@@ -43,7 +43,8 @@ from polygraphy.backend.trt import (
 )
 from polygraphy.backend.trt import util as trt_util
 
-from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
+from ..models.base_models import CLIP, VAE, BaseModel, UNet, VAEEncoder
+from ..export_wrappers.sdxl_export import SDXLExportWrapper, SDXLControlNetWrapper
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -527,141 +528,7 @@ def build_engine(
     return engine
 
 
-class SDXLUNetWrapper(torch.nn.Module):
-    """Wrapper for SDXL UNet to handle optional conditioning in legacy TensorRT"""
-    
-    def __init__(self, unet):
-        super().__init__()
-        self.unet = unet
-        self.base_unet = self._get_base_unet(unet)
-        self.supports_added_cond = self._test_added_cond_support()
-        
-    def _get_base_unet(self, unet):
-        """Extract the base UNet from wrappers like ControlNetUNetExportWrapper"""
-        # Handle ControlNet wrapper
-        if hasattr(unet, 'unet_model') and hasattr(unet.unet_model, 'config'):
-            return unet.unet_model
-        elif hasattr(unet, 'unet') and hasattr(unet.unet, 'config'):
-            return unet.unet
-        elif hasattr(unet, 'config'):
-            return unet
-        else:
-            # Fallback: try to find any attribute that has config
-            for attr_name in dir(unet):
-                if not attr_name.startswith('_'):
-                    attr = getattr(unet, attr_name, None)
-                    if hasattr(attr, 'config') and hasattr(attr.config, 'addition_embed_type'):
-                        return attr
-            return unet
-        
-    def _test_added_cond_support(self):
-        """Test if this SDXL model supports added_cond_kwargs"""
-        try:
-            # Create minimal test inputs
-            sample = torch.randn(1, 4, 8, 8, device='cuda', dtype=torch.float16)
-            timestep = torch.tensor([0.5], device='cuda', dtype=torch.float32)
-            encoder_hidden_states = torch.randn(1, 77, 2048, device='cuda', dtype=torch.float16)
-            
-            # Test with added_cond_kwargs
-            test_added_cond = {
-                'text_embeds': torch.randn(1, 1280, device='cuda', dtype=torch.float16),
-                'time_ids': torch.randn(1, 6, device='cuda', dtype=torch.float16)
-            }
-            
-            with torch.no_grad():
-                _ = self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=test_added_cond)
-            
-            logger.info("SDXL model supports added_cond_kwargs")
-            return True
-            
-        except Exception as e:
-            logger.error(f"SDXL model does not support added_cond_kwargs: {e}")
-            return False
-        
-    def forward(self, *args, **kwargs):
-        """Forward pass that handles SDXL conditioning gracefully"""
-        logger.debug(f"[SDXL_WRAPPER] forward: Called with {len(args)} args and {len(kwargs)} kwargs")
-        logger.debug(f"[SDXL_WRAPPER] forward: Args shapes: {[arg.shape if hasattr(arg, 'shape') else type(arg) for arg in args]}")
-        logger.debug(f"[SDXL_WRAPPER] forward: Kwargs keys: {list(kwargs.keys())}")
-        logger.debug(f"[SDXL_WRAPPER] forward: self.supports_added_cond: {self.supports_added_cond}")
-        logger.debug(f"[SDXL_WRAPPER] forward: Underlying UNet type: {type(self.unet)}")
-        
-        try:
-            # Ensure added_cond_kwargs is never None to prevent TypeError
-            if 'added_cond_kwargs' in kwargs and kwargs['added_cond_kwargs'] is None:
-                logger.debug(f"[SDXL_WRAPPER] forward: Setting added_cond_kwargs from None to empty dict")
-                kwargs['added_cond_kwargs'] = {}
-            
-            # Auto-generate SDXL conditioning if missing and model needs it
-            if (len(args) >= 3 and 'added_cond_kwargs' not in kwargs and 
-                hasattr(self.base_unet.config, 'addition_embed_type') and 
-                self.base_unet.config.addition_embed_type == 'text_time'):
-                
-                sample = args[0]
-                device = sample.device
-                batch_size = sample.shape[0]
-                
-                logger.info("Auto-generating required SDXL conditioning...")
-                kwargs['added_cond_kwargs'] = {
-                    'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
-                    'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
-                }
-                
-            # If model supports added conditioning and we have the kwargs, use them
-            if self.supports_added_cond and 'added_cond_kwargs' in kwargs:
-                logger.debug(f"[SDXL_WRAPPER] forward: Using full SDXL call with added_cond_kwargs")
-                logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(*args, **kwargs)")
-                logger.debug(f"[SDXL_WRAPPER] forward: Starting underlying UNet call...")
-                
-                import time
-                start_time = time.time()
-                result = self.unet(*args, **kwargs)
-                elapsed_time = time.time() - start_time
-                
-                logger.debug(f"[SDXL_WRAPPER] forward: Underlying UNet call completed in {elapsed_time:.3f}s")
-                return result
-            elif len(args) >= 3:
-                logger.debug(f"[SDXL_WRAPPER] forward: Using basic SDXL call (no added_cond_kwargs)")
-                logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(args[0], args[1], args[2])")
-                
-                import time
-                start_time = time.time()
-                result = self.unet(args[0], args[1], args[2])
-                elapsed_time = time.time() - start_time
-                
-                logger.debug(f"[SDXL_WRAPPER] forward: Basic UNet call completed in {elapsed_time:.3f}s")
-                return result
-            else:
-                logger.debug(f"[SDXL_WRAPPER] forward: Using fallback call")
-                # Fallback
-                return self.unet(*args, **kwargs)
-                
-        except (TypeError, AttributeError) as e:
-            logger.error(f"[SDXL_WRAPPER] forward: Exception caught: {e}")
-            if "NoneType" in str(e) or "iterable" in str(e) or "text_embeds" in str(e):
-                # Handle SDXL-Turbo models that need proper conditioning
-                logger.info(f"Providing minimal SDXL conditioning due to: {e}")
-                if len(args) >= 3:
-                    sample, timestep, encoder_hidden_states = args[0], args[1], args[2]
-                    device = sample.device
-                    batch_size = sample.shape[0]
-                    
-                    # Create minimal valid SDXL conditioning
-                    minimal_conditioning = {
-                        'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
-                        'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
-                    }
-                    
-                    try:
-                        logger.debug(f"[SDXL_WRAPPER] forward: Trying with minimal conditioning...")
-                        return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
-                    except Exception as final_e:
-                        logger.info(f"Final fallback to basic call: {final_e}")
-                        return self.unet(sample, timestep, encoder_hidden_states)
-                else:
-                    return self.unet(*args)
-            else:
-                raise e
+
 
 
 def export_onnx(
@@ -702,94 +569,11 @@ def export_onnx(
     # Apply SDXL wrapper for SDXL models (in practice, always ConditioningWrapper)
     if is_sdxl_by_data and not is_controlnet and hasattr(model, 'forward'):
         logger.info("Detected SDXL model, using wrapper for ONNX export...")
-        wrapped_model = SDXLUNetWrapper(model)
+        wrapped_model = SDXLExportWrapper(model)
     
     # SDXL ControlNet models need special wrapper for added_cond_kwargs
     elif is_sdxl_controlnet:
         logger.info("Detected SDXL ControlNet model, using specialized wrapper...")
-        
-        class SDXLControlNetWrapper(torch.nn.Module):
-            """Wrapper for SDXL ControlNet models to handle added_cond_kwargs properly during ONNX export"""
-            
-            def __init__(self, controlnet_model):
-                super().__init__()
-                self.controlnet = controlnet_model
-                
-                # Get device and dtype from model
-                if hasattr(controlnet_model, 'device'):
-                    self.device = controlnet_model.device
-                else:
-                    # Try to infer from first parameter
-                    try:
-                        self.device = next(controlnet_model.parameters()).device
-                    except:
-                        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                
-                if hasattr(controlnet_model, 'dtype'):
-                    self.dtype = controlnet_model.dtype
-                else:
-                    # Try to infer from first parameter
-                    try:
-                        self.dtype = next(controlnet_model.parameters()).dtype
-                    except:
-                        self.dtype = torch.float16
-            
-            def forward(self, sample, timestep, encoder_hidden_states, controlnet_cond, conditioning_scale):
-                """Forward pass that handles SDXL ControlNet requirements and produces 9 down blocks"""
-                batch_size = sample.shape[0]
-                
-                # Create proper added_cond_kwargs for SDXL
-                added_cond_kwargs = {
-                    'text_embeds': torch.randn(batch_size, 1280, dtype=self.dtype, device=self.device),
-                    'time_ids': torch.randn(batch_size, 6, dtype=self.dtype, device=self.device)
-                }
-                
-                # Call the ControlNet with proper arguments including conditioning_scale
-                result = self.controlnet(
-                    sample=sample,
-                    timestep=timestep,
-                    encoder_hidden_states=encoder_hidden_states,
-                    controlnet_cond=controlnet_cond,
-                    conditioning_scale=conditioning_scale,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False
-                )
-                
-                # Extract down blocks and mid block from result
-                if isinstance(result, tuple) and len(result) >= 2:
-                    down_block_res_samples, mid_block_res_sample = result[0], result[1]
-                elif hasattr(result, 'down_block_res_samples') and hasattr(result, 'mid_block_res_sample'):
-                    down_block_res_samples = result.down_block_res_samples
-                    mid_block_res_sample = result.mid_block_res_sample
-                else:
-                    raise ValueError(f"Unexpected ControlNet output format: {type(result)}")
-                
-                # SDXL ControlNet should have exactly 9 down blocks
-                if len(down_block_res_samples) != 9:
-                    raise ValueError(f"SDXL ControlNet expected 9 down blocks, got {len(down_block_res_samples)}")
-                
-                # Return 9 down blocks + 1 mid block with explicit names matching UNet pattern
-                # Following the pattern from controlnet_wrapper.py and models.py:
-                # down_block_00: Initial sample (320 channels)
-                # down_block_01-03: Block 0 residuals (320 channels) 
-                # down_block_04-06: Block 1 residuals (640 channels)
-                # down_block_07-08: Block 2 residuals (1280 channels)
-                down_block_00 = down_block_res_samples[0]  # Initial: 320 channels, 88x88
-                down_block_01 = down_block_res_samples[1]  # Block0: 320 channels, 88x88
-                down_block_02 = down_block_res_samples[2]  # Block0: 320 channels, 88x88  
-                down_block_03 = down_block_res_samples[3]  # Block0: 320 channels, 44x44
-                down_block_04 = down_block_res_samples[4]  # Block1: 640 channels, 44x44
-                down_block_05 = down_block_res_samples[5]  # Block1: 640 channels, 44x44
-                down_block_06 = down_block_res_samples[6]  # Block1: 640 channels, 22x22
-                down_block_07 = down_block_res_samples[7]  # Block2: 1280 channels, 22x22
-                down_block_08 = down_block_res_samples[8]  # Block2: 1280 channels, 22x22
-                mid_block = mid_block_res_sample            # Mid: 1280 channels, 22x22
-                
-                # Return as individual tensors to preserve names in ONNX
-                return (down_block_00, down_block_01, down_block_02, down_block_03, 
-                        down_block_04, down_block_05, down_block_06, down_block_07, 
-                        down_block_08, mid_block)
-        
         wrapped_model = SDXLControlNetWrapper(model)
     
     # Regular ControlNet models are exported directly

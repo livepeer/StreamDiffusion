@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
 
-from .acceleration.tensorrt.model_detection import detect_model_from_diffusers_unet
+from .acceleration.tensorrt.utilities.model_detection import detect_model_from_diffusers_unet
 
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
@@ -869,7 +869,7 @@ class StreamDiffusionWrapper:
         logger.info(f"✅ Model loading succeeded")
 
         # Use comprehensive model detection instead of basic detection
-        from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
+        from streamdiffusion.acceleration.tensorrt.export_wrappers.sdxl_export import get_sdxl_tensorrt_config
         comprehensive_config = get_sdxl_tensorrt_config(model_id_or_path, pipe.unet)
         model_type = comprehensive_config['model_type']
         is_sdxl = comprehensive_config['is_sdxl']
@@ -929,22 +929,22 @@ class StreamDiffusionWrapper:
                     compile_vae_decoder,
                     compile_vae_encoder,
                 )
-                from streamdiffusion.acceleration.tensorrt.engine import (
+                from streamdiffusion.acceleration.tensorrt.engines.unet_engine import (
                     AutoencoderKLEngine,
                     UNet2DConditionModelEngine,
                 )
-                from streamdiffusion.acceleration.tensorrt.models import (
+                from streamdiffusion.acceleration.tensorrt.models.base_models import (
                     VAE,
                     UNet,
                     VAEEncoder,
                 )
                 # Add ControlNet detection and support
-                from streamdiffusion.acceleration.tensorrt.model_detection import (
+                from streamdiffusion.acceleration.tensorrt.utilities.model_detection import (
                     extract_unet_architecture,
                     validate_architecture
                 )
-                from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_export_wrapper
-                from streamdiffusion.acceleration.tensorrt.ipadapter_wrapper import create_ipadapter_export_wrapper
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.controlnet_export import create_controlnet_export_wrapper
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.ipadapter_export import create_ipadapter_export_wrapper
 
                 # Legacy TensorRT implementation (fallback)
                 def create_prefix(
@@ -997,7 +997,7 @@ class StreamDiffusionWrapper:
                     sdxl_config = getattr(self, '_comprehensive_config', None)
                     if sdxl_config is None:
                         # Fallback: recompute if not available
-                        from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
+                        from streamdiffusion.acceleration.tensorrt.export_wrappers.sdxl_export import get_sdxl_tensorrt_config
                         sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
                     
                     is_sdxl_model = sdxl_config['is_sdxl']
@@ -1186,7 +1186,7 @@ class StreamDiffusionWrapper:
                         control_input_names = unet_model.get_input_names()
                     
                     # Unified compilation path using ConditioningWrapper
-                    from streamdiffusion.acceleration.tensorrt.conditioning_wrapper import UnifiedExportWrapper
+                    from streamdiffusion.acceleration.tensorrt.export_wrappers.unified_export import UnifiedExportWrapper
 
                     wrapped_unet = UnifiedExportWrapper(
                         stream.unet,
@@ -1479,7 +1479,7 @@ class StreamDiffusionWrapper:
 
         # Initialize ControlNet engine pool if using TensorRT acceleration
         if use_controlnet_tensorrt:
-            from streamdiffusion.acceleration.tensorrt.engine_pool import ControlNetEnginePool
+            from streamdiffusion.acceleration.tensorrt.engines.engine_pool import ControlNetEnginePool
             from polygraphy import cuda
 
 

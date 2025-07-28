@@ -1,8 +1,8 @@
 """ControlNet TensorRT model definitions for compilation"""
 
 from typing import List, Dict, Optional
-from .models import BaseModel
-from .sdxl_support import SDXLConditioningHandler, detect_model_comprehensive
+from .base_models import BaseModel
+from ..export_wrappers.sdxl_export import SDXLConditioningHandler, detect_model_comprehensive
 import torch
 
 

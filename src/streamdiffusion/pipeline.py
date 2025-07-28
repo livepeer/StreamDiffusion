@@ -50,7 +50,7 @@ class StreamDiffusion:
 
         # Detect model type for proper conditioning
         try:
-            from .acceleration.tensorrt.model_detection import detect_model_from_diffusers_unet
+            from .acceleration.tensorrt.utilities.model_detection import detect_model_from_diffusers_unet
             self.model_type = detect_model_from_diffusers_unet(pipe.unet)
         except ImportError:
             # Fallback detection if tensorrt is not available
