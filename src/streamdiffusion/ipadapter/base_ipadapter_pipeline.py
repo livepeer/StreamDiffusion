@@ -21,7 +21,7 @@ except Exception as e:
     raise
 
 try:
-    from ..controlnet.preprocessors.ipadapter_embedding import IPAdapterEmbeddingPreprocessor
+    from ..preprocessing.processors.ipadapter_embedding import IPAdapterEmbeddingPreprocessor
 except Exception as e:
     print(f"base_ipadapter_pipeline: Failed to import IPAdapterEmbeddingPreprocessor: {e}")
     raise

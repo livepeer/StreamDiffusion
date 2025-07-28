@@ -135,7 +135,7 @@ class StreamParameterUpdater:
             style_image_key: Unique key for the style image this preprocessor handles
         """
         if self._embedding_orchestrator is None:
-            from .controlnet.preprocessing_orchestrator import PreprocessingOrchestrator
+            from .preprocessing.preprocessing_orchestrator import PreprocessingOrchestrator
             self._embedding_orchestrator = PreprocessingOrchestrator(
                 device=self.stream.device,
                 dtype=self.stream.dtype,

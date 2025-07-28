@@ -10,8 +10,8 @@ from diffusers.models import ControlNetModel
 from diffusers.utils import load_image
 
 from ..pipeline import StreamDiffusion
-from .preprocessors import get_preprocessor
-from .preprocessing_orchestrator import PreprocessingOrchestrator
+from ..preprocessing.processors import get_preprocessor
+from ..preprocessing.preprocessing_orchestrator import PreprocessingOrchestrator
 
 # Setup logger for parallel processing
 logger = logging.getLogger(__name__)
