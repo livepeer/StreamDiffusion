@@ -537,7 +537,7 @@ class SDXLUNetWrapper(torch.nn.Module):
         self.supports_added_cond = self._test_added_cond_support()
         
     def _get_base_unet(self, unet):
-        """Extract the base UNet from wrappers like ControlNetUNetWrapper"""
+        """Extract the base UNet from wrappers like ControlNetUNetExportWrapper"""
         # Handle ControlNet wrapper
         if hasattr(unet, 'unet_model') and hasattr(unet.unet_model, 'config'):
             return unet.unet_model

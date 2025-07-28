@@ -8,7 +8,7 @@ except ImportError:
     # Handle case when running as standalone script
     from model_detection import detect_model_from_diffusers_unet
 
-class IPAdapterUNetWrapper(torch.nn.Module):
+class IPAdapterUNetExportWrapper(torch.nn.Module):
     """
     Wrapper that bakes IPAdapter attention processors into the UNet for ONNX export.
     
@@ -34,7 +34,7 @@ class IPAdapterUNetWrapper(torch.nn.Module):
             # Install IPAdapter processors AFTER dtype conversion
             self._install_ipadapter_processors()
         else:
-            print("IPAdapterUNetWrapper: WARNING - UNet will not have IPAdapter functionality without processors!")
+            print("IPAdapterUNetExportWrapper: WARNING - UNet will not have IPAdapter functionality without processors!")
     
     def _has_ipadapter_processors(self) -> bool:
         """Check if the UNet already has IPAdapter processors installed"""
@@ -47,7 +47,7 @@ class IPAdapterUNetWrapper(torch.nn.Module):
                     return True
             return False
         except Exception as e:
-            print(f"IPAdapterUNetWrapper: Error checking existing processors: {e}")
+            print(f"IPAdapterUNetExportWrapper: Error checking existing processors: {e}")
             return False
     
     def _ensure_processor_dtype_consistency(self):
@@ -70,7 +70,7 @@ class IPAdapterUNetWrapper(torch.nn.Module):
             self.unet.set_attn_processor(updated_processors)
                 
         except Exception as e:
-            print(f"IPAdapterUNetWrapper: Error updating processor dtypes: {e}")
+            print(f"IPAdapterUNetExportWrapper: Error updating processor dtypes: {e}")
             import traceback
             traceback.print_exc()
     
@@ -130,9 +130,9 @@ class IPAdapterUNetWrapper(torch.nn.Module):
 
             
         except Exception as e:
-            print(f"IPAdapterUNetWrapper: ERROR - Could not install IPAdapter processors: {e}")
-            print(f"IPAdapterUNetWrapper: Exception type: {type(e).__name__}")
-            print("IPAdapterUNetWrapper: IPAdapter functionality will not work without processors!")
+            print(f"IPAdapterUNetExportWrapper: ERROR - Could not install IPAdapter processors: {e}")
+            print(f"IPAdapterUNetExportWrapper: Exception type: {type(e).__name__}")
+            print("IPAdapterUNetExportWrapper: IPAdapter functionality will not work without processors!")
             import traceback
             traceback.print_exc()
             raise e
@@ -174,7 +174,7 @@ class IPAdapterUNetWrapper(torch.nn.Module):
         )
 
 
-def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, install_processors: bool = True) -> IPAdapterUNetWrapper:
+def create_ipadapter_export_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, install_processors: bool = True) -> IPAdapterUNetExportWrapper:
     """
     Create an IPAdapter wrapper with automatic architecture detection and baked-in processors.
     
@@ -188,7 +188,7 @@ def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, in
         install_processors: Whether to install IPAdapter processors if none exist
         
     Returns:
-        IPAdapterUNetWrapper with baked-in IPAdapter attention processors
+        IPAdapterUNetExportWrapper with baked-in IPAdapter attention processors
     """
     # Detect model architecture
     try:
@@ -209,8 +209,8 @@ def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, in
         
         expected_dim = expected_dims.get(model_type)
         
-        return IPAdapterUNetWrapper(unet, cross_attention_dim, num_tokens, install_processors)
+        return IPAdapterUNetExportWrapper(unet, cross_attention_dim, num_tokens, install_processors)
         
     except Exception as e:
         print(f"create_ipadapter_wrapper: Error during model detection: {e}")
-        return IPAdapterUNetWrapper(unet, 768, num_tokens, install_processors) 
+        return IPAdapterUNetExportWrapper(unet, 768, num_tokens, install_processors) 

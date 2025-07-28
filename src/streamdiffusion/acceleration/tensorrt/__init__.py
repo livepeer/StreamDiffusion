@@ -12,9 +12,9 @@ from .builder import EngineBuilder, create_onnx_path
 from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
 from .models import VAE, BaseModel, UNet, VAEEncoder
 from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
-from .controlnet_wrapper import create_controlnet_wrapper
+from .controlnet_wrapper import create_controlnet_export_wrapper
 from .engine_pool import ControlNetEnginePool
-from .ipadapter_wrapper import create_ipadapter_wrapper
+from .ipadapter_wrapper import create_ipadapter_export_wrapper
 
 
 def _has_ipadapter_processors(unet: UNet2DConditionModel) -> bool:
@@ -267,7 +267,7 @@ def accelerate_with_tensorrt(
             
             # Create ControlNet-aware wrapper for ONNX export
             control_input_names = unet_model.get_input_names()
-            wrapped_unet = create_controlnet_wrapper(unet, control_input_names)
+            wrapped_unet = create_controlnet_export_wrapper(unet, control_input_names)
             
             # Compile with ControlNet support
             compile_unet(
@@ -283,7 +283,7 @@ def accelerate_with_tensorrt(
             
             # Create IPAdapter-aware wrapper for ONNX export
             # CRITICAL: Must install processors to bake IPAdapter functionality into TensorRT engine
-            wrapped_unet = create_ipadapter_wrapper(unet, install_processors=True)
+            wrapped_unet = create_ipadapter_export_wrapper(unet, install_processors=True)
             
             # Compile with IPAdapter support
             compile_unet(

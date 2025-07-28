@@ -1,10 +1,10 @@
 import torch
 from diffusers import UNet2DConditionModel
 from typing import Optional, List
-from .controlnet_wrapper import create_controlnet_wrapper
-from .ipadapter_wrapper import create_ipadapter_wrapper
+from .controlnet_wrapper import create_controlnet_export_wrapper
+from .ipadapter_wrapper import create_ipadapter_export_wrapper
 
-class ConditioningWrapper(torch.nn.Module):
+class UnifiedExportWrapper(torch.nn.Module):
     """
     Unified wrapper that composes wrappers for conditioning modules. 
     """
@@ -30,14 +30,14 @@ class ConditioningWrapper(torch.nn.Module):
                 ipadapter_kwargs['install_processors'] = True
             
 
-            self.ipadapter_wrapper = create_ipadapter_wrapper(unet, num_tokens=num_tokens, **ipadapter_kwargs)
+            self.ipadapter_wrapper = create_ipadapter_export_wrapper(unet, num_tokens=num_tokens, **ipadapter_kwargs)
             self.unet = self.ipadapter_wrapper.unet
         
         # Apply ControlNet second (wraps whatever UNet we have)
         if use_controlnet and control_input_names:
             controlnet_kwargs = {k: v for k, v in kwargs.items() if k in ['num_controlnets', 'conditioning_scales']}
 
-            self.controlnet_wrapper = create_controlnet_wrapper(self.unet, control_input_names, **controlnet_kwargs)
+            self.controlnet_wrapper = create_controlnet_export_wrapper(self.unet, control_input_names, **controlnet_kwargs)
         
         # Set up forward strategy based on what we created
         if self.controlnet_wrapper:
@@ -75,7 +75,7 @@ def create_conditioning_wrapper(unet: UNet2DConditionModel,
                               use_ipadapter: bool = False,
                               control_input_names: Optional[List[str]] = None,
                               num_tokens: int = 4,
-                              **kwargs) -> ConditioningWrapper:
-    return ConditioningWrapper(
+                              **kwargs) -> UnifiedExportWrapper:
+    return UnifiedExportWrapper(
         unet, use_controlnet, use_ipadapter, control_input_names, num_tokens, **kwargs
     ) 

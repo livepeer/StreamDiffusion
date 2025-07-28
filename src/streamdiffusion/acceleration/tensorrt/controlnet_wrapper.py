@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 
 
-class ControlNetUNetWrapper(torch.nn.Module):
+class ControlNetUNetExportWrapper(torch.nn.Module):
     """Wrapper that combines UNet with ControlNet inputs for ONNX export"""
     
     def __init__(self, unet: UNet2DConditionModel, control_input_names: List[str]):
@@ -202,7 +202,7 @@ class ControlNetUNetWrapper(torch.nn.Module):
         return mid_control
 
 
-class MultiControlNetUNetWrapper(torch.nn.Module):
+class MultiControlNetUNetExportWrapper(torch.nn.Module):
     """Advanced wrapper for multiple ControlNets with different scales"""
     
     def __init__(self, 
@@ -270,15 +270,15 @@ class MultiControlNetUNetWrapper(torch.nn.Module):
         return self.unet(**unet_kwargs)
 
 
-def create_controlnet_wrapper(unet: UNet2DConditionModel, 
+def create_controlnet_export_wrapper(unet: UNet2DConditionModel, 
                             control_input_names: List[str],
                             num_controlnets: int = 1,
                             conditioning_scales: Optional[List[float]] = None) -> torch.nn.Module:
     """Factory function to create appropriate ControlNet wrapper"""
     if num_controlnets == 1:
-        return ControlNetUNetWrapper(unet, control_input_names)
+        return ControlNetUNetExportWrapper(unet, control_input_names)
     else:
-        return MultiControlNetUNetWrapper(
+        return MultiControlNetUNetExportWrapper(
             unet, control_input_names, num_controlnets, conditioning_scales
         )
 

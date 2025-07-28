@@ -943,8 +943,8 @@ class StreamDiffusionWrapper:
                     extract_unet_architecture,
                     validate_architecture
                 )
-                from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_wrapper
-                from streamdiffusion.acceleration.tensorrt.ipadapter_wrapper import create_ipadapter_wrapper
+                from streamdiffusion.acceleration.tensorrt.controlnet_wrapper import create_controlnet_export_wrapper
+                from streamdiffusion.acceleration.tensorrt.ipadapter_wrapper import create_ipadapter_export_wrapper
 
                 # Legacy TensorRT implementation (fallback)
                 def create_prefix(
@@ -1186,9 +1186,9 @@ class StreamDiffusionWrapper:
                         control_input_names = unet_model.get_input_names()
                     
                     # Unified compilation path using ConditioningWrapper
-                    from streamdiffusion.acceleration.tensorrt.conditioning_wrapper import ConditioningWrapper
+                    from streamdiffusion.acceleration.tensorrt.conditioning_wrapper import UnifiedExportWrapper
 
-                    wrapped_unet = ConditioningWrapper(
+                    wrapped_unet = UnifiedExportWrapper(
                         stream.unet,
                         use_controlnet=use_controlnet_trt,
                         use_ipadapter=use_ipadapter_trt,
