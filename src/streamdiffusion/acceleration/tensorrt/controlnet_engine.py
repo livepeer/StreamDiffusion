@@ -358,8 +358,8 @@ class HybridControlNet:
                 logger.warning(f"TensorRT ControlNet runtime error for {self.model_id}, falling back to PyTorch: {e}")
                 logger.debug(f"TensorRT ControlNet runtime error details:", exc_info=True)
         
-        # if not self.enable_pytorch_fallback:
-        #     raise RuntimeError(f"TensorRT acceleration failed for ControlNet {self.model_id} and PyTorch fallback is disabled. Error: {self.fallback_reason}")
+        if not self.enable_pytorch_fallback:
+            raise RuntimeError(f"TensorRT acceleration failed for ControlNet {self.model_id} and PyTorch fallback is disabled. Error: {self.fallback_reason}")
         
         if self.pytorch_model is None:
             logger.error(f"HybridControlNet.__call__: No PyTorch fallback available for ControlNet {self.model_id}")
