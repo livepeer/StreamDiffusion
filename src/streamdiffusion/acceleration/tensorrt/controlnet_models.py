@@ -131,112 +131,95 @@ class ControlNetSDXLTRT(ControlNetTRT):
             # Set embedding_dim from sophisticated detection
             kwargs.setdefault('embedding_dim', conditioning_spec['context_dim'])
             
-            self.conditioning_handler = conditioning_handler
-            self.conditioning_spec = conditioning_spec
-        else:
-            # Fallback for cases where UNet not available
-            kwargs.setdefault('embedding_dim', 2048)
-            self.conditioning_handler = None
-            self.conditioning_spec = {
-                'context_dim': 2048,
-                'text_encoder_2_dim': 1280,
-                'pooled_embeds': True,
-                'time_ids': True
-            }
+        # Set SDXL-specific defaults
+        kwargs.setdefault('embedding_dim', 2048)  # SDXL uses 2048-dim embeddings
+        kwargs.setdefault('unet_dim', 4)          # SDXL latent channels
         
         super().__init__(**kwargs)
-        self.name = "ControlNet-SDXL"
-    
-    def get_input_names(self) -> List[str]:
-        """SDXL ControlNet has additional conditioning inputs based on sophisticated detection"""
-        base_inputs = super().get_input_names()
         
-        # Use conditioning spec to determine what inputs are needed
-        if self.conditioning_spec['pooled_embeds']:
-            base_inputs.append("text_embeds")
-        if self.conditioning_spec['time_ids']:
-            base_inputs.append("time_ids")
+        # SDXL ControlNet output specifications - 9 down blocks + 1 mid block
+        # Following the pattern from UNet implementation:
+        self.sdxl_output_channels = {
+            # Initial sample
+            'down_block_00': 320,   # Initial: 320 channels
+            # Block 0 residuals  
+            'down_block_01': 320,   # Block0: 320 channels
+            'down_block_02': 320,   # Block0: 320 channels
+            'down_block_03': 320,   # Block0: 320 channels
+            # Block 1 residuals
+            'down_block_04': 640,   # Block1: 640 channels
+            'down_block_05': 640,   # Block1: 640 channels
+            'down_block_06': 640,   # Block1: 640 channels
+            # Block 2 residuals
+            'down_block_07': 1280,  # Block2: 1280 channels
+            'down_block_08': 1280,  # Block2: 1280 channels
+            # Mid block
+            'mid_block': 1280       # Mid: 1280 channels
+        }
+    
+    def get_shape_dict(self, batch_size, image_height, image_width):
+        """Override to provide SDXL-specific output shapes for 9 down blocks"""
+        # Get base input shapes
+        base_shapes = super().get_shape_dict(batch_size, image_height, image_width)
+        
+        # Add conditioning_scale to input shapes (scalar tensor)
+        base_shapes["conditioning_scale"] = ()  # Scalar tensor has empty shape
+        
+        # Calculate latent dimensions
+        latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
+        
+        # SDXL output shapes matching UNet pattern:
+        # Pattern: [88x88] + [88x88, 88x88, 44x44] + [44x44, 44x44, 22x22] + [22x22, 22x22]
+        sdxl_output_shapes = {
+            # Initial sample (no downsampling)
+            'down_block_00': (batch_size, 320, latent_height, latent_width),        # 88x88
+            # Block 0 residuals
+            'down_block_01': (batch_size, 320, latent_height, latent_width),        # 88x88  
+            'down_block_02': (batch_size, 320, latent_height, latent_width),        # 88x88
+            'down_block_03': (batch_size, 320, latent_height // 2, latent_width // 2),  # 44x44 (downsampled)
+            # Block 1 residuals
+            'down_block_04': (batch_size, 640, latent_height // 2, latent_width // 2),  # 44x44
+            'down_block_05': (batch_size, 640, latent_height // 2, latent_width // 2),  # 44x44
+            'down_block_06': (batch_size, 640, latent_height // 4, latent_width // 4),  # 22x22 (downsampled)
+            # Block 2 residuals  
+            'down_block_07': (batch_size, 1280, latent_height // 4, latent_width // 4), # 22x22
+            'down_block_08': (batch_size, 1280, latent_height // 4, latent_width // 4), # 22x22
+            # Mid block
+            'mid_block': (batch_size, 1280, latent_height // 4, latent_width // 4),     # 22x22
+        }
+        
+        # Combine base inputs with SDXL outputs
+        base_shapes.update(sdxl_output_shapes)
+        return base_shapes
+    
+    def get_sample_input(self, batch_size, image_height, image_width):
+        """Override to provide SDXL-specific sample tensors with correct input format"""
+        latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
+        dtype = torch.float16 if self.fp16 else torch.float32
+        
+        # Base inputs for ControlNet (wrapper expects these 5 inputs including conditioning_scale)
+        base_inputs = (
+            torch.randn(batch_size, self.unet_dim, latent_height, latent_width, 
+                       dtype=dtype, device=self.device),  # sample
+            torch.ones(batch_size, dtype=torch.float32, device=self.device),  # timestep
+            torch.randn(batch_size, self.text_maxlen, self.embedding_dim, 
+                       dtype=dtype, device=self.device),  # encoder_hidden_states
+            torch.randn(batch_size, 3, image_height, image_width, 
+                       dtype=dtype, device=self.device),  # controlnet_cond
+            torch.tensor(1.0, dtype=torch.float32, device=self.device),  # conditioning_scale
+        )
         
         return base_inputs
     
-    def get_output_names(self) -> List[str]:
-        """SDXL has 3 down blocks = 3 outputs (1 per block)"""
-        down_names = [f"down_block_{i:02d}" for i in range(3)]
-        return down_names + ["mid_block"]
+    def get_input_names(self):
+        """Override to provide SDXL-specific input names"""
+        return ["sample", "timestep", "encoder_hidden_states", "controlnet_cond", "conditioning_scale"]
     
-    def get_dynamic_axes(self) -> Dict[str, Dict[int, str]]:
-        """SDXL dynamic axes include additional inputs and 3 down block outputs"""
-        base_axes = {
-            "sample": {0: "B", 2: "H", 3: "W"},
-            "encoder_hidden_states": {0: "B"},
-            "timestep": {0: "B"},
-            "controlnet_cond": {0: "B", 2: "H_ctrl", 3: "W_ctrl"},
-            **{f"down_block_{i:02d}": {0: "B", 2: "H", 3: "W"} for i in range(3)},
-            "mid_block": {0: "B", 2: "H", 3: "W"}
-        }
-        
-        # Add dynamic axes based on conditioning spec
-        if self.conditioning_spec['pooled_embeds']:
-            base_axes["text_embeds"] = {0: "B"}
-        if self.conditioning_spec['time_ids']:
-            base_axes["time_ids"] = {0: "B"}
-        
-        return base_axes
-    
-    def get_input_profile(self, batch_size, image_height, image_width, 
-                         static_batch, static_shape):
-        """SDXL input profiles with sophisticated conditioning"""
-        base_profile = super().get_input_profile(
-            batch_size, image_height, image_width, static_batch, static_shape
-        )
-        
-        min_batch = batch_size if static_batch else self.min_batch
-        max_batch = batch_size if static_batch else self.max_batch
-        
-        # Add conditioning profiles based on sophisticated detection
-        if self.conditioning_spec['pooled_embeds']:
-            base_profile["text_embeds"] = [
-                (min_batch, self.conditioning_spec['text_encoder_2_dim']), 
-                (batch_size, self.conditioning_spec['text_encoder_2_dim']), 
-                (max_batch, self.conditioning_spec['text_encoder_2_dim'])
-            ]
-        
-        if self.conditioning_spec['time_ids']:
-            base_profile["time_ids"] = [
-                (min_batch, 6), (batch_size, 6), (max_batch, 6)
-            ]
-        
-        return base_profile
-    
-    def get_sample_input(self, batch_size, image_height, image_width):
-        """Generate sample inputs using sophisticated conditioning handler"""
-        base_inputs = super().get_sample_input(batch_size, image_height, image_width)
-        
-        # Use conditioning handler to create proper sample conditioning
-        if self.conditioning_handler:
-            conditioning = self.conditioning_handler.create_sample_conditioning(
-                batch_size=batch_size, device=self.device
-            )
-            
-            sdxl_inputs = ()
-            if self.conditioning_spec['pooled_embeds']:
-                sdxl_inputs += (conditioning['text_embeds'],)
-            if self.conditioning_spec['time_ids']:
-                sdxl_inputs += (conditioning['time_ids'],)
-            
-            return base_inputs + sdxl_inputs
-        else:
-            # Fallback to previous approach if handler not available
-            dtype = torch.float16 if self.fp16 else torch.float32
-            
-            sdxl_inputs = ()
-            if self.conditioning_spec['pooled_embeds']:
-                sdxl_inputs += (torch.randn(batch_size, self.conditioning_spec['text_encoder_2_dim'], 
-                                          dtype=dtype, device=self.device),)
-            if self.conditioning_spec['time_ids']:
-                sdxl_inputs += (torch.randn(batch_size, 6, dtype=dtype, device=self.device),)
-            
-            return base_inputs + sdxl_inputs
+    def get_output_names(self):
+        """Override to provide SDXL-specific output names that match wrapper return format"""
+        return ["down_block_00", "down_block_01", "down_block_02", "down_block_03", 
+                "down_block_04", "down_block_05", "down_block_06", "down_block_07", 
+                "down_block_08", "mid_block"]
 
 
 def create_controlnet_model(model_type: str = "sd15", 

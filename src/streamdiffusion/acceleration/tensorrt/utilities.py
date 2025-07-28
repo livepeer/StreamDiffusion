@@ -219,7 +219,7 @@ class Engine:
         timing_cache=None,
         workspace_size=0,
     ):
-        print(f"Building TensorRT engine for {onnx_path}: {self.engine_path}")
+        logger.info(f"Building TensorRT engine for {onnx_path}: {self.engine_path}")
         p = Profile()
         if input_profile:
             for name, dims in input_profile.items():
@@ -705,10 +705,25 @@ def export_onnx(
     # Check if this is a UNet model that needs SDXL handling
     is_unet = hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim')
     
-    wrapped_model = model
+    # Detect if this is a ControlNet model (vs UNet model)
+    is_controlnet = (
+        hasattr(model, '__class__') and 'ControlNet' in model.__class__.__name__
+    ) or (
+        hasattr(model, 'config') and hasattr(model.config, '_class_name') and 
+        'ControlNet' in model.config._class_name
+    )
     
-    if is_unet and (is_sdxl_by_data or detect_unet_characteristics(model)['is_sdxl']):
-        logger.info("🔧 Detected SDXL model, using advanced wrapper for robust ONNX export...")
+    # Detect if this is an SDXL ControlNet
+    is_sdxl_controlnet = is_controlnet and (is_sdxl_by_data or (
+        hasattr(model, 'config') and 
+        getattr(model.config, 'addition_embed_type', None) == 'text_time'
+    ))
+    
+    wrapped_model = model  # Default: use model as-is
+    
+    # Only apply SDXL wrappers to UNet models, not ControlNet models
+    if is_unet and not is_controlnet and (is_sdxl_by_data or detect_unet_characteristics(model)['is_sdxl']):
+        logger.info("🔧 Detected SDXL UNet model, using advanced wrapper for robust ONNX export...")
         
         # Try to get model path for better detection
         model_path = getattr(model_data, 'model_path', '') or getattr(model, 'model_path', '')
@@ -719,10 +734,103 @@ def export_onnx(
         logger.debug(f"   SDXL detection - by data: {is_sdxl_by_data}")
         logger.debug(f"   Model path: {model_path}")
     
-    # For legacy compatibility, still wrap other potential SDXL models
-    elif is_sdxl_by_data and hasattr(model, 'forward'):
+    # For legacy compatibility, still wrap other potential SDXL UNet models (not ControlNets)
+    elif is_sdxl_by_data and not is_controlnet and hasattr(model, 'forward'):
         logger.info("🔧 Using legacy SDXL wrapper for ONNX export...")
         wrapped_model = SDXLUNetWrapper(model)
+    
+    # SDXL ControlNet models need special wrapper for added_cond_kwargs
+    elif is_sdxl_controlnet:
+        logger.info("🔧 Detected SDXL ControlNet model, using specialized wrapper...")
+        
+        class SDXLControlNetWrapper(torch.nn.Module):
+            """Wrapper for SDXL ControlNet models to handle added_cond_kwargs properly during ONNX export"""
+            
+            def __init__(self, controlnet_model):
+                super().__init__()
+                self.controlnet = controlnet_model
+                
+                # Get device and dtype from model
+                if hasattr(controlnet_model, 'device'):
+                    self.device = controlnet_model.device
+                else:
+                    # Try to infer from first parameter
+                    try:
+                        self.device = next(controlnet_model.parameters()).device
+                    except:
+                        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                
+                if hasattr(controlnet_model, 'dtype'):
+                    self.dtype = controlnet_model.dtype
+                else:
+                    # Try to infer from first parameter
+                    try:
+                        self.dtype = next(controlnet_model.parameters()).dtype
+                    except:
+                        self.dtype = torch.float16
+            
+            def forward(self, sample, timestep, encoder_hidden_states, controlnet_cond, conditioning_scale):
+                """Forward pass that handles SDXL ControlNet requirements and produces 9 down blocks"""
+                batch_size = sample.shape[0]
+                
+                # Create proper added_cond_kwargs for SDXL
+                added_cond_kwargs = {
+                    'text_embeds': torch.randn(batch_size, 1280, dtype=self.dtype, device=self.device),
+                    'time_ids': torch.randn(batch_size, 6, dtype=self.dtype, device=self.device)
+                }
+                
+                # Call the ControlNet with proper arguments including conditioning_scale
+                result = self.controlnet(
+                    sample=sample,
+                    timestep=timestep,
+                    encoder_hidden_states=encoder_hidden_states,
+                    controlnet_cond=controlnet_cond,
+                    conditioning_scale=conditioning_scale,
+                    added_cond_kwargs=added_cond_kwargs,
+                    return_dict=False
+                )
+                
+                # Extract down blocks and mid block from result
+                if isinstance(result, tuple) and len(result) >= 2:
+                    down_block_res_samples, mid_block_res_sample = result[0], result[1]
+                elif hasattr(result, 'down_block_res_samples') and hasattr(result, 'mid_block_res_sample'):
+                    down_block_res_samples = result.down_block_res_samples
+                    mid_block_res_sample = result.mid_block_res_sample
+                else:
+                    raise ValueError(f"Unexpected ControlNet output format: {type(result)}")
+                
+                # SDXL ControlNet should have exactly 9 down blocks
+                if len(down_block_res_samples) != 9:
+                    raise ValueError(f"SDXL ControlNet expected 9 down blocks, got {len(down_block_res_samples)}")
+                
+                # Return 9 down blocks + 1 mid block with explicit names matching UNet pattern
+                # Following the pattern from controlnet_wrapper.py and models.py:
+                # down_block_00: Initial sample (320 channels)
+                # down_block_01-03: Block 0 residuals (320 channels) 
+                # down_block_04-06: Block 1 residuals (640 channels)
+                # down_block_07-08: Block 2 residuals (1280 channels)
+                down_block_00 = down_block_res_samples[0]  # Initial: 320 channels, 88x88
+                down_block_01 = down_block_res_samples[1]  # Block0: 320 channels, 88x88
+                down_block_02 = down_block_res_samples[2]  # Block0: 320 channels, 88x88  
+                down_block_03 = down_block_res_samples[3]  # Block0: 320 channels, 44x44
+                down_block_04 = down_block_res_samples[4]  # Block1: 640 channels, 44x44
+                down_block_05 = down_block_res_samples[5]  # Block1: 640 channels, 44x44
+                down_block_06 = down_block_res_samples[6]  # Block1: 640 channels, 22x22
+                down_block_07 = down_block_res_samples[7]  # Block2: 1280 channels, 22x22
+                down_block_08 = down_block_res_samples[8]  # Block2: 1280 channels, 22x22
+                mid_block = mid_block_res_sample            # Mid: 1280 channels, 22x22
+                
+                # Return as individual tensors to preserve names in ONNX
+                return (down_block_00, down_block_01, down_block_02, down_block_03, 
+                        down_block_04, down_block_05, down_block_06, down_block_07, 
+                        down_block_08, mid_block)
+        
+        wrapped_model = SDXLControlNetWrapper(model)
+    
+    # Regular ControlNet models are exported directly
+    elif is_controlnet:
+        logger.info("🔧 Detected ControlNet model, exporting directly...")
+        wrapped_model = model
     
     with torch.inference_mode(), torch.autocast("cuda"):
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
@@ -745,7 +853,6 @@ def export_onnx(
         
         # Convert to external data format for large models (SDXL)
         if is_large_model:
-            print("🔧 Converting ONNX to external data format for large model (SDXL)...")
             import os
             
             # Load the exported model
