@@ -88,6 +88,30 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
                 # Fallback for fine-tunes with non-standard dimensions.
                 model_type = "SD-finetune"
                 confidence = 0.7
+
+    # 3. ControlNet Model Detection (detect underlying architecture)
+    elif hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim'):
+        # ControlNet models have UNet-like configs, detect their base architecture
+        config = model.config
+        
+        # Apply same detection logic as UNet models
+        if config.get("addition_embed_type") is not None:
+            model_type = "SDXL"
+            is_sdxl = True
+            confidence = 0.95  # Slightly lower confidence for ControlNet
+            if config.get("time_cond_proj_dim") is None:
+                is_turbo = True
+        else:
+            cross_attention_dim = config.get("cross_attention_dim")
+            if cross_attention_dim == 1024:
+                model_type = "SD2.1"
+                confidence = 0.95
+            elif cross_attention_dim == 768:
+                model_type = "SD1.5" 
+                confidence = 0.95
+            else:
+                model_type = "SD-finetune"
+                confidence = 0.7
     
     else:
         # The model is not a known UNet or MMDiT class.
@@ -101,6 +125,26 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
         'cross_attention_dim': getattr(model.config, 'cross_attention_dim', 'N/A'),
         'block_out_channels': getattr(model.config, 'block_out_channels', 'N/A'),
     }
+    
+    # For UNet models, add detailed characteristics that SDXL code expects
+    if isinstance(model, UNet2DConditionModel):
+        unet_chars = detect_unet_characteristics(model)
+        architecture_details.update({
+            'has_time_conditioning': unet_chars['has_time_cond'],
+            'has_addition_embeds': unet_chars['has_addition_embed'],
+        })
+    
+    # For ControlNet models, add similar characteristics
+    elif hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim'):
+        # ControlNet models have similar config structure to UNet
+        config = model.config
+        has_addition_embed = config.get("addition_embed_type") is not None
+        has_time_cond = hasattr(config, 'time_cond_proj_dim') and config.time_cond_proj_dim is not None
+        
+        architecture_details.update({
+            'has_time_conditioning': has_time_cond,
+            'has_addition_embeds': has_addition_embed,
+        })
 
     compatibility_info = {
         'notes': f"Detected as {model_type} with {confidence:.2f} confidence based on architecture."

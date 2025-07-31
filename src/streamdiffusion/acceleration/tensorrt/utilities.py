@@ -691,10 +691,15 @@ def export_onnx(
         'ControlNet' in model.config._class_name
     )
 
-    # Detect if this is an SDXL model via detect_model and hasattr(model, 'unet')
+    # Detect if this is an SDXL model via detect_model
     if hasattr(model, 'unet'):
         logger.debug(f"Found UNET, detecting model from {model.unet.__class__.__name__}")
         detection_result = detect_model(model.unet)
+        if detection_result is not None:
+            is_sdxl = detection_result.get('is_sdxl', False)
+    elif hasattr(model, 'config'):
+        logger.debug(f"Detecting model directly from {model.__class__.__name__}")
+        detection_result = detect_model(model)
         if detection_result is not None:
             is_sdxl = detection_result.get('is_sdxl', False)
     
