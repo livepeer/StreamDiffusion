@@ -150,9 +150,6 @@ class SDXLConditioningHandler:
         
         return results
 
-
-
-    
     def get_onnx_export_spec(self) -> Dict[str, Any]:
         """Get specification for ONNX export"""
         spec = self.conditioning_handler.get_conditioning_spec()

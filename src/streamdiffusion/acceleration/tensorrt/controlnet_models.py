@@ -125,8 +125,22 @@ class ControlNetSDXLTRT(ControlNetTRT):
     def __init__(self, unet=None, model_path="", **kwargs):
         # Use new model detection if UNet provided
         if unet is not None:
-            model_info = detect_model(unet)
-            conditioning_handler = SDXLConditioningHandler(model_info)
+            # Use the new detection function
+            detection_result = detect_model(unet)
+
+            # Create a config dict compatible with SDXLConditioningHandler
+            config = {
+                'is_sdxl': detection_result['is_sdxl'],
+                'has_time_cond': detection_result['architecture_details']['has_time_conditioning'],
+                'has_addition_embed': detection_result['architecture_details']['has_addition_embeds'],
+                'model_type': detection_result['model_type'],
+                'is_turbo': detection_result['is_turbo'],
+                'is_sd3': detection_result['is_sd3'],
+                'confidence': detection_result['confidence'],
+                'architecture_details': detection_result['architecture_details'],
+                'compatibility_info': detection_result['compatibility_info']
+            }
+            conditioning_handler = SDXLConditioningHandler(config)
             conditioning_spec = conditioning_handler.get_conditioning_spec()
             
             # Set embedding_dim from sophisticated detection
@@ -227,7 +241,7 @@ def create_controlnet_model(model_type: str = "sd15",
                            unet=None, model_path: str = "",
                            **kwargs) -> ControlNetTRT:
     """Factory function to create appropriate ControlNet TensorRT model"""
-    if model_type.lower() in ["sdxl", "sdxl-turbo"]:
+    if model_type.lower() in ["sdxl"]:
         return ControlNetSDXLTRT(unet=unet, model_path=model_path, **kwargs)
     else:
         return ControlNetTRT(**kwargs) 

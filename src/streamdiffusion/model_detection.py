@@ -66,15 +66,13 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
         # 2a. SDXL vs. non-SDXL
         # The `addition_embed_type` is the clearest indicator for the SDXL architecture.
         if config.get("addition_embed_type") is not None:
+            model_type = "SDXL"
             is_sdxl = True
             confidence = 1.0
             # Differentiate SDXL-Base from SDXL-Turbo.
             # Base SDXL has `time_cond_proj_dim` (e.g., 256), while Turbo has it set to `None`.
             if config.get("time_cond_proj_dim") is None:
-                model_type = "SDXL-Turbo"
                 is_turbo = True
-            else:
-                model_type = "SDXL"
         
         # 2b. SD2.1 vs. SD1.5 (if not SDXL)
         # Differentiate based on the text encoder's projection dimension.
@@ -121,6 +119,100 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
     logger.debug(f"[detect_model] {result}")
 
     return result
+
+
+def detect_unet_characteristics(unet: UNet2DConditionModel) -> Dict[str, any]:
+    """Detect detailed UNet characteristics including SDXL-specific features"""
+    config = unet.config
+    
+    # Get cross attention dimensions to detect model type
+    cross_attention_dim = getattr(config, 'cross_attention_dim', None)
+    
+    # Detect SDXL by multiple indicators
+    is_sdxl = False
+    
+    # Check cross attention dimension
+    if isinstance(cross_attention_dim, (list, tuple)):
+        # SDXL typically has [1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280, 1280]
+        is_sdxl = any(dim >= 1280 for dim in cross_attention_dim)
+    elif isinstance(cross_attention_dim, int):
+        # Single value - SDXL uses 2048 for concatenated embeddings, or 1280+ for individual encoders
+        is_sdxl = cross_attention_dim >= 1280
+    
+    # Check addition_embed_type for SDXL detection (strong indicator)
+    addition_embed_type = getattr(config, 'addition_embed_type', None)
+    has_addition_embed = addition_embed_type is not None
+    
+    if addition_embed_type in ['text_time', 'text_time_guidance']:
+        is_sdxl = True  # This is a definitive SDXL indicator
+    
+    # Check if model has time conditioning projection (SDXL feature)
+    has_time_cond = hasattr(config, 'time_cond_proj_dim') and config.time_cond_proj_dim is not None
+    
+    # Additional SDXL detection checks
+    if hasattr(config, 'num_class_embeds') and config.num_class_embeds is not None:
+        is_sdxl = True  # SDXL often has class embeddings
+        
+    # Check sample size (SDXL typically uses 128 vs 64 for SD1.5)
+    sample_size = getattr(config, 'sample_size', 64)
+    if sample_size >= 128:
+        is_sdxl = True
+    
+    return {
+        'is_sdxl': is_sdxl,
+        'has_time_cond': has_time_cond, 
+        'has_addition_embed': has_addition_embed,
+        'cross_attention_dim': cross_attention_dim,
+        'addition_embed_type': addition_embed_type,
+        'in_channels': getattr(config, 'in_channels', 4),
+        'sample_size': getattr(config, 'sample_size', 64 if not is_sdxl else 128),
+        'block_out_channels': tuple(getattr(config, 'block_out_channels', [])),
+        'attention_head_dim': getattr(config, 'attention_head_dim', None)
+    }
+
+# This is used for controlnet/ipadapter model detection - can be deprecated (along with detect_unet_characteristics)
+def detect_model_from_diffusers_unet(unet: UNet2DConditionModel) -> str:
+    """Detect model type from diffusers UNet configuration"""
+    characteristics = detect_unet_characteristics(unet)
+    
+    in_channels = characteristics['in_channels']
+    block_out_channels = characteristics['block_out_channels']
+    cross_attention_dim = characteristics['cross_attention_dim']
+    is_sdxl = characteristics['is_sdxl']
+    
+    # Use enhanced SDXL detection
+    if is_sdxl:
+        return "SDXL"
+    
+    # Original detection logic for other models
+    if (cross_attention_dim == 768 and 
+        block_out_channels == (320, 640, 1280, 1280) and
+        in_channels == 4):
+        return "SD15"
+    
+    elif (cross_attention_dim == 1024 and 
+          block_out_channels == (320, 640, 1280, 1280) and
+          in_channels == 4):
+        return "SD21"
+    
+    elif cross_attention_dim == 768 and in_channels == 4:
+        return "SD15"
+    elif cross_attention_dim == 1024 and in_channels == 4:
+        return "SD21"
+    
+    if cross_attention_dim == 768:
+        print(f"detect_model_from_diffusers_unet: Unknown SD1.5-like model with channels {block_out_channels}, defaulting to SD15")
+        return "SD15"
+    elif cross_attention_dim == 1024:
+        print(f"detect_model_from_diffusers_unet: Unknown SD2.1-like model with channels {block_out_channels}, defaulting to SD21")
+        return "SD21"
+    else:
+        raise ValueError(
+            f"Unknown model architecture: "
+            f"cross_attention_dim={cross_attention_dim}, "
+            f"block_out_channels={block_out_channels}, "
+            f"in_channels={in_channels}"
+        )
 
 
 def extract_unet_architecture(unet: UNet2DConditionModel) -> Dict[str, Any]:

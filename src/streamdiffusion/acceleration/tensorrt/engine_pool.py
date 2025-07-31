@@ -193,7 +193,7 @@ class ControlNetEnginePool:
             opt_height = opt_resolution
             opt_width = opt_resolution
             
-            if model_type.lower() in ["sdxl", "sdxl-turbo"]:
+            if model_type.lower() in ["sdxl"]:
                 embedding_dim = 2048
             elif model_type.lower() in ["sd21", "sd2.1"]:
                 embedding_dim = 1024
@@ -262,7 +262,7 @@ class ControlNetEnginePool:
         batch_size = 1
         height, width = self.image_height, self.image_width  # Use actual dimensions
         
-        if model_type.lower() in ["sdxl", "sdxl-turbo"]:
+        if model_type.lower() in ["sdxl"]:
             embedding_dim = 2048
             text_embed_dim = 1280
         elif model_type.lower() in ["sd21", "sd2.1"]:

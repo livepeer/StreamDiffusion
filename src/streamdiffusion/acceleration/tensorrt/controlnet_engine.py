@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from polygraphy import cuda
 
 from .utilities import Engine
-from ...model_detection import detect_model
+from ...model_detection import detect_model, detect_model_from_diffusers_unet
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -297,9 +297,8 @@ class HybridControlNet:
         # Use existing model detection if pytorch_model is available
         if pytorch_model is not None:
             try:
-                detection_results = detect_model(pytorch_model)
-                model_type = detection_results['model_type']
-                self.model_type = model_type.lower()
+                detected_type = detect_model_from_diffusers_unet(pytorch_model)
+                self.model_type = detected_type.lower()
                 logger.info(f"HybridControlNet.__init__: Model type detected from pytorch_model: '{self.model_type}' for {self.model_id}")
                 logger.info(f"ControlNet model type detected from pytorch_model: {self.model_type} for {self.model_id}")
             except Exception as e:
