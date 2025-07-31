@@ -28,7 +28,8 @@ class BaseControlNetPipeline:
                  stream_diffusion: StreamDiffusion,
                  device: str = "cuda",
                  dtype: torch.dtype = torch.float16,
-                 use_pipelined_processing: bool = True):
+                 use_pipelined_processing: bool = True,
+                 model_cache_dir: Optional[Union[str, Path]] = None,):
         """
         Initialize ControlNet pipeline.
         
@@ -48,6 +49,7 @@ class BaseControlNetPipeline:
         self.controlnet_images: List[Optional[torch.Tensor]] = []
         self.controlnet_scales: List[float] = []
         self.preprocessors: List[Optional[Any]] = []
+        self.model_cache_dir = model_cache_dir
         
         self._original_unet_step = None
         self._is_patched = False
@@ -237,7 +239,8 @@ class BaseControlNetPipeline:
                 controlnet = ControlNetModel.from_pretrained(
                     model_id,
                     torch_dtype=self.dtype,
-                    local_files_only=True
+                    local_files_only=True,
+                    cache_dir=self.model_cache_dir
                 )
             else:
                 # Try as HuggingFace model ID
@@ -249,12 +252,14 @@ class BaseControlNetPipeline:
                     controlnet = ControlNetModel.from_pretrained(
                         repo_id,
                         subfolder=subfolder,
-                        torch_dtype=self.dtype
+                        torch_dtype=self.dtype,
+                        cache_dir=self.model_cache_dir
                     )
                 else:
                     controlnet = ControlNetModel.from_pretrained(
                         model_id,
-                        torch_dtype=self.dtype
+                        torch_dtype=self.dtype,
+                        cache_dir=self.model_cache_dir
                     )
             
             # Move to device

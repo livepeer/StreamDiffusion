@@ -13,9 +13,10 @@ class SDXLTurboControlNetPipeline(BaseControlNetPipeline):
                  stream_diffusion: StreamDiffusion,
                  device: str = "cuda",
                  dtype: torch.dtype = torch.float16,
-                 model_type: str = "SDXL Turbo"):
+                 model_type: str = "SDXL Turbo",
+                 model_cache_dir: Optional[Union[str, Path]] = None):
         """Initialize SDXL Turbo ControlNet pipeline"""
-        super().__init__(stream_diffusion, device, dtype, use_pipelined_processing=True)
+        super().__init__(stream_diffusion, device, dtype, use_pipelined_processing=True, model_cache_dir=model_cache_dir)
         self.model_type = model_type
 
     @property

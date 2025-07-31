@@ -100,6 +100,7 @@ class StreamDiffusionWrapper:
         build_engines_if_missing: bool = True,
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
+        model_cache_dir: Optional[Union[str, Path]] = None,
         # ControlNet options
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
@@ -175,6 +176,8 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : bool, optional
             Whether to normalize seed weights in blending to sum to 1,
             by default True. When False, weights > 1 will amplify noise.
+        model_cache_dir : Optional[Union[str, Path]], optional
+            The directory to cache the model, by default None.
         use_controlnet : bool, optional
             Whether to enable ControlNet support, by default False.
         controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
@@ -209,6 +212,7 @@ class StreamDiffusionWrapper:
         self.mode = mode
         self.output_type = output_type
         self.frame_buffer_size = frame_buffer_size
+        self.model_cache_dir = model_cache_dir
         self.batch_size = (
             len(t_index_list) * frame_buffer_size
             if use_denoising_batch
@@ -850,13 +854,13 @@ class StreamDiffusionWrapper:
 
         if use_tiny_vae:
             if vae_id is not None:
-                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(
+                stream.vae = AutoencoderTiny.from_pretrained(vae_id, cache_dir=self.model_cache_dir).to(
                     device=pipe.device, dtype=pipe.dtype
                 )
             else:
                 # Use TAESD XL for SDXL models, regular TAESD for SD 1.5
                 taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
-                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(
+                stream.vae = AutoencoderTiny.from_pretrained(taesd_model, cache_dir=self.model_cache_dir).to(
                     device=pipe.device, dtype=pipe.dtype
                 )
 
@@ -1152,10 +1156,10 @@ class StreamDiffusionWrapper:
             from transformers.models.clip import CLIPFeatureExtractor
 
             self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(
-                "CompVis/stable-diffusion-safety-checker"
+                "CompVis/stable-diffusion-safety-checker", cache_dir=self.model_cache_dir
             ).to(device=pipe.device)
             self.feature_extractor = CLIPFeatureExtractor.from_pretrained(
-                "openai/clip-vit-base-patch32"
+                "openai/clip-vit-base-patch32", cache_dir=self.model_cache_dir
             )
             self.nsfw_fallback_img = Image.new("RGB", (self.height, self.width), (0, 0, 0))
 
@@ -1180,10 +1184,10 @@ class StreamDiffusionWrapper:
         # Use provided model type (detected before TensorRT conversion)
         if model_type == "SDXL":
             from streamdiffusion.controlnet.controlnet_sdxlturbo_pipeline import SDXLTurboControlNetPipeline
-            controlnet_pipeline = SDXLTurboControlNetPipeline(stream, self.device, self.dtype)
+            controlnet_pipeline = SDXLTurboControlNetPipeline(stream, self.device, self.dtype, model_cache_dir=self.model_cache_dir)
         else:  # SD15, SD21, etc. all use same ControlNet pipeline
             from streamdiffusion.controlnet.controlnet_pipeline import ControlNetPipeline
-            controlnet_pipeline = ControlNetPipeline(stream, self.device, self.dtype)
+            controlnet_pipeline = ControlNetPipeline(stream, self.device, self.dtype, model_cache_dir=self.model_cache_dir)
 
         # Check if we should use TensorRT ControlNet acceleration
         use_controlnet_tensorrt = (acceleration == "tensorrt")
