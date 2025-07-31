@@ -195,109 +195,6 @@ def extract_unet_architecture(unet: UNet2DConditionModel) -> Dict[str, Any]:
     return architecture_dict
 
 
-def get_model_architecture_preset(model_type: str) -> Dict[str, Any]:
-    """
-    Get architecture preset for known model types.
-    
-    Provides fallback architecture parameters when direct analysis
-    is not possible or for validation purposes.
-    
-    Args:
-        model_type: The model type (SD15, SD21, SDXL, SDXL_Turbo, SD3, SD3_Turbo)
-        
-    Returns:
-        Dict with architecture parameters for the specified model type
-    """
-    presets = {
-        "SD15": {
-            "model_channels": 320,
-            "in_channels": 4,
-            "out_channels": 4,
-            "num_res_blocks": (2, 2, 2, 2),
-            "channel_mult": (1, 2, 4, 4),
-            "context_dim": 768,
-            "attention_head_dim": 8,
-            "transformer_depth": (1, 1, 1, 1),
-            "time_embed_dim": 1280,
-            "block_out_channels": (320, 640, 1280, 1280),
-            "use_linear_in_transformer": False,
-        },
-        "SD21": {
-            "model_channels": 320,
-            "in_channels": 4,
-            "out_channels": 4,
-            "num_res_blocks": (2, 2, 2, 2),
-            "channel_mult": (1, 2, 4, 4),
-            "context_dim": 1024,
-            "attention_head_dim": 64,
-            "transformer_depth": (1, 1, 1, 1),
-            "time_embed_dim": 1280,
-            "block_out_channels": (320, 640, 1280, 1280),
-            "use_linear_in_transformer": False,
-        },
-        "SDXL": {
-            "model_channels": 320,
-            "in_channels": 4,
-            "out_channels": 4,
-            "num_res_blocks": (2, 2, 2),
-            "channel_mult": (1, 2, 4),
-            "context_dim": 2048,
-            "attention_head_dim": 64,
-            "transformer_depth": (2, 2, 10),
-            "time_embed_dim": 1280,
-            "block_out_channels": (320, 640, 1280),
-            "use_linear_in_transformer": True,
-        },
-        "SDXL_Turbo": {
-            "model_channels": 320,
-            "in_channels": 4,
-            "out_channels": 4,
-            "num_res_blocks": (2, 2, 2),
-            "channel_mult": (1, 2, 4),
-            "context_dim": 2048,
-            "attention_head_dim": 64,
-            "transformer_depth": (2, 2, 10),
-            "time_embed_dim": 1280,
-            "block_out_channels": (320, 640, 1280),
-            "use_linear_in_transformer": True,
-        },
-        "SD3": {
-            "model_channels": 320,
-            "in_channels": 16,  # SD3 uses 16 channels instead of 4
-            "out_channels": 16,
-            "num_res_blocks": (2, 2, 2),
-            "channel_mult": (1, 2, 4),
-            "context_dim": 4096,  # Much higher context dimension for SD3
-            "attention_head_dim": 64,
-            "transformer_depth": (2, 2, 10),
-            "time_embed_dim": 1280,
-            "block_out_channels": (320, 640, 1280),
-            "use_linear_in_transformer": True,
-            "joint_attention_dim": 4096,  # SD3-specific
-            "caption_channels": 4096,     # SD3-specific
-            "qk_norm": True,              # SD3-specific
-        },
-        "SD3_Turbo": {
-            "model_channels": 320,
-            "in_channels": 16,
-            "out_channels": 16,
-            "num_res_blocks": (2, 2, 2),
-            "channel_mult": (1, 2, 4),
-            "context_dim": 4096,
-            "attention_head_dim": 64,
-            "transformer_depth": (2, 2, 10),
-            "time_embed_dim": 1280,
-            "block_out_channels": (320, 640, 1280),
-            "use_linear_in_transformer": True,
-            "joint_attention_dim": 4096,
-            "caption_channels": 4096,
-            "qk_norm": True,
-        }
-    }
-    
-    return presets.get(model_type, presets["SD15"])  # Default to SD15
-
-
 def validate_architecture(arch_dict: Dict[str, Any], model_type: str) -> Dict[str, Any]:
     """
     Validate and fix architecture dictionary using model type presets.
@@ -312,12 +209,6 @@ def validate_architecture(arch_dict: Dict[str, Any], model_type: str) -> Dict[st
     Returns:
         Validated and corrected architecture dictionary
     """
-    preset = get_model_architecture_preset(model_type)
-    
-    # Fill missing values with preset defaults
-    for key, default_value in preset.items():
-        if key not in arch_dict or arch_dict[key] is None:
-            arch_dict[key] = default_value
     
     # Check for required keys
     required_keys = [
