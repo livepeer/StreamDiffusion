@@ -1,6 +1,5 @@
 import gc
 import os
-
 import torch
 from diffusers import AutoencoderKL, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
@@ -12,7 +11,7 @@ from ...pipeline import StreamDiffusion
 from .builder import EngineBuilder, create_onnx_path
 from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
 from .models import VAE, BaseModel, UNet, VAEEncoder
-from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
+from ...model_detection import detect_model, extract_unet_architecture, validate_architecture
 from .controlnet_wrapper import create_controlnet_wrapper
 from .engine_pool import ControlNetEnginePool
 from .ipadapter_wrapper import create_ipadapter_wrapper
@@ -68,7 +67,6 @@ def _validate_ipadapter_engine_support(unet_engine, cross_attention_dim: int):
         print(f"_validate_ipadapter_engine_support: Error during validation: {e}")
         print("_validate_ipadapter_engine_support: ⚠ Could not validate IPAdapter support")
         return False
-
 
 class TorchVAEEncoder(torch.nn.Module):
     def __init__(self, vae: AutoencoderKL):
@@ -164,6 +162,16 @@ def accelerate_with_tensorrt(
     gc.collect()
     torch.cuda.empty_cache()
 
+    # Always detect model type for proper embedding dimension
+    try:
+        detection_results = detect_model(unet)
+        model_type = detection_results['model_type']
+        is_sdxl = detection_results['is_sdxl']
+        print(f"🎯 Detected model type: {model_type}")
+    except Exception as e:
+        print(f"Failed to detect model type: {e}, defaulting to SD1.5")
+        model_type = "SD1.5"
+    
     # Detect if ControlNet is being used
     use_controlnet = hasattr(stream, 'controlnets') and len(getattr(stream, 'controlnets', [])) > 0
     
@@ -181,13 +189,11 @@ def accelerate_with_tensorrt(
     if use_ipadapter:
         print("IPAdapter detected - enabling TensorRT IPAdapter support")
         
-        # Detect model architecture
+        # Extract UNet architecture for ControlNet
         try:
-            model_type = detect_model_from_diffusers_unet(unet)
             unet_arch = extract_unet_architecture(unet)
             unet_arch = validate_architecture(unet_arch, model_type)
             
-            print(f"Detected model: {model_type}")
             print(f"Architecture: model_channels={unet_arch['model_channels']}, "
                   f"channel_mult={unet_arch['channel_mult']}, "
                   f"context_dim={unet_arch['context_dim']}")
@@ -199,7 +205,8 @@ def accelerate_with_tensorrt(
     elif use_ipadapter:
         # IPAdapter needs model detection too (for cross_attention_dim)
         try:
-            model_type = detect_model_from_diffusers_unet(unet)
+            detection_results = detect_model(unet)
+            model_type = detection_results['model_type']
             cross_attention_dim = unet.config.cross_attention_dim
             
             print(f"Detected model: {model_type}")
@@ -221,13 +228,25 @@ def accelerate_with_tensorrt(
     vae_encoder_engine_path = f"{engine_dir}/vae_encoder.engine"
     vae_decoder_engine_path = f"{engine_dir}/vae_decoder.engine"
 
+    # Determine embedding dimension based on model type
+    if is_sdxl:
+        # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
+        embedding_dim = 2048
+        print(f"🎯 SDXL detected! Setting embedding_dim = {embedding_dim}")
+    else:
+        # SD1.5, SD2.1, etc. use single text encoder
+        embedding_dim = text_encoder.config.hidden_size
+        print(f"🎯 Non-SDXL model ({model_type}) detected! Setting embedding_dim = {embedding_dim}")
+    
+    print(f"🔧 Final embedding_dim for TensorRT compilation: {embedding_dim}")
+    
     # Create UNet model with ControlNet and/or IPAdapter support if needed
     unet_model = UNet(
         fp16=True,
         device=stream.device,
         max_batch_size=max_batch_size,
         min_batch_size=min_batch_size,
-        embedding_dim=text_encoder.config.hidden_size,
+        embedding_dim=embedding_dim,
         unet_dim=unet.config.in_channels,
         use_control=use_controlnet,
         unet_arch=unet_arch if use_controlnet else None,

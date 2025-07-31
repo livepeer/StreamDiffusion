@@ -203,6 +203,7 @@ class BaseIPAdapterPipeline:
         
         # Check if it's a local path that exists
         if os.path.exists(model_path):
+            print(f"_resolve_model_path: Using local path: {model_path}")
             return model_path
         
         # Check if it looks like a HuggingFace repo/file path

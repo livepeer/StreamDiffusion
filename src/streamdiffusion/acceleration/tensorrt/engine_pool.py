@@ -3,6 +3,7 @@
 import os
 import time
 import hashlib
+import logging
 from typing import Dict, Optional, Set, Union, Any, List
 from pathlib import Path
 import torch
@@ -11,19 +12,29 @@ from polygraphy import cuda
 from .controlnet_engine import ControlNetModelEngine, HybridControlNet
 from .controlnet_models import create_controlnet_model
 from .builder import EngineBuilder, create_onnx_path
-from .model_detection import detect_model_from_diffusers_unet
+from ...model_detection import detect_model
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 
 class ControlNetEnginePool:
     """Manages multiple ControlNet TensorRT engines"""
     
-    def __init__(self, engine_dir: str, stream: Optional[cuda.Stream] = None, 
+    def __init__(self, engine_dir: str, stream: Optional['cuda.Stream'] = None, 
                  image_width: int = 512, image_height: int = 512, enable_pytorch_fallback: bool = False):
         """Initialize ControlNet engine pool"""
         self.engine_dir = Path(engine_dir)
         self.engine_dir.mkdir(parents=True, exist_ok=True)
         
-        self.stream = stream if stream is not None else cuda.Stream()
+        if stream is not None:
+            self.stream = stream
+        else:
+            try:
+                from polygraphy import cuda
+                self.stream = cuda.Stream()
+            except ImportError:
+                self.stream = None
         self.engines: Dict[str, HybridControlNet] = {}
         self.compiled_models: Set[str] = set()
         
@@ -49,7 +60,7 @@ class ControlNetEnginePool:
                         model_id = model_part.replace("controlnet_", "").replace("_", "/")
                         
                         self.compiled_models.add(model_id)
-                        print(f"ControlNetEnginePool._discover_existing_engines: Discovered dynamic ControlNet engine: {model_id} (dyn-384-1024)")
+                        logger.info(f"ControlNetEnginePool._discover_existing_engines: Discovered dynamic ControlNet engine: {model_id} (dyn-384-1024)")
                         
                     # Check for legacy static naming format with width/height
                     elif "--width-" in dir_name and "--height-" in dir_name:
@@ -68,9 +79,9 @@ class ControlNetEnginePool:
                         if (engine_width == self.image_width and engine_height == self.image_height and 
                             model_id not in self.compiled_models):
                             self.compiled_models.add(model_id)
-                            print(f"ControlNetEnginePool._discover_existing_engines: Discovered legacy ControlNet engine: {model_id} ({engine_width}x{engine_height})")
+                            logger.info(f"ControlNetEnginePool._discover_existing_engines: Discovered legacy ControlNet engine: {model_id} ({engine_width}x{engine_height})")
                         else:
-                            print(f"ControlNetEnginePool._discover_existing_engines: Skipping incompatible legacy ControlNet engine: {model_id} ({engine_width}x{engine_height} vs current {self.image_width}x{self.image_height})")
+                            logger.debug(f"ControlNetEnginePool._discover_existing_engines: Skipping incompatible legacy ControlNet engine: {model_id} ({engine_width}x{engine_height} vs current {self.image_width}x{self.image_height})")
                             
                     # Legacy format without dimensions - assume 512x512
                     else:
@@ -84,7 +95,7 @@ class ControlNetEnginePool:
                             # Only add if no dynamic or specific legacy engine exists
                             if model_id not in self.compiled_models:
                                 self.compiled_models.add(model_id)
-                                print(f"ControlNetEnginePool._discover_existing_engines: Discovered very legacy ControlNet engine: {model_id} (assuming 512x512)")
+                                logger.info(f"ControlNetEnginePool._discover_existing_engines: Discovered very legacy ControlNet engine: {model_id} (assuming 512x512)")
     
     def get_or_load_engine(self, 
                           model_id: str,
@@ -92,10 +103,15 @@ class ControlNetEnginePool:
                           model_type: str = "sd15",
                           batch_size: int = 1) -> HybridControlNet:
         """Get or load ControlNet engine with TensorRT/PyTorch fallback"""
+        logger.info(f"ControlNetEnginePool.get_or_load_engine: Processing {model_id}")
+        logger.debug(f"ControlNetEnginePool.get_or_load_engine: Provided model_type='{model_type}'")
+        logger.debug(f"ControlNetEnginePool.get_or_load_engine: Has pytorch_model={pytorch_model is not None}")
+        
         # Use dynamic cache key to match new naming convention
         cache_key = f"{model_id}--batch-{batch_size}--dyn-384-1024"
         
         if cache_key in self.engines:
+            logger.debug(f"ControlNetEnginePool.get_or_load_engine: Returning cached engine for {model_id}")
             return self.engines[cache_key]
         
         # Use dynamic engine directory (no longer depends on specific width/height)
@@ -103,14 +119,17 @@ class ControlNetEnginePool:
         engine_path = model_engine_dir / "cnet.engine"
         
         if not engine_path.exists():
-            print(f"ControlNetEnginePool.get_or_load_engine: ControlNet engine not found for {model_id} ({self.image_width}x{self.image_height}), compiling now...")
+            logger.info(f"ControlNetEnginePool.get_or_load_engine: ControlNet engine not found for {model_id} ({self.image_width}x{self.image_height}), compiling now...")
             compilation_start = time.time()
             
             try:
-                detected_type = detect_model_from_diffusers_unet(pytorch_model)
+                detection_result = detect_model(pytorch_model, None)
+                detected_type = detection_result['model_type']
                 model_type = detected_type.lower()
+                confidence = detection_result['confidence']
+                logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model: '{detected_type}' -> '{model_type}' (confidence: {confidence:.2f}) for {model_id}")
             except Exception as e:
-                print(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed: {e}, using provided type: {model_type}")
+                logger.warning(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed: {e}, using provided type: {model_type}")
             
             success = self._compile_controlnet(
                 pytorch_model, model_type, str(engine_path), batch_size
@@ -119,21 +138,35 @@ class ControlNetEnginePool:
             compilation_time = time.time() - compilation_start
             
             if success:
-                print(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation completed in {compilation_time:.2f}s")
-                print(f"   Engine saved to: {engine_path}")
+                logger.info(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation completed in {compilation_time:.2f}s")
+                logger.debug(f"ControlNetEnginePool.get_or_load_engine: Engine saved to: {engine_path}")
             else:
-                print(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation failed after {compilation_time:.2f}s")
+                logger.error(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation failed after {compilation_time:.2f}s")
                 if self.enable_pytorch_fallback:
-                    print(f"   Will use PyTorch fallback for {model_id}")
+                    logger.info(f"ControlNetEnginePool.get_or_load_engine: Will use PyTorch fallback for {model_id}")
                 else:
-                    print(f"   PyTorch fallback disabled for {model_id}")
+                    logger.warning(f"ControlNetEnginePool.get_or_load_engine: PyTorch fallback disabled for {model_id}")
+        else:
+            # Engine exists - try to detect model type from pytorch_model if available
+            if pytorch_model is not None:
+                try:
+                    detection_result = detect_model(pytorch_model, None)
+                    detected_type = detection_result['model_type']
+                    model_type = detected_type.lower()
+                    confidence = detection_result['confidence']
+                    logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model (engine exists): '{detected_type}' -> '{model_type}' (confidence: {confidence:.2f}) for {model_id}")
+                except Exception as e:
+                    logger.warning(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed (engine exists): {e}, using provided type: {model_type}")
+        
+        logger.debug(f"ControlNetEnginePool.get_or_load_engine: Final model_type='{model_type}' being passed to HybridControlNet for {model_id}")
         
         hybrid_controlnet = HybridControlNet(
             model_id=model_id,
             engine_path=str(engine_path) if engine_path.exists() else None,
             pytorch_model=pytorch_model,
             stream=self.stream,
-            enable_pytorch_fallback=self.enable_pytorch_fallback
+            enable_pytorch_fallback=self.enable_pytorch_fallback,
+            model_type=model_type
         )
         
         self.engines[cache_key] = hybrid_controlnet
@@ -147,7 +180,7 @@ class ControlNetEnginePool:
                            batch_size: int) -> bool:
         """Compile ControlNet to TensorRT"""
         try:
-            print(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for dynamic 384-1024 range")
+            logger.info(f"ControlNetEnginePool._compile_controlnet: Starting ControlNet compilation: {model_type} for dynamic 384-1024 range")
             
             # Use a flexible optimal resolution that allows for dynamic changes
             # Instead of using current dimensions as optimal, use a middle value
@@ -160,15 +193,21 @@ class ControlNetEnginePool:
             opt_height = opt_resolution
             opt_width = opt_resolution
             
-            if model_type.lower() in ["sdxl", "sdxl-turbo"]:
+            if model_type.lower() in ["sdxl"]:
                 embedding_dim = 2048
             elif model_type.lower() in ["sd21", "sd2.1"]:
                 embedding_dim = 1024
             else:
                 embedding_dim = 768
             
+            # Pass UNet and model path for sophisticated SDXL detection
+            unet = getattr(pytorch_model, 'unet', None) if hasattr(pytorch_model, 'unet') else None
+            model_path = getattr(self, '_model_path', "") 
+            
             controlnet_model = create_controlnet_model(
                 model_type=model_type,
+                unet=unet,
+                model_path=model_path,
                 max_batch=batch_size,
                 min_batch_size=1,
                 embedding_dim=embedding_dim
@@ -184,10 +223,10 @@ class ControlNetEnginePool:
             onnx_path = create_onnx_path(base_name, onnx_dir, opt=False)
             onnx_opt_path = create_onnx_path(base_name, onnx_dir, opt=True)
             
-            print(f"ControlNetEnginePool._compile_controlnet: ONNX path: {onnx_path}")
-            print(f"ControlNetEnginePool._compile_controlnet: ONNX optimized path: {onnx_opt_path}")
-            print(f"ControlNetEnginePool._compile_controlnet: Engine path: {engine_path}")
-            print(f"ControlNetEnginePool._compile_controlnet: Using flexible optimal resolution: {opt_width}x{opt_height}")
+            logger.debug(f"ControlNetEnginePool._compile_controlnet: ONNX path: {onnx_path}")
+            logger.debug(f"ControlNetEnginePool._compile_controlnet: ONNX optimized path: {onnx_opt_path}")
+            logger.debug(f"ControlNetEnginePool._compile_controlnet: Engine path: {engine_path}")
+            logger.debug(f"ControlNetEnginePool._compile_controlnet: Using flexible optimal resolution: {opt_width}x{opt_height}")
             
             builder = EngineBuilder(controlnet_model, pytorch_model, device=torch.device("cuda"))
             
@@ -209,11 +248,11 @@ class ControlNetEnginePool:
                 **engine_build_options
             )
             
-            print(f"ControlNetEnginePool._compile_controlnet: Successfully compiled dynamic ControlNet engine: {engine_path}")
+            logger.info(f"ControlNetEnginePool._compile_controlnet: Successfully compiled dynamic ControlNet engine: {engine_path}")
             return True
             
         except Exception as e:
-            print(f"ControlNetEnginePool._compile_controlnet: ControlNet compilation error: {e}")
+            logger.error(f"ControlNetEnginePool._compile_controlnet: ControlNet compilation error: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -223,7 +262,7 @@ class ControlNetEnginePool:
         batch_size = 1
         height, width = self.image_height, self.image_width  # Use actual dimensions
         
-        if model_type.lower() in ["sdxl", "sdxl-turbo"]:
+        if model_type.lower() in ["sdxl"]:
             embedding_dim = 2048
             text_embed_dim = 1280
         elif model_type.lower() in ["sd21", "sd2.1"]:

@@ -19,6 +19,7 @@ class Args(NamedTuple):
     engine_dir: str
     controlnet_config: str
     api_only: bool
+    log_level: str
 
     def pretty_print(self):
         print("\n")
@@ -30,9 +31,9 @@ class Args(NamedTuple):
 MAX_QUEUE_SIZE = int(os.environ.get("MAX_QUEUE_SIZE", 0))
 TIMEOUT = float(os.environ.get("TIMEOUT", 0))
 SAFETY_CHECKER = os.environ.get("SAFETY_CHECKER", None) == "True"
-USE_TAESD = os.environ.get("USE_TAESD", "True") == "True"
 ENGINE_DIR = os.environ.get("ENGINE_DIR", "engines")
 ACCELERATION = os.environ.get("ACCELERATION", "tensorrt")
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
 default_host = os.getenv("HOST", "0.0.0.0")
 default_port = int(os.getenv("PORT", "7860"))
@@ -120,6 +121,13 @@ parser.add_argument(
     default=False,
     help="Run API only without serving frontend static files (useful for development with separate Vite dev server)",
 )
-parser.set_defaults(taesd=USE_TAESD)
+parser.add_argument(
+    "--log-level",
+    dest="log_level",
+    type=str,
+    default=LOG_LEVEL,
+    choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+)
 config = Args(**vars(parser.parse_args()))
 config.pretty_print()

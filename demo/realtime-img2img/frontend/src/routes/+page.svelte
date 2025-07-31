@@ -597,7 +597,7 @@
                   {seedBlendingConfig}
                   {normalizePromptWeights} 
                   {normalizeSeedWeights}
-                  currentPrompt={$pipelineValues.prompt} 
+                  currentPrompt={$pipelineValues.prompt}
                 />
               </div>
             {/if}

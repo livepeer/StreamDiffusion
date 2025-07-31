@@ -2,11 +2,7 @@ import torch
 from diffusers import UNet2DConditionModel
 from typing import Optional, Dict, Any, List
 
-try:
-    from .model_detection import detect_model_from_diffusers_unet
-except ImportError:
-    # Handle case when running as standalone script
-    from model_detection import detect_model_from_diffusers_unet
+from ...model_detection import detect_model, detect_model_from_diffusers_unet
 
 class IPAdapterUNetWrapper(torch.nn.Module):
     """
