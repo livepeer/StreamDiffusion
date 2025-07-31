@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Dict, Any
 from polygraphy import cuda
 
 from .utilities import Engine
-from .model_detection import detect_model_from_diffusers_unet
+from ...model_detection import detect_model, detect_model_from_diffusers_unet
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)

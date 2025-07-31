@@ -28,7 +28,6 @@ import onnx
 import onnx_graphsurgeon as gs
 import tensorrt as trt
 import torch
-import logging
 from cuda import cudart
 from PIL import Image
 from polygraphy import cuda
@@ -46,9 +45,12 @@ from polygraphy.backend.trt import util as trt_util
 from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
 # Set up logger for this module
+import logging
 logger = logging.getLogger(__name__)
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
+
+from ...model_detection import detect_model
 
 # Map of numpy dtype -> torch dtype
 numpy_to_torch_dtype_dict = {
@@ -100,6 +102,9 @@ class Engine:
         self._last_device = None
 
     def __del__(self):
+        # Check if AttributeError: 'Engine' object has no attribute 'buffers'
+        if not hasattr(self, 'buffers'):
+            return
         [buf.free() for buf in self.buffers.values() if isinstance(buf, cuda.DeviceArray)]
         del self.engine
         del self.context
@@ -673,57 +678,45 @@ def export_onnx(
     opt_batch_size: int,
     onnx_opset: int,
 ):
-    # Use model detection for edge cases
-    from .model_detection import detect_unet_characteristics, detect_model_comprehensive
+    # TODO: Not 100% happy about this function - needs refactoring
     
-    # Enhanced SDXL detection using multiple indicators
-    is_sdxl_by_data = False
-    
-    # Primary check: embedding dimension (SDXL uses 2048, SD1.5 uses 768, SD2.1/SDTurbo uses 1024)
-    if hasattr(model_data, 'embedding_dim'):
-        is_sdxl_by_data = (model_data.embedding_dim == 2048)
-    
-    # Enhanced check: use sophisticated model detection if we have a UNet
-    if hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim'):
-        try:
-            comprehensive_detection = detect_model_comprehensive(model, "")
-            is_sdxl_by_comprehensive = comprehensive_detection.get('is_sdxl', False)
-            
-            # Log detailed detection results for debugging
-            logger.debug(f"Model detection results: {comprehensive_detection}")
-            
-            # Use comprehensive detection as primary indicator
-            is_sdxl_by_data = is_sdxl_by_comprehensive
-            
-        except Exception as e:
-            logger.warning(f"Comprehensive model detection failed, falling back to embedding_dim: {e}")
-            # Fallback to embedding_dim check (already set above)
-    
-    # Check if this is a UNet model that needs SDXL handling
-    is_unet = hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim')
-    
+    is_sdxl = False
+    is_sdxl_controlnet = False
+
     # Detect if this is a ControlNet model (vs UNet model)
     is_controlnet = (
         hasattr(model, '__class__') and 'ControlNet' in model.__class__.__name__
     ) or (
-        hasattr(model, 'config') and hasattr(model.config, '_class_name') and 
+        hasattr(model, 'config') and hasattr(model.config, '_class_name') and
         'ControlNet' in model.config._class_name
     )
+
+    # Detect if this is an SDXL model via detect_model
+    if hasattr(model, 'unet'):
+        logger.debug(f"Found UNET, detecting model from {model.unet.__class__.__name__}")
+        detection_result = detect_model(model.unet)
+        if detection_result is not None:
+            is_sdxl = detection_result.get('is_sdxl', False)
+    elif hasattr(model, 'config'):
+        logger.debug(f"Detecting model directly from {model.__class__.__name__}")
+        detection_result = detect_model(model)
+        if detection_result is not None:
+            is_sdxl = detection_result.get('is_sdxl', False)
     
     # Detect if this is an SDXL ControlNet
-    is_sdxl_controlnet = is_controlnet and (is_sdxl_by_data or (
-        hasattr(model, 'config') and 
+    is_sdxl_controlnet = is_controlnet and (is_sdxl or (
+        hasattr(model, 'config') and
         getattr(model.config, 'addition_embed_type', None) == 'text_time'
     ))
     
     wrapped_model = model  # Default: use model as-is
     
     # Apply SDXL wrapper for SDXL models (in practice, always ConditioningWrapper)
-    if is_sdxl_by_data and not is_controlnet and hasattr(model, 'forward'):
+    if is_sdxl and not is_controlnet:
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
         logger.info(f"Detected SDXL model (embedding_dim={embedding_dim}), using wrapper for ONNX export...")
         wrapped_model = SDXLUNetWrapper(model)
-    elif not is_controlnet and hasattr(model, 'forward'):
+    elif not is_controlnet:
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
         logger.info(f"Detected non-SDXL model (embedding_dim={embedding_dim}), using model as-is for ONNX export...")
     
@@ -824,7 +817,7 @@ def export_onnx(
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
         
         # Determine if we need external data format for large models (like SDXL)
-        is_large_model = is_sdxl_by_data or (hasattr(model, 'config') and getattr(model.config, 'sample_size', 32) >= 64)
+        is_large_model = is_sdxl or (hasattr(model, 'config') and getattr(model.config, 'sample_size', 32) >= 64)
         
         # Export ONNX normally first
         torch.onnx.export(

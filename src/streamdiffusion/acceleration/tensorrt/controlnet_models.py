@@ -2,7 +2,8 @@
 
 from typing import List, Dict, Optional
 from .models import BaseModel
-from .sdxl_support import SDXLConditioningHandler, detect_model_comprehensive
+from .sdxl_support import SDXLConditioningHandler, get_sdxl_tensorrt_config
+from ...model_detection import detect_model
 import torch
 
 
@@ -122,15 +123,29 @@ class ControlNetSDXLTRT(ControlNetTRT):
     """SDXL-specific ControlNet TensorRT model definition"""
     
     def __init__(self, unet=None, model_path="", **kwargs):
-        # Use comprehensive model detection if UNet provided
+        # Use new model detection if UNet provided
         if unet is not None:
-            model_info = detect_model_comprehensive(unet, model_path)
-            conditioning_handler = SDXLConditioningHandler(model_info)
+            # Use the new detection function
+            detection_result = detect_model(unet)
+
+            # Create a config dict compatible with SDXLConditioningHandler
+            config = {
+                'is_sdxl': detection_result['is_sdxl'],
+                'has_time_cond': detection_result['architecture_details']['has_time_conditioning'],
+                'has_addition_embed': detection_result['architecture_details']['has_addition_embeds'],
+                'model_type': detection_result['model_type'],
+                'is_turbo': detection_result['is_turbo'],
+                'is_sd3': detection_result['is_sd3'],
+                'confidence': detection_result['confidence'],
+                'architecture_details': detection_result['architecture_details'],
+                'compatibility_info': detection_result['compatibility_info']
+            }
+            conditioning_handler = SDXLConditioningHandler(config)
             conditioning_spec = conditioning_handler.get_conditioning_spec()
             
             # Set embedding_dim from sophisticated detection
             kwargs.setdefault('embedding_dim', conditioning_spec['context_dim'])
-            
+        
         # Set SDXL-specific defaults
         kwargs.setdefault('embedding_dim', 2048)  # SDXL uses 2048-dim embeddings
         kwargs.setdefault('unet_dim', 4)          # SDXL latent channels
@@ -226,7 +241,7 @@ def create_controlnet_model(model_type: str = "sd15",
                            unet=None, model_path: str = "",
                            **kwargs) -> ControlNetTRT:
     """Factory function to create appropriate ControlNet TensorRT model"""
-    if model_type.lower() in ["sdxl", "sdxl-turbo"]:
+    if model_type.lower() in ["sdxl"]:
         return ControlNetSDXLTRT(unet=unet, model_path=model_path, **kwargs)
     else:
         return ControlNetTRT(**kwargs) 

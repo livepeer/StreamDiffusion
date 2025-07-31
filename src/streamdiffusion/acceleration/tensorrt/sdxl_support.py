@@ -7,11 +7,8 @@ conditioning parameters, and Turbo variants
 import torch
 from typing import Dict, List, Optional, Tuple, Any, Union
 from diffusers import UNet2DConditionModel
-from .model_detection import (
-    detect_model_comprehensive, 
-    detect_unet_characteristics,
-    is_sdxl_model_path,
-    is_turbo_model_path
+from ...model_detection import (
+    detect_model,
 )
 
 # Handle different diffusers versions for CLIPTextModel import
@@ -153,9 +150,6 @@ class SDXLConditioningHandler:
         
         return results
 
-
-
-    
     def get_onnx_export_spec(self) -> Dict[str, Any]:
         """Get specification for ONNX export"""
         spec = self.conditioning_handler.get_conditioning_spec()
@@ -188,10 +182,24 @@ class SDXLConditioningHandler:
 
 def get_sdxl_tensorrt_config(model_path: str, unet: UNet2DConditionModel) -> Dict[str, Any]:
     """Get complete TensorRT configuration for SDXL model"""
-    config = detect_model_comprehensive(unet, model_path)
+    # Use the new detection function
+    detection_result = detect_model(unet)
+    
+    # Create a config dict compatible with SDXLConditioningHandler
+    config = {
+        'is_sdxl': detection_result['is_sdxl'],
+        'has_time_cond': detection_result['architecture_details']['has_time_conditioning'],
+        'has_addition_embed': detection_result['architecture_details']['has_addition_embeds'],
+        'model_type': detection_result['model_type'],
+        'is_turbo': detection_result['is_turbo'],
+        'is_sd3': detection_result['is_sd3'],
+        'confidence': detection_result['confidence'],
+        'architecture_details': detection_result['architecture_details'],
+        'compatibility_info': detection_result['compatibility_info']
+    }
     
     # Add conditioning specification
     conditioning_handler = SDXLConditioningHandler(config)
     config['conditioning_spec'] = conditioning_handler.get_conditioning_spec()
     
-    return config 
+    return config
