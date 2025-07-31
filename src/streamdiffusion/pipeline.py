@@ -10,6 +10,7 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
     retrieve_latents,
 )
 
+from streamdiffusion.model_detection import detect_model
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
@@ -48,27 +49,14 @@ class StreamDiffusion:
 
         self.cfg_type = cfg_type
 
-        # Detect model type for proper conditioning
-        try:
-            from .acceleration.tensorrt.model_detection import detect_model_from_diffusers_unet
-            self.model_type = detect_model_from_diffusers_unet(pipe.unet)
-        except ImportError:
-            # Fallback detection if tensorrt is not available
-            if hasattr(pipe, 'text_encoder_2'):
-                self.model_type = "SDXL"
-            elif hasattr(pipe.unet.config, 'cross_attention_dim'):
-                if pipe.unet.config.cross_attention_dim == 2048:
-                    self.model_type = "SDXL"
-                elif pipe.unet.config.cross_attention_dim == 1024:
-                    self.model_type = "SD21"
-                else:
-                    self.model_type = "SD15"
-            else:
-                self.model_type = "SD15"
-        
-        self.is_sdxl = self.model_type == "SDXL"
-        logger.debug(f"Detected model type: {self.model_type}")
-
+        # Detect model type
+        detection_result = detect_model(pipe.unet, pipe)
+        self.model_type = detection_result['model_type']
+        self.is_sdxl = detection_result['is_sdxl']
+        self.is_turbo = detection_result['is_turbo']
+        self.detection_confidence = detection_result['confidence']
+        logger.debug(f"Detected model type: {self.model_type} (confidence: {self.detection_confidence:.2f})")
+    
         if use_denoising_batch:
             self.batch_size = self.denoising_steps_num * frame_buffer_size
             if self.cfg_type == "initialize":

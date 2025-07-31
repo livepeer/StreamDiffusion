@@ -11,7 +11,7 @@ from ...pipeline import StreamDiffusion
 from .builder import EngineBuilder, create_onnx_path
 from .engine import AutoencoderKLEngine, UNet2DConditionModelEngine
 from .models import VAE, BaseModel, UNet, VAEEncoder
-from .model_detection import detect_model_from_diffusers_unet, extract_unet_architecture, validate_architecture
+from ...model_detection import detect_model, extract_unet_architecture, validate_architecture
 from .controlnet_wrapper import create_controlnet_wrapper
 from .engine_pool import ControlNetEnginePool
 from .ipadapter_wrapper import create_ipadapter_wrapper
@@ -164,7 +164,8 @@ def accelerate_with_tensorrt(
 
     # Always detect model type for proper embedding dimension
     try:
-        model_type = detect_model_from_diffusers_unet(unet)
+        detection_results = detect_model(unet)
+        model_type = detection_results['model_type']
         print(f"🎯 Detected model type: {model_type}")
     except Exception as e:
         print(f"Failed to detect model type: {e}, defaulting to SD1.5")
@@ -203,7 +204,8 @@ def accelerate_with_tensorrt(
     elif use_ipadapter:
         # IPAdapter needs model detection too (for cross_attention_dim)
         try:
-            model_type = detect_model_from_diffusers_unet(unet)
+            detection_results = detect_model(unet)
+            model_type = detection_results['model_type']
             cross_attention_dim = unet.config.cross_attention_dim
             
             print(f"Detected model: {model_type}")

@@ -2,11 +2,7 @@ import torch
 from diffusers import UNet2DConditionModel
 from typing import Optional, Dict, Any, List
 
-try:
-    from .model_detection import detect_model_from_diffusers_unet
-except ImportError:
-    # Handle case when running as standalone script
-    from model_detection import detect_model_from_diffusers_unet
+from ...model_detection import detect_model
 
 class IPAdapterUNetWrapper(torch.nn.Module):
     """
@@ -192,7 +188,8 @@ def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, in
     """
     # Detect model architecture
     try:
-        model_type = detect_model_from_diffusers_unet(unet)
+        detection_results = detect_model(unet)
+        model_type = detection_results['model_type']
         cross_attention_dim = unet.config.cross_attention_dim
         
         # Check if UNet already has IPAdapter processors installed

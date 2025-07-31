@@ -12,7 +12,7 @@ from polygraphy import cuda
 from .controlnet_engine import ControlNetModelEngine, HybridControlNet
 from .controlnet_models import create_controlnet_model
 from .builder import EngineBuilder, create_onnx_path
-from .model_detection import detect_model_from_diffusers_unet
+from ...model_detection import detect_model
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -123,9 +123,11 @@ class ControlNetEnginePool:
             compilation_start = time.time()
             
             try:
-                detected_type = detect_model_from_diffusers_unet(pytorch_model)
+                detection_result = detect_model(pytorch_model, None)
+                detected_type = detection_result['model_type']
                 model_type = detected_type.lower()
-                logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model: '{detected_type}' -> '{model_type}' for {model_id}")
+                confidence = detection_result['confidence']
+                logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model: '{detected_type}' -> '{model_type}' (confidence: {confidence:.2f}) for {model_id}")
             except Exception as e:
                 logger.warning(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed: {e}, using provided type: {model_type}")
             
@@ -148,9 +150,11 @@ class ControlNetEnginePool:
             # Engine exists - try to detect model type from pytorch_model if available
             if pytorch_model is not None:
                 try:
-                    detected_type = detect_model_from_diffusers_unet(pytorch_model)
+                    detection_result = detect_model(pytorch_model, None)
+                    detected_type = detection_result['model_type']
                     model_type = detected_type.lower()
-                    logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model (engine exists): '{detected_type}' -> '{model_type}' for {model_id}")
+                    confidence = detection_result['confidence']
+                    logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model (engine exists): '{detected_type}' -> '{model_type}' (confidence: {confidence:.2f}) for {model_id}")
                 except Exception as e:
                     logger.warning(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed (engine exists): {e}, using provided type: {model_type}")
         

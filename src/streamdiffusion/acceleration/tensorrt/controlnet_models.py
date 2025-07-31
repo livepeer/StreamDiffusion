@@ -2,7 +2,8 @@
 
 from typing import List, Dict, Optional
 from .models import BaseModel
-from .sdxl_support import SDXLConditioningHandler, detect_model_comprehensive
+from .sdxl_support import SDXLConditioningHandler, get_sdxl_tensorrt_config
+from ...model_detection import detect_model
 import torch
 
 
@@ -122,15 +123,15 @@ class ControlNetSDXLTRT(ControlNetTRT):
     """SDXL-specific ControlNet TensorRT model definition"""
     
     def __init__(self, unet=None, model_path="", **kwargs):
-        # Use comprehensive model detection if UNet provided
+        # Use new model detection if UNet provided
         if unet is not None:
-            model_info = detect_model_comprehensive(unet, model_path)
+            model_info = detect_model(unet)
             conditioning_handler = SDXLConditioningHandler(model_info)
             conditioning_spec = conditioning_handler.get_conditioning_spec()
             
             # Set embedding_dim from sophisticated detection
             kwargs.setdefault('embedding_dim', conditioning_spec['context_dim'])
-            
+        
         # Set SDXL-specific defaults
         kwargs.setdefault('embedding_dim', 2048)  # SDXL uses 2048-dim embeddings
         kwargs.setdefault('unet_dim', 4)          # SDXL latent channels
