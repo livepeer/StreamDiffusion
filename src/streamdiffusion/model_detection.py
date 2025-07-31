@@ -108,9 +108,7 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
         'notes': f"Detected as {model_type} with {confidence:.2f} confidence based on architecture."
     }
 
-    logger.debug(f"[detect_model] {model_type} (Confidence: {confidence:.2f})")
-
-    return {
+    result = {
         'model_type': model_type,
         'is_turbo': is_turbo,
         'is_sdxl': is_sdxl,
@@ -119,6 +117,10 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
         'architecture_details': architecture_details,
         'compatibility_info': compatibility_info,
     }
+
+    logger.debug(f"[detect_model] {result}")
+
+    return result
 
 
 def extract_unet_architecture(unet: UNet2DConditionModel) -> Dict[str, Any]:

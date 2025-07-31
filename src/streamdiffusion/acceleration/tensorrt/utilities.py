@@ -28,7 +28,6 @@ import onnx
 import onnx_graphsurgeon as gs
 import tensorrt as trt
 import torch
-import logging
 from cuda import cudart
 from PIL import Image
 from polygraphy import cuda
@@ -46,9 +45,12 @@ from polygraphy.backend.trt import util as trt_util
 from .models import CLIP, VAE, BaseModel, UNet, VAEEncoder
 
 # Set up logger for this module
+import logging
 logger = logging.getLogger(__name__)
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
+
+from ...model_detection import detect_model
 
 # Map of numpy dtype -> torch dtype
 numpy_to_torch_dtype_dict = {
@@ -678,9 +680,6 @@ def export_onnx(
 ):
     # TODO: Not 100% happy about this function - needs refactoring
     
-    # Use model detection for edge cases
-    from ...model_detection import detect_model
-    
     is_sdxl = False
     is_sdxl_controlnet = False
 
@@ -694,13 +693,10 @@ def export_onnx(
 
     # Detect if this is an SDXL model via detect_model and hasattr(model, 'unet')
     if hasattr(model, 'unet'):
-        print(f"Detecting SDXL model from {model.unet.__class__.__name__}")
+        logger.debug(f"Found UNET, detecting model from {model.unet.__class__.__name__}")
         detection_result = detect_model(model.unet)
         if detection_result is not None:
             is_sdxl = detection_result.get('is_sdxl', False)
-            logger.info(f"Model detection result: {detection_result}")
-    else:
-        print(f"Did not detect UNET")
     
     # Detect if this is an SDXL ControlNet
     is_sdxl_controlnet = is_controlnet and (is_sdxl or (
