@@ -213,9 +213,10 @@ class BaseControlNetPipeline:
         # Check if TensorRT engine pool is available
         if hasattr(self.stream, 'controlnet_engine_pool'):
             model_type = self._detected_model_type
+            is_sdxl = self._is_sdxl
             
             logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration support")
-            logger.info(f"  Model type: {model_type}")
+            logger.info(f"  Model type: {model_type}, is_sdxl: {is_sdxl}")
             
             # Debug: Check what batch size we're getting
             detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)

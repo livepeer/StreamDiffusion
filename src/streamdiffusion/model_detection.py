@@ -14,6 +14,9 @@ except ImportError:
     MMDiTTransformer2DModel = type("MMDiTTransformer2DModel", (torch.nn.Module,), {})
     HAS_MMDIT = False
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str, Any]:
     """
@@ -104,6 +107,8 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
     compatibility_info = {
         'notes': f"Detected as {model_type} with {confidence:.2f} confidence based on architecture."
     }
+
+    logger.debug(f"[detect_model] {model_type} (Confidence: {confidence:.2f})")
 
     return {
         'model_type': model_type,

@@ -166,6 +166,7 @@ def accelerate_with_tensorrt(
     try:
         detection_results = detect_model(unet)
         model_type = detection_results['model_type']
+        is_sdxl = detection_results['is_sdxl']
         print(f"🎯 Detected model type: {model_type}")
     except Exception as e:
         print(f"Failed to detect model type: {e}, defaulting to SD1.5")
@@ -228,7 +229,7 @@ def accelerate_with_tensorrt(
     vae_decoder_engine_path = f"{engine_dir}/vae_decoder.engine"
 
     # Determine embedding dimension based on model type
-    if model_type == "SDXL":
+    if is_sdxl:
         # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
         embedding_dim = 2048
         print(f"🎯 SDXL detected! Setting embedding_dim = {embedding_dim}")

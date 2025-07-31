@@ -676,16 +676,14 @@ def export_onnx(
     opt_batch_size: int,
     onnx_opset: int,
 ):
+    # TODO: Not 100% happy about this function - needs refactoring
+    
     # Use model detection for edge cases
     from ...model_detection import detect_model
     
-    # Simple SDXL detection using detect_model function
     is_sdxl = False
     is_sdxl_controlnet = False
-    
-    # Check if this is a UNet model that needs SDXL handling
-    is_unet = hasattr(model, 'config') and hasattr(model.config, 'cross_attention_dim')
-    
+
     # Detect if this is a ControlNet model (vs UNet model)
     is_controlnet = (
         hasattr(model, '__class__') and 'ControlNet' in model.__class__.__name__
@@ -693,18 +691,16 @@ def export_onnx(
         hasattr(model, 'config') and hasattr(model.config, '_class_name') and
         'ControlNet' in model.config._class_name
     )
-    
-    # Use detect_model for SDXL detection
-    if is_unet:
-        try:
-            detection_result = detect_model(model)
+
+    # Detect if this is an SDXL model via detect_model and hasattr(model, 'unet')
+    if hasattr(model, 'unet'):
+        print(f"Detecting SDXL model from {model.unet.__class__.__name__}")
+        detection_result = detect_model(model.unet)
+        if detection_result is not None:
             is_sdxl = detection_result.get('is_sdxl', False)
-            logger.debug(f"Model detection result: {detection_result['model_type']} (is_sdxl: {is_sdxl})")
-        except Exception as e:
-            logger.warning(f"Model detection failed, falling back to embedding_dim: {e}")
-            # Fallback to embedding dimension check
-            if hasattr(model_data, 'embedding_dim'):
-                is_sdxl = (model_data.embedding_dim == 2048)
+            logger.info(f"Model detection result: {detection_result}")
+    else:
+        print(f"Did not detect UNET")
     
     # Detect if this is an SDXL ControlNet
     is_sdxl_controlnet = is_controlnet and (is_sdxl or (
@@ -715,11 +711,11 @@ def export_onnx(
     wrapped_model = model  # Default: use model as-is
     
     # Apply SDXL wrapper for SDXL models (in practice, always ConditioningWrapper)
-    if is_sdxl and not is_controlnet and hasattr(model, 'forward'):
+    if is_sdxl and not is_controlnet:
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
         logger.info(f"Detected SDXL model (embedding_dim={embedding_dim}), using wrapper for ONNX export...")
         wrapped_model = SDXLUNetWrapper(model)
-    elif not is_controlnet and hasattr(model, 'forward'):
+    elif not is_controlnet:
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
         logger.info(f"Detected non-SDXL model (embedding_dim={embedding_dim}), using model as-is for ONNX export...")
     
