@@ -18,13 +18,11 @@ class ControlNetUNetWrapper(torch.nn.Module):
         
         # SDXL ControlNet has different structure than SD1.5
         if self.is_sdxl:
-            # SDXL typically has 10 down blocks instead of 12
-            self.expected_down_blocks = 10
-            print(f"🎯 Detected SDXL ControlNet - expecting {self.expected_down_blocks} down blocks")
+            # SDXL has 1 initial + 3 down blocks producing 9 control tensors total
+            self.expected_down_blocks = 9
         else:
             # SD1.5 has 12 down blocks
             self.expected_down_blocks = 12
-            print(f"🎯 Detected SD1.5 ControlNet - expecting {self.expected_down_blocks} down blocks")
         
         self.input_control_indices = []
         self.output_control_indices = []
@@ -42,19 +40,13 @@ class ControlNetUNetWrapper(torch.nn.Module):
                 self.middle_control_indices.append(i)
     
     def _detect_sdxl_architecture(self, unet):
-        """Detect if this is an SDXL UNet based on its configuration"""
-        try:
-            # SDXL has cross_attention_dim of 2048, SD1.5 has 768
-            if hasattr(unet.config, 'cross_attention_dim') and unet.config.cross_attention_dim == 2048:
+        """Detect if UNet is SDXL based on architecture"""
+        if hasattr(unet, 'config'):
+            config = unet.config
+            # SDXL has 3 down blocks vs SD1.5's 4 down blocks
+            block_out_channels = getattr(config, 'block_out_channels', None)
+            if block_out_channels and len(block_out_channels) == 3:
                 return True
-            # SDXL has addition_embed_type
-            if hasattr(unet.config, 'addition_embed_type') and unet.config.addition_embed_type:
-                return True
-            # SDXL typically has sample_size of 128 (for 1024x1024 images), SD1.5 has 64
-            if hasattr(unet.config, 'sample_size') and unet.config.sample_size >= 128:
-                return True
-        except:
-            pass
         return False
     
     def forward(self, sample, timestep, encoder_hidden_states, *args, **kwargs):
@@ -63,7 +55,7 @@ class ControlNetUNetWrapper(torch.nn.Module):
         down_block_controls = []
         mid_block_control = None
         
-        # Extract control arguments from *args 
+        # Extract control args (skip sample, timestep, encoder_hidden_states)
         control_args = args
         input_control_count = len(self.input_control_indices)
         
@@ -84,24 +76,18 @@ class ControlNetUNetWrapper(torch.nn.Module):
             if len(all_control_tensors) == self.expected_down_blocks:
                 down_block_controls = all_control_tensors
                 mid_block_control = middle_tensor
-                print(f"✅ ControlNet: Got expected {len(all_control_tensors)} down block tensors")
             else:
-                print(f"⚠️ ControlNet: Expected {self.expected_down_blocks} down block tensors, got {len(all_control_tensors)}")
-                
                 # Try to adapt the available tensors
                 if len(all_control_tensors) > 0:
                     if len(all_control_tensors) > self.expected_down_blocks:
                         # Too many tensors - take the first expected_down_blocks
                         down_block_controls = all_control_tensors[:self.expected_down_blocks]
-                        print(f"🔧 Truncated to {len(down_block_controls)} tensors")
                     else:
                         # Too few tensors - use what we have
                         down_block_controls = all_control_tensors
-                        print(f"🔧 Using available {len(down_block_controls)} tensors")
                     mid_block_control = middle_tensor
                 else:
                     # No control tensors available - skip ControlNet
-                    print("🔧 No control tensors available - proceeding without ControlNet")
                     down_block_controls = None
                     mid_block_control = None
         
@@ -118,6 +104,10 @@ class ControlNetUNetWrapper(torch.nn.Module):
         if down_block_controls:
             # Adapt control tensor shapes for SDXL if needed
             adapted_controls = self._adapt_control_tensors(down_block_controls, sample)
+            
+            # Control tensors are now generated in the correct order to match UNet's down_block_res_samples
+            # For SDXL: [88x88, 88x88, 88x88, 44x44, 44x44, 44x44, 22x22, 22x22, 22x22]
+            # This directly aligns with UNet's: [initial_sample] + [block0_residuals] + [block1_residuals] + [block2_residuals]
             unet_kwargs['down_block_additional_residuals'] = adapted_controls
         
         if mid_block_control is not None:
@@ -125,7 +115,12 @@ class ControlNetUNetWrapper(torch.nn.Module):
             adapted_mid_control = self._adapt_middle_control_tensor(mid_block_control, sample)
             unet_kwargs['mid_block_additional_residual'] = adapted_mid_control
         
-        return self.unet(**unet_kwargs)
+        try:
+            result = self.unet(**unet_kwargs)
+            return result
+        except Exception as e:
+            print(f"❌ DEBUG: UNet forward failed: {e}")
+            raise
     
     def _adapt_control_tensors(self, control_tensors, sample):
         """Adapt control tensor shapes to match UNet expectations"""
@@ -134,6 +129,14 @@ class ControlNetUNetWrapper(torch.nn.Module):
             
         adapted_tensors = []
         sample_height, sample_width = sample.shape[-2:]
+        
+        # Updated factors to match the corrected control tensor generation
+        # SDXL: 9 tensors [88x88, 88x88, 88x88, 44x44, 44x44, 44x44, 22x22, 22x22, 22x22]
+        # Factors: [1, 1, 1, 2, 2, 2, 4, 4, 4] to match UNet down_block_res_samples structure
+        if self.is_sdxl:
+            expected_downsample_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4]  # 9 tensors for SDXL
+        else:
+            expected_downsample_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]  # 12 tensors for SD1.5
         
         for i, control_tensor in enumerate(control_tensors):
             if control_tensor is None:
@@ -144,23 +147,26 @@ class ControlNetUNetWrapper(torch.nn.Module):
             if len(control_tensor.shape) >= 4:
                 control_height, control_width = control_tensor.shape[-2:]
                 
-                # Calculate expected size for this layer (typically powers of 2 downsampling)
-                layer_downsample = 2 ** (i // 3)  # Rough estimate
-                expected_height = sample_height // layer_downsample
-                expected_width = sample_width // layer_downsample
-                
-                if control_height != expected_height or control_width != expected_width:
-                    print(f"🔧 Adapting control tensor {i}: {control_tensor.shape} -> expected size ~{expected_height}x{expected_width}")
-                    # Use interpolation to adapt size
-                    import torch.nn.functional as F
-                    adapted_tensor = F.interpolate(
-                        control_tensor, 
-                        size=(expected_height, expected_width),
-                        mode='bilinear', 
-                        align_corners=False
-                    )
-                    adapted_tensors.append(adapted_tensor)
+                # Use the correct downsampling factor for this tensor index
+                if i < len(expected_downsample_factors):
+                    downsample_factor = expected_downsample_factors[i]
+                    expected_height = sample_height // downsample_factor
+                    expected_width = sample_width // downsample_factor
+                    
+                    if control_height != expected_height or control_width != expected_width:
+                        # Use interpolation to adapt size
+                        import torch.nn.functional as F
+                        adapted_tensor = F.interpolate(
+                            control_tensor, 
+                            size=(expected_height, expected_width),
+                            mode='bilinear', 
+                            align_corners=False
+                        )
+                        adapted_tensors.append(adapted_tensor)
+                    else:
+                        adapted_tensors.append(control_tensor)
                 else:
+                    # Fallback for unexpected tensor count
                     adapted_tensors.append(control_tensor)
             else:
                 adapted_tensors.append(control_tensor)
@@ -177,12 +183,13 @@ class ControlNetUNetWrapper(torch.nn.Module):
             sample_height, sample_width = sample.shape[-2:]
             control_height, control_width = mid_control.shape[-2:]
             
-            # Middle block is typically downsampled by factor of 8 or 16
-            expected_height = sample_height // 8
-            expected_width = sample_width // 8
+            # For SDXL: middle block is at 4x downsampling (22x22 from 88x88)
+            # For SD1.5: middle block is at 8x downsampling
+            expected_factor = 4 if self.is_sdxl else 8
+            expected_height = sample_height // expected_factor
+            expected_width = sample_width // expected_factor
             
             if control_height != expected_height or control_width != expected_width:
-                print(f"🔧 Adapting middle control tensor: {mid_control.shape} -> expected size ~{expected_height}x{expected_width}")
                 import torch.nn.functional as F
                 adapted_tensor = F.interpolate(
                     mid_control,

@@ -7,11 +7,8 @@ conditioning parameters, and Turbo variants
 import torch
 from typing import Dict, List, Optional, Tuple, Any, Union
 from diffusers import UNet2DConditionModel
-from .model_detection import (
-    detect_model_comprehensive, 
-    detect_unet_characteristics,
-    is_sdxl_model_path,
-    is_turbo_model_path
+from ...model_detection import (
+    detect_model,
 )
 
 # Handle different diffusers versions for CLIPTextModel import
@@ -153,124 +150,6 @@ class SDXLConditioningHandler:
         
         return results
 
-
-class SDXLTensorRTWrapper(torch.nn.Module):
-    """Advanced SDXL wrapper for TensorRT with intelligent conditioning detection"""
-    
-    def __init__(self, unet: UNet2DConditionModel, model_path: str = ""):
-        super().__init__()
-        self.unet = unet
-        self.model_path = model_path
-        
-        # Use comprehensive model detection
-        model_info = detect_model_comprehensive(unet, model_path)
-        
-        self.unet_info = model_info
-        self.is_sdxl = model_info['is_sdxl']
-        self.is_turbo = model_info['is_turbo']
-        
-        self.conditioning_handler = SDXLConditioningHandler(self.unet_info)
-        
-        # Test what the UNet actually supports (with error handling)
-        try:
-            self.supported_calls = self.conditioning_handler.test_unet_conditioning(unet)
-        except Exception as e:
-            print(f"⚠️ UNet conditioning test failed: {e}")
-            # Provide safe defaults
-            self.supported_calls = {
-                'basic': True,
-                'added_cond_kwargs': self.is_sdxl,
-                'separate_args': False
-            }
-        
-        print(f"🔍 SDXL Model Analysis:")
-        print(f"  Model Path: {model_path}")
-        print(f"  Is SDXL: {self.is_sdxl}")
-        print(f"  Is Turbo: {self.is_turbo}")
-        print(f"  UNet Info: {self.unet_info}")
-        print(f"  Supported Calls: {self.supported_calls}")
-    
-    def forward(self, *args, **kwargs):
-        """Intelligent forward pass based on detected capabilities"""
-        
-        # CRITICAL: Always ensure added_cond_kwargs is never None to prevent TypeError
-        if 'added_cond_kwargs' in kwargs and kwargs['added_cond_kwargs'] is None:
-            kwargs['added_cond_kwargs'] = {}
-        
-        # For any model that might be SDXL or have SDXL-like requirements
-        if self.is_sdxl or self.unet_info.get('has_addition_embed', False):
-            
-            if len(args) >= 3:  # sample, timestep, encoder_hidden_states
-                sample, timestep, encoder_hidden_states = args[:3]
-                
-                # For SDXL models that require text_time conditioning, ensure it's provided
-                if self.unet_info.get('addition_embed_type') == 'text_time' and 'added_cond_kwargs' not in kwargs:
-                    print("🔧 Auto-generating required SDXL conditioning for ONNX export...")
-                    device = sample.device
-                    batch_size = sample.shape[0]
-                    
-                    # Generate the required conditioning
-                    kwargs['added_cond_kwargs'] = {
-                        'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
-                        'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
-                    }
-                
-                # Try added_cond_kwargs first (standard SDXL)
-                if self.supported_calls.get('added_cond_kwargs', False):
-                    # Ensure we always have the dict, even if empty
-                    if 'added_cond_kwargs' not in kwargs:
-                        kwargs['added_cond_kwargs'] = {}
-                    return self.unet(sample, timestep, encoder_hidden_states, **kwargs)
-                
-                # Try separate arguments (some SDXL implementations)
-                elif self.supported_calls.get('separate_args', False) and len(args) > 3:
-                    return self.unet(*args)
-                
-                # Fall back to basic call 
-                elif self.supported_calls.get('basic', True):
-                    return self.unet(sample, timestep, encoder_hidden_states)
-                
-                # Last resort - create minimal valid SDXL conditioning
-                else:
-                    try:
-                        # For SDXL models that require conditioning, provide minimal valid data
-                        if self.unet_info.get('addition_embed_type') == 'text_time':
-                            # Create minimal conditioning that SDXL expects
-                            device = sample.device
-                            batch_size = sample.shape[0]
-                            
-                            minimal_conditioning = {
-                                'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
-                                'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
-                            }
-                            return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
-                        else:
-                            # Non-text_time SDXL, try empty dict
-                            return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs={})
-                    except Exception as e:
-                        print(f"⚠️ SDXL fallback with conditioning failed: {e}")
-                        # Absolute last resort: try without added_cond_kwargs but ensure no None issues
-                        try:
-                            return self.unet(sample, timestep, encoder_hidden_states)
-                        except TypeError as te:
-                            if "NoneType" in str(te):
-                                # The UNet is expecting added_cond_kwargs but gets None internally
-                                # This means we need to provide it, even if minimal
-                                minimal_conditioning = {
-                                    'text_embeds': torch.zeros(sample.shape[0], 1280, device=sample.device, dtype=sample.dtype),
-                                    'time_ids': torch.zeros(sample.shape[0], 6, device=sample.device, dtype=sample.dtype)
-                                }
-                                return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
-                            else:
-                                raise te
-        
-        # For non-SDXL models, pass through directly but still protect against None
-        else:
-            # Remove problematic added_cond_kwargs for non-SDXL models
-            if 'added_cond_kwargs' in kwargs:
-                kwargs = {k: v for k, v in kwargs.items() if k != 'added_cond_kwargs'}
-            return self.unet(*args, **kwargs)
-    
     def get_onnx_export_spec(self) -> Dict[str, Any]:
         """Get specification for ONNX export"""
         spec = self.conditioning_handler.get_conditioning_spec()
@@ -300,17 +179,27 @@ class SDXLTensorRTWrapper(torch.nn.Module):
         return spec
 
 
-def create_sdxl_tensorrt_wrapper(unet: UNet2DConditionModel, model_path: str = "") -> torch.nn.Module:
-    """Factory function to create appropriate SDXL TensorRT wrapper"""
-    return SDXLTensorRTWrapper(unet, model_path)
-
 
 def get_sdxl_tensorrt_config(model_path: str, unet: UNet2DConditionModel) -> Dict[str, Any]:
     """Get complete TensorRT configuration for SDXL model"""
-    config = detect_model_comprehensive(unet, model_path)
+    # Use the new detection function
+    detection_result = detect_model(unet)
+    
+    # Create a config dict compatible with SDXLConditioningHandler
+    config = {
+        'is_sdxl': detection_result['is_sdxl'],
+        'has_time_cond': detection_result['architecture_details']['has_time_conditioning'],
+        'has_addition_embed': detection_result['architecture_details']['has_addition_embeds'],
+        'model_type': detection_result['model_type'],
+        'is_turbo': detection_result['is_turbo'],
+        'is_sd3': detection_result['is_sd3'],
+        'confidence': detection_result['confidence'],
+        'architecture_details': detection_result['architecture_details'],
+        'compatibility_info': detection_result['compatibility_info']
+    }
     
     # Add conditioning specification
     conditioning_handler = SDXLConditioningHandler(config)
     config['conditioning_spec'] = conditioning_handler.get_conditioning_spec()
     
-    return config 
+    return config

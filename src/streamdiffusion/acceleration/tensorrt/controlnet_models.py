@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Optional
 from .models import BaseModel
+from .sdxl_support import SDXLConditioningHandler, get_sdxl_tensorrt_config
+from ...model_detection import detect_model
 import torch
 
 
@@ -120,67 +122,126 @@ class ControlNetTRT(BaseModel):
 class ControlNetSDXLTRT(ControlNetTRT):
     """SDXL-specific ControlNet TensorRT model definition"""
     
-    def __init__(self, **kwargs):
-        kwargs.setdefault('embedding_dim', 2048)
+    def __init__(self, unet=None, model_path="", **kwargs):
+        # Use new model detection if UNet provided
+        if unet is not None:
+            # Use the new detection function
+            detection_result = detect_model(unet)
+
+            # Create a config dict compatible with SDXLConditioningHandler
+            config = {
+                'is_sdxl': detection_result['is_sdxl'],
+                'has_time_cond': detection_result['architecture_details']['has_time_conditioning'],
+                'has_addition_embed': detection_result['architecture_details']['has_addition_embeds'],
+                'model_type': detection_result['model_type'],
+                'is_turbo': detection_result['is_turbo'],
+                'is_sd3': detection_result['is_sd3'],
+                'confidence': detection_result['confidence'],
+                'architecture_details': detection_result['architecture_details'],
+                'compatibility_info': detection_result['compatibility_info']
+            }
+            conditioning_handler = SDXLConditioningHandler(config)
+            conditioning_spec = conditioning_handler.get_conditioning_spec()
+            
+            # Set embedding_dim from sophisticated detection
+            kwargs.setdefault('embedding_dim', conditioning_spec['context_dim'])
+        
+        # Set SDXL-specific defaults
+        kwargs.setdefault('embedding_dim', 2048)  # SDXL uses 2048-dim embeddings
+        kwargs.setdefault('unet_dim', 4)          # SDXL latent channels
+        
         super().__init__(**kwargs)
-        self.name = "ControlNet-SDXL"
-    
-    def get_input_names(self) -> List[str]:
-        """SDXL ControlNet has additional conditioning inputs"""
-        base_inputs = super().get_input_names()
-        return base_inputs + [
-            "text_embeds",
-            "time_ids"
-        ]
-    
-    def get_dynamic_axes(self) -> Dict[str, Dict[int, str]]:
-        """SDXL dynamic axes include additional inputs"""
-        base_axes = super().get_dynamic_axes()
-        base_axes.update({
-            "text_embeds": {0: "B"},
-            "time_ids": {0: "B"}
-        })
-        return base_axes
-    
-    def get_input_profile(self, batch_size, image_height, image_width, 
-                         static_batch, static_shape):
-        """SDXL input profiles with additional conditioning"""
-        base_profile = super().get_input_profile(
-            batch_size, image_height, image_width, static_batch, static_shape
-        )
         
-        min_batch = batch_size if static_batch else self.min_batch
-        max_batch = batch_size if static_batch else self.max_batch
+        # SDXL ControlNet output specifications - 9 down blocks + 1 mid block
+        # Following the pattern from UNet implementation:
+        self.sdxl_output_channels = {
+            # Initial sample
+            'down_block_00': 320,   # Initial: 320 channels
+            # Block 0 residuals  
+            'down_block_01': 320,   # Block0: 320 channels
+            'down_block_02': 320,   # Block0: 320 channels
+            'down_block_03': 320,   # Block0: 320 channels
+            # Block 1 residuals
+            'down_block_04': 640,   # Block1: 640 channels
+            'down_block_05': 640,   # Block1: 640 channels
+            'down_block_06': 640,   # Block1: 640 channels
+            # Block 2 residuals
+            'down_block_07': 1280,  # Block2: 1280 channels
+            'down_block_08': 1280,  # Block2: 1280 channels
+            # Mid block
+            'mid_block': 1280       # Mid: 1280 channels
+        }
+    
+    def get_shape_dict(self, batch_size, image_height, image_width):
+        """Override to provide SDXL-specific output shapes for 9 down blocks"""
+        # Get base input shapes
+        base_shapes = super().get_shape_dict(batch_size, image_height, image_width)
         
-        base_profile.update({
-            "text_embeds": [
-                (min_batch, 1280), (batch_size, 1280), (max_batch, 1280)
-            ],
-            "time_ids": [
-                (min_batch, 6), (batch_size, 6), (max_batch, 6)
-            ]
-        })
+        # Add conditioning_scale to input shapes (scalar tensor)
+        base_shapes["conditioning_scale"] = ()  # Scalar tensor has empty shape
         
-        return base_profile
+        # Calculate latent dimensions
+        latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
+        
+        # SDXL output shapes matching UNet pattern:
+        # Pattern: [88x88] + [88x88, 88x88, 44x44] + [44x44, 44x44, 22x22] + [22x22, 22x22]
+        sdxl_output_shapes = {
+            # Initial sample (no downsampling)
+            'down_block_00': (batch_size, 320, latent_height, latent_width),        # 88x88
+            # Block 0 residuals
+            'down_block_01': (batch_size, 320, latent_height, latent_width),        # 88x88  
+            'down_block_02': (batch_size, 320, latent_height, latent_width),        # 88x88
+            'down_block_03': (batch_size, 320, latent_height // 2, latent_width // 2),  # 44x44 (downsampled)
+            # Block 1 residuals
+            'down_block_04': (batch_size, 640, latent_height // 2, latent_width // 2),  # 44x44
+            'down_block_05': (batch_size, 640, latent_height // 2, latent_width // 2),  # 44x44
+            'down_block_06': (batch_size, 640, latent_height // 4, latent_width // 4),  # 22x22 (downsampled)
+            # Block 2 residuals  
+            'down_block_07': (batch_size, 1280, latent_height // 4, latent_width // 4), # 22x22
+            'down_block_08': (batch_size, 1280, latent_height // 4, latent_width // 4), # 22x22
+            # Mid block
+            'mid_block': (batch_size, 1280, latent_height // 4, latent_width // 4),     # 22x22
+        }
+        
+        # Combine base inputs with SDXL outputs
+        base_shapes.update(sdxl_output_shapes)
+        return base_shapes
     
     def get_sample_input(self, batch_size, image_height, image_width):
-        """Generate sample inputs for SDXL ControlNet ONNX export"""
-        base_inputs = super().get_sample_input(batch_size, image_height, image_width)
-        
+        """Override to provide SDXL-specific sample tensors with correct input format"""
+        latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
         dtype = torch.float16 if self.fp16 else torch.float32
         
-        sdxl_inputs = (
-            torch.randn(batch_size, 1280, dtype=dtype, device=self.device),
-            torch.randn(batch_size, 6, dtype=dtype, device=self.device)
+        # Base inputs for ControlNet (wrapper expects these 5 inputs including conditioning_scale)
+        base_inputs = (
+            torch.randn(batch_size, self.unet_dim, latent_height, latent_width, 
+                       dtype=dtype, device=self.device),  # sample
+            torch.ones(batch_size, dtype=torch.float32, device=self.device),  # timestep
+            torch.randn(batch_size, self.text_maxlen, self.embedding_dim, 
+                       dtype=dtype, device=self.device),  # encoder_hidden_states
+            torch.randn(batch_size, 3, image_height, image_width, 
+                       dtype=dtype, device=self.device),  # controlnet_cond
+            torch.tensor(1.0, dtype=torch.float32, device=self.device),  # conditioning_scale
         )
         
-        return base_inputs + sdxl_inputs
+        return base_inputs
+    
+    def get_input_names(self):
+        """Override to provide SDXL-specific input names"""
+        return ["sample", "timestep", "encoder_hidden_states", "controlnet_cond", "conditioning_scale"]
+    
+    def get_output_names(self):
+        """Override to provide SDXL-specific output names that match wrapper return format"""
+        return ["down_block_00", "down_block_01", "down_block_02", "down_block_03", 
+                "down_block_04", "down_block_05", "down_block_06", "down_block_07", 
+                "down_block_08", "mid_block"]
 
 
 def create_controlnet_model(model_type: str = "sd15", 
+                           unet=None, model_path: str = "",
                            **kwargs) -> ControlNetTRT:
     """Factory function to create appropriate ControlNet TensorRT model"""
-    if model_type.lower() in ["sdxl", "sdxl-turbo"]:
-        return ControlNetSDXLTRT(**kwargs)
+    if model_type.lower() in ["sdxl"]:
+        return ControlNetSDXLTRT(unet=unet, model_path=model_path, **kwargs)
     else:
         return ControlNetTRT(**kwargs) 

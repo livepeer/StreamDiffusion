@@ -305,41 +305,72 @@ class UNet(BaseModel):
         
         control_inputs = {}
         
-        # Define downsampling factors for each block level
-        # SD 1.5 UNet has 4 down blocks with increasing downsampling
-        down_block_configs = [
-            [(320, 1), (320, 1), (320, 1)],# Block 0: No downsampling from latent space (factor = 1)
-            [(320, 2), (640, 2), (640, 2)], # Block 1: 2x downsampling from latent space (factor = 2) 
-            [(640, 4), (1280, 4), (1280, 4)], # Block 2: 4x downsampling from latent space (factor = 4)
-            [(1280, 8), (1280, 8), (1280, 8)] # Block 3: 8x downsampling from latent space (factor = 8)
-        ]
+        if len(block_out_channels) == 3:
+            # SDXL architecture: Match UNet's exact down_block_res_samples structure
+            # UNet down_block_res_samples = [initial_sample] + [block0_residuals] + [block1_residuals] + [block2_residuals]
+            # Pattern: [88x88] + [88x88, 88x88, 44x44] + [44x44, 44x44, 22x22] + [22x22, 22x22]
+            # Total: 9 control tensors needed
+            control_tensors = [
+                # Initial sample (after conv_in: 4->320 channels, no downsampling)
+                (block_out_channels[0], 1),  # 320 channels, 88x88
+                
+                # Block 0 residuals (320 channels)
+                (block_out_channels[0], 1),  # 320 channels, 88x88 
+                (block_out_channels[0], 1),  # 320 channels, 88x88
+                (block_out_channels[0], 2),  # 320 channels, 44x44 (downsampled)
+                
+                # Block 1 residuals (640 channels) 
+                (block_out_channels[1], 2),  # 640 channels, 44x44
+                (block_out_channels[1], 2),  # 640 channels, 44x44
+                (block_out_channels[1], 4),  # 640 channels, 22x22 (downsampled)
+                
+                # Block 2 residuals (1280 channels)
+                (block_out_channels[2], 4),  # 1280 channels, 22x22
+                (block_out_channels[2], 4),  # 1280 channels, 22x22
+            ]
+        else:
+            # SD1.5/SD2.1 architecture: 4 down blocks with 12 control tensors
+            control_tensors = [
+                # Block 0: No downsampling from latent space (factor = 1)
+                (320, 1), (320, 1), (320, 1),
+                # Block 1: 2x downsampling from latent space (factor = 2) 
+                (320, 2), (640, 2), (640, 2),
+                # Block 2: 4x downsampling from latent space (factor = 4)
+                (640, 4), (1280, 4), (1280, 4),
+                # Block 3: 8x downsampling from latent space (factor = 8)
+                (1280, 8), (1280, 8), (1280, 8)
+            ]
         
         # Generate control inputs with proper spatial dimensions
-        control_idx = 0
-        for block_idx, block_configs in enumerate(down_block_configs):
-            for layer_idx, (channels, downsample_factor) in enumerate(block_configs):
-                input_name = f"input_control_{control_idx:02d}"
-                
-                # Calculate spatial dimensions for this level
-                control_height = max(1, latent_height // downsample_factor)
-                control_width = max(1, latent_width // downsample_factor)
-                
-                control_inputs[input_name] = {
-                    'batch': self.min_batch,
-                    'channels': channels,
-                    'height': control_height,
-                    'width': control_width,
-                    'downsampling_factor': downsample_factor
-                }
-                control_idx += 1
+        for i, (channels, downsample_factor) in enumerate(control_tensors):
+            input_name = f"input_control_{i:02d}"
+            
+            # Calculate spatial dimensions for this level
+            control_height = max(1, latent_height // downsample_factor)
+            control_width = max(1, latent_width // downsample_factor)
+            
+            control_inputs[input_name] = {
+                'batch': self.min_batch,
+                'channels': channels,
+                'height': control_height,
+                'width': control_width,
+                'downsampling_factor': downsample_factor
+            }
         
-        # Middle block always uses the most downsampled resolution (8x)
+        # Middle block uses the most downsampled resolution based on architecture
+        if len(block_out_channels) == 3:
+            # SDXL: middle block at 4x downsampling (after 3 down blocks)
+            middle_downsample_factor = 4
+        else:
+            # SD1.5: middle block at 8x downsampling (after 4 down blocks)
+            middle_downsample_factor = 8
+            
         control_inputs["input_control_middle"] = {
             'batch': self.min_batch,
             'channels': 1280,
-            'height': max(1, latent_height // 8),
-            'width': max(1, latent_width // 8),
-            'downsampling_factor': 8
+            'height': max(1, latent_height // middle_downsample_factor),
+            'width': max(1, latent_width // middle_downsample_factor),
+            'downsampling_factor': middle_downsample_factor
         }
         
         return control_inputs

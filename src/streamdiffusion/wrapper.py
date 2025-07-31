@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
 
-from .acceleration.tensorrt.model_detection import detect_model_from_diffusers_unet
+from .model_detection import detect_model
 
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
@@ -837,11 +837,38 @@ class StreamDiffusionWrapper:
         except Exception as e:
             logger.warning(f"⚠️ GPU cleanup warning: {e}")
 
-        loading_methods = [
-            (AutoPipelineForText2Image.from_pretrained, "AutoPipeline from_pretrained"),
-            (StableDiffusionPipeline.from_single_file, "SD from_single_file"),
-            (StableDiffusionXLPipeline.from_single_file, "SDXL from_single_file")
-        ]
+        # First, try to detect if this is an SDXL model before loading
+        # TODO: CAN we do this step with model_detection.py?
+        is_sdxl_model = False
+        model_path_lower = model_id_or_path.lower()
+        
+        # Check path for SDXL indicators
+        if any(indicator in model_path_lower for indicator in ['sdxl', 'xl', '1024']):
+            is_sdxl_model = True
+            logger.info(f"_load_model: Path suggests SDXL model: {model_id_or_path}")
+        
+        # For .safetensor files, we need to be more careful about pipeline selection
+        if model_id_or_path.endswith('.safetensors'):
+            # For .safetensor files, try SDXL pipeline first if path suggests SDXL
+            if is_sdxl_model:
+                loading_methods = [
+                    (StableDiffusionXLPipeline.from_single_file, "SDXL from_single_file"),
+                    (AutoPipelineForText2Image.from_pretrained, "AutoPipeline from_pretrained"),
+                    (StableDiffusionPipeline.from_single_file, "SD from_single_file"),
+                ]
+            else:
+                loading_methods = [
+                    (AutoPipelineForText2Image.from_pretrained, "AutoPipeline from_pretrained"),
+                    (StableDiffusionPipeline.from_single_file, "SD from_single_file"),
+                    (StableDiffusionXLPipeline.from_single_file, "SDXL from_single_file")
+                ]
+        else:
+            # For regular model directories or checkpoints, use the original order
+            loading_methods = [
+                (AutoPipelineForText2Image.from_pretrained, "AutoPipeline from_pretrained"),
+                (StableDiffusionPipeline.from_single_file, "SD from_single_file"),
+                (StableDiffusionXLPipeline.from_single_file, "SDXL from_single_file")
+            ]
 
         pipe = None
         last_error = None
@@ -850,6 +877,19 @@ class StreamDiffusionWrapper:
                 logger.info(f"_load_model: Attempting to load with {method_name}...")
                 pipe = method(model_id_or_path).to(device=self.device, dtype=self.dtype)
                 logger.info(f"_load_model: Successfully loaded using {method_name}")
+                
+                # Verify that we have the right pipeline type for SDXL models
+                if is_sdxl_model and not isinstance(pipe, StableDiffusionXLPipeline):
+                    logger.warning(f"_load_model: SDXL model detected but loaded with non-SDXL pipeline: {type(pipe)}")
+                    # Try to explicitly load with SDXL pipeline instead
+                    try:
+                        logger.info(f"_load_model: Retrying with StableDiffusionXLPipeline...")
+                        pipe = StableDiffusionXLPipeline.from_single_file(model_id_or_path).to(device=self.device, dtype=self.dtype)
+                        logger.info(f"_load_model: Successfully loaded using SDXL pipeline on retry")
+                    except Exception as retry_error:
+                        logger.warning(f"_load_model: SDXL pipeline retry failed: {retry_error}")
+                        # Continue with the originally loaded pipeline
+                
                 break
             except Exception as e:
                 logger.warning(f"_load_model: {method_name} failed: {e}")
@@ -868,12 +908,20 @@ class StreamDiffusionWrapper:
         # If we get here, the model loaded successfully - break out of retry loop
         logger.info(f"✅ Model loading succeeded")
 
-        # Use existing model detection instead of guessing from config
-        model_type = detect_model_from_diffusers_unet(pipe.unet)
-        is_sdxl = model_type == "SDXL"
-
-        # Store model info for later use (after TensorRT conversion)
+        # Use comprehensive model detection instead of basic detection
+        detection_result = detect_model(pipe.unet, pipe)
+        model_type = detection_result['model_type']
+        is_sdxl = detection_result['is_sdxl']
+        is_turbo = detection_result['is_turbo']
+        confidence = detection_result['confidence']
+        
+        # Store comprehensive model info for later use (after TensorRT conversion)
         self._detected_model_type = model_type
+        self._detection_confidence = confidence
+        self._is_turbo = is_turbo
+        self._is_sdxl = is_sdxl
+        
+        logger.info(f"_load_model: Detected model type: {model_type} (confidence: {confidence:.2f})")
 
         stream = StreamDiffusion(
             pipe=pipe,
@@ -936,7 +984,7 @@ class StreamDiffusionWrapper:
                     VAEEncoder,
                 )
                 # Add ControlNet detection and support
-                from streamdiffusion.acceleration.tensorrt.model_detection import (
+                from streamdiffusion.model_detection import (
                     extract_unet_architecture,
                     validate_architecture
                 )
@@ -990,20 +1038,16 @@ class StreamDiffusionWrapper:
                         has_ipadapter = False
                 
                 try:
-                    # Use improved SDXL detection and model analysis
-                    from streamdiffusion.acceleration.tensorrt.sdxl_support import get_sdxl_tensorrt_config
+                    # Use model detection results already computed during model loading
+                    model_type = getattr(self, '_detected_model_type', 'SD15')
+                    is_sdxl = getattr(self, '_is_sdxl', False)
+                    is_turbo = getattr(self, '_is_turbo', False)
+                    confidence = getattr(self, '_detection_confidence', 0.0)
                     
-                    # Get comprehensive SDXL configuration
-                    sdxl_config = get_sdxl_tensorrt_config(model_id_or_path, stream.unet)
-                    is_sdxl_model = sdxl_config['is_sdxl']
-                    
-                    # Standard model detection for TensorRT
-                    model_type = detect_model_from_diffusers_unet(stream.unet)
-                    
-                    if is_sdxl_model:
+                    if is_sdxl:
                         logger.info(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
-                        logger.info(f"   Turbo variant: {sdxl_config['is_turbo']}")
-                        logger.info(f"   Conditioning spec: {sdxl_config['conditioning_spec']}")
+                        logger.info(f"   Turbo variant: {is_turbo}")
+                        logger.info(f"   Detection confidence: {confidence:.2f}")
                     else:
                         logger.info(f"🎯 Building TensorRT engines for {model_type}")
                     
@@ -1014,20 +1058,14 @@ class StreamDiffusionWrapper:
                     
                     # Only enable ControlNet for legacy TensorRT if ControlNet is actually being used
                     if self.use_controlnet:
-                        # Temporary: Disable ControlNet TensorRT for SDXL models due to architectural differences
-                        if model_type == "SDXL":
+                        try:
+                            unet_arch = extract_unet_architecture(stream.unet)
+                            unet_arch = validate_architecture(unet_arch, model_type)
+                            use_controlnet_trt = True
+                            logger.info(f"   Including ControlNet support for {model_type}")
+                        except Exception as e:
+                            logger.warning(f"   ControlNet architecture detection failed: {e}")
                             use_controlnet_trt = False
-                            logger.warning(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models")
-                            logger.warning(f"   ControlNet will run in PyTorch mode for better stability")
-                        else:
-                            try:
-                                unet_arch = extract_unet_architecture(stream.unet)
-                                unet_arch = validate_architecture(unet_arch, model_type)
-                                use_controlnet_trt = True
-                                logger.info(f"   Including ControlNet support for {model_type}")
-                            except Exception as e:
-                                logger.warning(f"   ControlNet architecture detection failed: {e}")
-                                use_controlnet_trt = False
                     
                     # Set up architecture info for enabled modes
                     if use_controlnet_trt and not use_ipadapter_trt:
@@ -1054,16 +1092,13 @@ class StreamDiffusionWrapper:
                     
                     # Fallback to basic detection
                     try:
-                        model_type = detect_model_from_diffusers_unet(stream.unet)
+                        detection_result = detect_model(stream.unet, None)
+                        model_type = detection_result['model_type']
+                        is_sdxl = detection_result['is_sdxl']
                         if self.use_controlnet:
-                            # Temporary: Disable ControlNet TensorRT for SDXL models
-                            if model_type == "SDXL":
-                                use_controlnet_trt = False
-                                logger.warning(f"   ⚠️ ControlNet TensorRT temporarily disabled for SDXL models (fallback)")
-                            else:
-                                unet_arch = extract_unet_architecture(stream.unet)
-                                unet_arch = validate_architecture(unet_arch, model_type)
-                                use_controlnet_trt = True
+                            unet_arch = extract_unet_architecture(stream.unet)
+                            unet_arch = validate_architecture(unet_arch, model_type)
+                            use_controlnet_trt = True
                     except Exception:
                         pass
                 
@@ -1154,7 +1189,7 @@ class StreamDiffusionWrapper:
                     logger.info(f"Creating UNet model for image size: {self.width}x{self.height}")
 
                     # Determine correct embedding dimension based on model type
-                    if model_type == "SDXL":
+                    if is_sdxl:
                         # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
                         embedding_dim = 2048
                         logger.info(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
@@ -1452,11 +1487,11 @@ class StreamDiffusionWrapper:
 
         # Apply ControlNet patch if needed
         if use_controlnet and controlnet_config:
-            stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type)
+            stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
 
         return stream
 
-    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15") -> Any:
+    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False) -> Any:
         """
         Apply ControlNet patch to StreamDiffusion using detected model type
 
@@ -1469,7 +1504,7 @@ class StreamDiffusionWrapper:
             ControlNet-enabled pipeline (ControlNetPipeline or SDXLTurboControlNetPipeline)
         """
         # Use provided model type (detected before TensorRT conversion)
-        if model_type == "SDXL":
+        if is_sdxl:
             from streamdiffusion.controlnet.controlnet_sdxlturbo_pipeline import SDXLTurboControlNetPipeline
             controlnet_pipeline = SDXLTurboControlNetPipeline(stream, self.device, self.dtype)
         else:  # SD15, SD21, etc. all use same ControlNet pipeline
@@ -1481,7 +1516,7 @@ class StreamDiffusionWrapper:
 
         # Set the detected model type to avoid re-detection from TensorRT engine
         controlnet_pipeline._detected_model_type = model_type
-
+        controlnet_pipeline._is_sdxl = is_sdxl
 
         # Initialize ControlNet engine pool if using TensorRT acceleration
         if use_controlnet_tensorrt:
