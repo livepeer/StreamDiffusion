@@ -589,7 +589,7 @@ class StreamDiffusionWrapper:
         if prompt is not None:
             self.update_prompt(prompt, warn_about_conflicts=True)
 
-        if isinstance(image, str) or isinstance(image, Image.Image):
+        if isinstance(image, str) or isinstance(image, Image.Image) or isinstance(image, torch.Tensor):
             image = self.preprocess_image(image)
 
         image_tensor = self.stream(image)

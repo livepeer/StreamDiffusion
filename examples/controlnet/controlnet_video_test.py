@@ -76,6 +76,7 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
     
     # Performance tracking
     frame_times = []
+    inference_times = []
     total_start_time = time.time()
     
     print("process_video: Starting video processing...")
@@ -91,17 +92,22 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         # Resize frame
         frame_resized = cv2.resize(frame, (width, height))
         
-        # Convert frame to PIL
-        frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
-        frame_pil = Image.fromarray(frame_rgb)
+        # Convert frame to tensor efficiently (BGR->RGB, HWC->BCHW, normalize)
+        image_tensor = torch.from_numpy(cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+
+        print(f"process_video: Image tensor shape: {image_tensor.shape}")
         
-        # Update control image and generate
-        wrapper.update_control_image_efficient(frame_pil)
-        output_image = wrapper(frame_pil)
+        # Time just the inference
+        inference_start_time = time.time()
+        # wrapper.update_control_image_efficient(image_tensor)
+        output_tensor = wrapper(image_tensor)
+        inference_time = time.time() - inference_start_time
+        inference_times.append(inference_time)
         
         # Convert output to display format
-        output_array = np.array(output_image)
-        output_bgr = cv2.cvtColor(output_array, cv2.COLOR_RGB2BGR)
+        output_numpy = output_tensor.cpu().squeeze(0).permute(1, 2, 0).float().numpy()
+        output_numpy = (output_numpy * 255).round().astype("uint8")
+        output_bgr = cv2.cvtColor(output_numpy, cv2.COLOR_RGB2BGR)
         
         # Create side-by-side display
         combined = np.hstack([frame_resized, output_bgr])
@@ -121,7 +127,8 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         frame_idx += 1
         if frame_idx % 10 == 0:
             avg_fps = len(frame_times) / sum(frame_times) if frame_times else 0
-            print(f"process_video: Processed {frame_idx}/{frame_count} frames (Avg FPS: {avg_fps:.2f})")
+            avg_inference_fps = len(inference_times) / sum(inference_times) if inference_times else 0
+            print(f"process_video: Processed {frame_idx}/{frame_count} frames (Avg FPS: {avg_fps:.2f}, Avg Inference FPS: {avg_inference_fps:.2f})")
     
     total_time = time.time() - total_start_time
     
@@ -140,6 +147,17 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
     else:
         avg_frame_time = avg_fps = min_frame_time = max_frame_time = max_fps = min_fps = 0
     
+    # Calculate inference-specific metrics
+    if inference_times:
+        avg_inference_time = sum(inference_times) / len(inference_times)
+        avg_inference_fps = 1.0 / avg_inference_time
+        min_inference_time = min(inference_times)
+        max_inference_time = max(inference_times)
+        max_inference_fps = 1.0 / min_inference_time
+        min_inference_fps = 1.0 / max_inference_time
+    else:
+        avg_inference_time = avg_inference_fps = min_inference_time = max_inference_time = max_inference_fps = min_inference_fps = 0
+    
     # Performance metrics
     metrics = {
         "input_video": str(input_video),
@@ -148,12 +166,21 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         "height": height,
         "total_frames": frame_idx,
         "total_time_seconds": total_time,
+        # Overall frame processing metrics
         "avg_fps": avg_fps,
         "min_fps": min_fps,
         "max_fps": max_fps,
         "avg_frame_time_seconds": avg_frame_time,
         "min_frame_time_seconds": min_frame_time,
         "max_frame_time_seconds": max_frame_time,
+        # Inference-only metrics
+        "avg_inference_fps": avg_inference_fps,
+        "min_inference_fps": min_inference_fps,
+        "max_inference_fps": max_inference_fps,
+        "avg_inference_time_seconds": avg_inference_time,
+        "min_inference_time_seconds": min_inference_time,
+        "max_inference_time_seconds": max_inference_time,
+        # Model configuration
         "model_id": config['model_id'],
         "acceleration": config.get('acceleration', 'none'),
         "frame_buffer_size": config.get('frame_buffer_size', 1),
@@ -170,7 +197,8 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
     print(f"process_video: Processing completed!")
     print(f"process_video: Output video saved to: {output_video_path}")
     print(f"process_video: Performance metrics saved to: {metrics_path}")
-    print(f"process_video: Average FPS: {avg_fps:.2f}")
+    print(f"process_video: Average FPS (overall): {avg_fps:.2f}")
+    print(f"process_video: Average FPS (inference only): {avg_inference_fps:.2f}")
     print(f"process_video: Total time: {total_time:.2f} seconds")
     
     return metrics
