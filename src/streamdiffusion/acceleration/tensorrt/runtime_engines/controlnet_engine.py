@@ -30,111 +30,49 @@ class ControlNetModelEngine:
         self._input_names = None
         self._output_names = None
         
-        # Cache for output shapes to avoid recalculation
-        self._output_shapes_cache = {}
+        # Pre-compute model-specific values to eliminate runtime branching
+        if self.model_type in ["sdxl", "sdxl_turbo"]:
+            self.max_blocks = 9
+            self.down_block_configs = [
+                (320, 1), (320, 1), (320, 1), (320, 2),
+                (640, 2), (640, 2), (640, 4),
+                (1280, 4), (1280, 4)
+            ]
+            self.mid_block_channels = 1280
+            self.mid_downsample_factor = 4
+        else:
+            self.max_blocks = 12
+            self.down_block_configs = [
+                (320, 1), (320, 1), (320, 1), (320, 2), (640, 2), (640, 2),
+                (640, 4), (1280, 4), (1280, 4), (1280, 8), (1280, 8), (1280, 8)
+            ]
+            self.mid_block_channels = 1280
+            self.mid_downsample_factor = 8
+        
+        # Cache for computed shapes
+        self._shape_cache = {}
     
     def _resolve_output_shapes(self, batch_size: int, latent_height: int, latent_width: int) -> Dict[str, Tuple[int, ...]]:
-        """Resolve dynamic output shapes from TensorRT engine with proper spatial dimensions"""
-        # Check cache first
+        """Optimized shape resolution using pre-computed configurations"""
         cache_key = (batch_size, latent_height, latent_width)
-        if cache_key in self._output_shapes_cache:
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: Returning cached shapes for {cache_key}")
-            return self._output_shapes_cache[cache_key]
+        if cache_key in self._shape_cache:
+            return self._shape_cache[cache_key]
         
-        logger.debug(f"ControlNetModelEngine._resolve_output_shapes: Starting shape resolution for batch_size={batch_size}, latent_height={latent_height}, latent_width={latent_width}")
-        logger.debug(f"ControlNetModelEngine._resolve_output_shapes: model_type='{self.model_type}'")
         output_shapes = {}
         
-        if self.model_type in ["sdxl", "sdxl_turbo"]:
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: Using SDXL architecture branch")
-            # SDXL architecture: 9 down blocks + 1 mid block
-            # Pattern: [88x88] + [88x88, 88x88, 44x44] + [44x44, 44x44, 22x22] + [22x22, 22x22]
-            # Following UNet pattern from controlnet_wrapper.py and models.py
-            
-            sdxl_down_blocks = [
-                # Initial sample
-                (320, 1),      # down_block_00: 320 channels, 88x88
-                # Block 0 residuals
-                (320, 1),      # down_block_01: 320 channels, 88x88
-                (320, 1),      # down_block_02: 320 channels, 88x88
-                (320, 2),      # down_block_03: 320 channels, 44x44 (downsampled)
-                # Block 1 residuals
-                (640, 2),      # down_block_04: 640 channels, 44x44
-                (640, 2),      # down_block_05: 640 channels, 44x44
-                (640, 4),      # down_block_06: 640 channels, 22x22 (downsampled)
-                # Block 2 residuals
-                (1280, 4),     # down_block_07: 1280 channels, 22x22
-                (1280, 4),     # down_block_08: 1280 channels, 22x22
-            ]
-            
-            mid_block_channels = 1280
-            mid_downsample_factor = 4  # SDXL middle block at 4x downsampling
-            
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SDXL config - 9 down blocks with channel pattern")
-            
-            # Generate output shapes for SDXL down blocks
-            for i, (channels, factor) in enumerate(sdxl_down_blocks):
-                output_name = f"down_block_{i:02d}"
-                
-                # Calculate spatial dimensions for this block
-                h = max(1, latent_height // factor)
-                w = max(1, latent_width // factor)
-                
-                logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SDXL down_block_{i:02d}: latent_height={latent_height} // factor={factor} = {latent_height // factor} -> h={h}")
-                logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SDXL down_block_{i:02d}: latent_width={latent_width} // factor={factor} = {latent_width // factor} -> w={w}")
-                
-                output_shapes[output_name] = (batch_size, channels, h, w)
-                logger.debug(f"ControlNetModelEngine._resolve_output_shapes: {output_name}: (batch_size={batch_size}, channels={channels}, h={h}, w={w})")
-            
-            # Generate output shape for SDXL mid block
-            mid_h = max(1, latent_height // mid_downsample_factor)
-            mid_w = max(1, latent_width // mid_downsample_factor)
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SDXL mid_block: latent_height={latent_height} // factor={mid_downsample_factor} = {latent_height // mid_downsample_factor} -> h={mid_h}")
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SDXL mid_block: latent_width={latent_width} // factor={mid_downsample_factor} = {latent_width // mid_downsample_factor} -> w={mid_w}")
-            output_shapes["mid_block"] = (batch_size, mid_block_channels, mid_h, mid_w)
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: mid_block: (batch_size={batch_size}, channels={mid_block_channels}, h={mid_h}, w={mid_w})")
+        # Generate down block shapes using pre-computed configs
+        for i, (channels, factor) in enumerate(self.down_block_configs):
+            output_name = f"down_block_{i:02d}"
+            h = max(1, latent_height // factor)
+            w = max(1, latent_width // factor)
+            output_shapes[output_name] = (batch_size, channels, h, w)
         
-        else:
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: Using SD1.5/SD2.1 architecture branch")
-            # SD 1.5/SD 2.1 architecture: 12 down blocks (original implementation)
-            down_block_channels = [320, 320, 320, 320, 640, 640, 640, 1280, 1280, 1280, 1280, 1280]
-            downsampling_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]
-            mid_block_channels = 1280
-            mid_downsample_factor = 8  # SD1.5 middle block at 8x downsampling
-            
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SD1.5 config - {len(down_block_channels)} down blocks")
-            
-            # Generate output shapes for SD1.5 down blocks
-            for i, (channels, factor) in enumerate(zip(down_block_channels, downsampling_factors)):
-                output_name = f"down_block_{i:02d}"
-                
-                # Calculate spatial dimensions for this block
-                h = max(1, latent_height // factor)
-                w = max(1, latent_width // factor)
-                
-                if i < 3:  # Only log first few to avoid spam
-                    logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SD1.5 down_block_{i:02d}: latent_height={latent_height} // factor={factor} = {latent_height // factor} -> h={h}")
-                    logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SD1.5 down_block_{i:02d}: latent_width={latent_width} // factor={factor} = {latent_width // factor} -> w={w}")
-                
-                output_shapes[output_name] = (batch_size, channels, h, w)
-                logger.debug(f"ControlNetModelEngine._resolve_output_shapes: {output_name}: (batch_size={batch_size}, channels={channels}, h={h}, w={w})")
-            
-            # Generate output shape for SD1.5 mid block
-            mid_h = max(1, latent_height // mid_downsample_factor)
-            mid_w = max(1, latent_width // mid_downsample_factor)
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SD1.5 mid_block: latent_height={latent_height} // factor={mid_downsample_factor} = {latent_height // mid_downsample_factor} -> h={mid_h}")
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: SD1.5 mid_block: latent_width={latent_width} // factor={mid_downsample_factor} = {latent_width // mid_downsample_factor} -> w={mid_w}")
-            output_shapes["mid_block"] = (batch_size, mid_block_channels, mid_h, mid_w)
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: mid_block: (batch_size={batch_size}, channels={mid_block_channels}, h={mid_h}, w={mid_w})")
+        # Generate mid block shape
+        mid_h = max(1, latent_height // self.mid_downsample_factor)
+        mid_w = max(1, latent_width // self.mid_downsample_factor)
+        output_shapes["mid_block"] = (batch_size, self.mid_block_channels, mid_h, mid_w)
         
-        logger.debug(f"ControlNetModelEngine._resolve_output_shapes: Final resolved output shapes:")
-        for name, shape in output_shapes.items():
-            logger.debug(f"ControlNetModelEngine._resolve_output_shapes: {name}: {shape}")
-        
-        # Cache the result
-        self._output_shapes_cache[cache_key] = output_shapes
-        logger.debug(f"ControlNetModelEngine._resolve_output_shapes: Cached shapes for {cache_key}")
-        
+        self._shape_cache[cache_key] = output_shapes
         return output_shapes
 
     def __call__(self, 
@@ -147,11 +85,6 @@ class ControlNetModelEngine:
                  time_ids: Optional[torch.Tensor] = None,
                  **kwargs) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """Forward pass through TensorRT ControlNet engine"""
-        logger.debug(f"ControlNetModelEngine.__call__: Starting TensorRT ControlNet inference")
-        logger.debug(f"ControlNetModelEngine.__call__: model_type='{self.model_type}'")
-        logger.debug(f"ControlNetModelEngine.__call__: Input shapes - sample: {sample.shape}, timestep: {timestep.shape}, encoder_hidden_states: {encoder_hidden_states.shape}, controlnet_cond: {controlnet_cond.shape}")
-        logger.debug(f"ControlNetModelEngine.__call__: conditioning_scale: {conditioning_scale}, text_embeds: {text_embeds.shape if text_embeds is not None else None}, time_ids: {time_ids.shape if time_ids is not None else None}")
-        
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
         
@@ -174,53 +107,16 @@ class ControlNetModelEngine:
         latent_height = sample.shape[2]
         latent_width = sample.shape[3]
         
-        logger.debug(f"ControlNetModelEngine.__call__: Calling _resolve_output_shapes with batch_size={batch_size}, latent_height={latent_height}, latent_width={latent_width}, model_type='{self.model_type}'")
-        
         output_shapes = self._resolve_output_shapes(batch_size, latent_height, latent_width)
-        
-        logger.debug(f"ControlNetModelEngine.__call__: Resolved output shapes:")
-        for name, shape in output_shapes.items():
-            logger.debug(f"ControlNetModelEngine.__call__: {name}: {shape}")
-        
         shape_dict.update(output_shapes)
         
-        logger.debug(f"ControlNetEngine: Input shapes - sample: {sample.shape}, controlnet_cond: {controlnet_cond.shape}")
+        self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
         
-        logger.debug(f"ControlNetModelEngine.__call__: Calling engine.allocate_buffers...")
-        logger.debug(f"ControlNetModelEngine.__call__: About to allocate buffers with shape_dict:")
-        for name, shape in shape_dict.items():
-            logger.debug(f"ControlNetModelEngine.__call__: {name}: {shape}")
-        
-        # Debug: Inspect TensorRT engine expectations
-        if hasattr(self.engine, 'engine') and hasattr(self.engine.engine, 'get_tensor_shape'):
-            logger.debug(f"ControlNetModelEngine.__call__: TensorRT engine tensor info:")
-            try:
-                for i in range(self.engine.engine.num_io_tensors):
-                    tensor_name = self.engine.engine.get_tensor_name(i)
-                    tensor_mode = self.engine.engine.get_tensor_mode(tensor_name)
-                    tensor_shape = self.engine.engine.get_tensor_shape(tensor_name)
-                    logger.debug(f"ControlNetModelEngine.__call__: {tensor_name} ({tensor_mode}): {tensor_shape}")
-            except Exception as e:
-                logger.debug(f"ControlNetModelEngine.__call__: Failed to inspect engine tensors: {e}")
-        
-        try:
-            self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
-        except Exception as e:
-            logger.error(f"ControlNetModelEngine.__call__: allocate_buffers failed with error: {e}")
-            logger.error(f"ControlNetModelEngine.__call__: Error type: {type(e)}")
-            logger.error(f"ControlNetModelEngine.__call__: Failing shape_dict:")
-            for name, shape in shape_dict.items():
-                logger.error(f"ControlNetModelEngine.__call__: {name}: {shape}")
-            raise e
-        
-        logger.debug(f"ControlNetModelEngine.__call__: Calling engine.infer...")
         outputs = self.engine.infer(
             input_dict,
             self.stream,
             use_cuda_graph=self.use_cuda_graph,
         )
-        
-        logger.debug(f"ControlNetModelEngine.__call__: TensorRT inference completed successfully")
         
         if hasattr(self.stream, 'synchronize'):
             self.stream.synchronize()
@@ -228,46 +124,19 @@ class ControlNetModelEngine:
             torch.cuda.current_stream().synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
-        
-        # Log output dimensions
-        logger.debug(f"ControlNetModelEngine.__call__: Final output dimensions:")
-        for i, block in enumerate(down_blocks):
-            if block is not None:
-                logger.debug(f"ControlNetModelEngine.__call__: down_block_{i:02d}: {block.shape}")
-        if mid_block is not None:
-            logger.debug(f"ControlNetModelEngine.__call__: mid_block: {mid_block.shape}")
-        
-        logger.debug(f"ControlNetEngine: Output dimensions:")
-        for i, block in enumerate(down_blocks):
-            if block is not None:
-                logger.debug(f"ControlNetEngine: down_block_{i:02d}: {block.shape}")
-        if mid_block is not None:
-            logger.debug(f"ControlNetEngine: mid_block: {mid_block.shape}")
-        
         return down_blocks, mid_block
     
     def _extract_controlnet_outputs(self, outputs: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """Extract and organize ControlNet outputs from engine results"""
         down_blocks = []
         
-        # Extract down blocks based on model type
-        if self.model_type in ["sdxl", "sdxl_turbo"]:
-            # SDXL has 9 down blocks
-            max_blocks = 9
-        else:
-            # SD1.5 has 12 down blocks
-            max_blocks = 12
-            
-        for i in range(max_blocks):
+        for i in range(self.max_blocks):
             output_name = f"down_block_{i:02d}"
             if output_name in outputs:
                 tensor = outputs[output_name]
                 down_blocks.append(tensor)
         
-        mid_block = None
-        if "mid_block" in outputs:
-            mid_block = outputs["mid_block"]
-        
+        mid_block = outputs.get("mid_block")
         return down_blocks, mid_block
     
 
