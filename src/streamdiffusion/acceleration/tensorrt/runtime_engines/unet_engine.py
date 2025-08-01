@@ -38,32 +38,8 @@ class UNet2DConditionModelEngine:
         **kwargs,
     ) -> Any:
         
-        logger.debug(f"[UNET_ENGINE] __call__: *** UNet2DConditionModelEngine called! ***")
-        logger.debug(f"[UNET_ENGINE] __call__: latent_model_input shape: {latent_model_input.shape}")
-        logger.debug(f"[UNET_ENGINE] __call__: timestep shape: {timestep.shape}")
-        logger.debug(f"[UNET_ENGINE] __call__: encoder_hidden_states shape: {encoder_hidden_states.shape}")
-        logger.debug(f"[UNET_ENGINE] __call__: kwargs keys: {list(kwargs.keys())}")
-        logger.debug(f"[UNET_ENGINE] __call__: About to start detailed processing...")
-        
-        # Check for NaN/Inf in inputs
-        if torch.isnan(latent_model_input).any():
-            logger.warning(f"*** WARNING: NaN detected in latent_model_input! ***")
-        if torch.isinf(latent_model_input).any():
-            logger.warning(f"*** WARNING: Inf detected in latent_model_input! ***")
-        if torch.isnan(timestep).any():
-            logger.warning(f"*** WARNING: NaN detected in timestep! ***")
-        if torch.isnan(encoder_hidden_states).any():
-            logger.warning(f"*** WARNING: NaN detected in encoder_hidden_states! ***")
-        
-        # Print value ranges
-        logger.debug(f"Input ranges - latent: [{latent_model_input.min().item():.6f}, {latent_model_input.max().item():.6f}]")
-        logger.debug(f"Input ranges - timestep: [{timestep.min().item():.6f}, {timestep.max().item():.6f}]") 
-        logger.debug(f"Input ranges - encoder: [{encoder_hidden_states.min().item():.6f}, {encoder_hidden_states.max().item():.6f}]")
-
         if timestep.dtype != torch.float32:
-            logger.debug(f"Converting timestep from {timestep.dtype} to float32")
             timestep = timestep.float()
-        logger.debug(f"UNetEngine: Main input shapes - latent: {latent_model_input.shape}, timestep: {timestep.shape}, encoder: {encoder_hidden_states.shape}")
 
         # Prepare base shape and input dictionaries
         shape_dict = {
@@ -208,26 +184,6 @@ class UNet2DConditionModelEngine:
             raise ValueError("TensorRT engine did not produce expected 'latent' output")
         
         noise_pred = outputs["latent"]
-        logger.debug(f"TensorRT inference completed")
-        logger.debug(f"Output shape: {noise_pred.shape}, dtype: {noise_pred.dtype}")
-        logger.debug(f"Output range: [{noise_pred.min().item():.6f}, {noise_pred.max().item():.6f}]")
-        logger.debug(f"[UNET_ENGINE] Output tensor - shape: {noise_pred.shape}, range: [{noise_pred.min().item():.6f}, {noise_pred.max().item():.6f}]")
-        
-        # Check for NaN/Inf in outputs  
-        if torch.isnan(noise_pred).any():
-            logger.error(f"*** ERROR: NaN detected in TensorRT output! ***")
-            nan_count = torch.isnan(noise_pred).sum().item()
-            total_elements = noise_pred.numel()
-            logger.error(f"*** NaN count: {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%) ***")
-            logger.error(f"[UNET_ENGINE] *** ERROR: NaN values detected in output! ***")
-        if torch.isinf(noise_pred).any():
-            logger.error(f"*** ERROR: Inf detected in TensorRT output! ***")
-            inf_count = torch.isinf(noise_pred).sum().item()
-            total_elements = noise_pred.numel()
-            logger.error(f"*** Inf count: {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%) ***")
-            logger.error(f"[UNET_ENGINE] *** ERROR: Inf values detected in output! ***")
-        
-        logger.debug(f"[UNET_ENGINE] Returning UNet2DConditionOutput...")
         return UNet2DConditionOutput(sample=noise_pred)
 
     def _add_controlnet_conditioning_dict(self, 
