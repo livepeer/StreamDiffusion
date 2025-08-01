@@ -338,47 +338,20 @@ class Engine:
         return True
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
-        logger.debug(f"Engine.infer: Starting inference with {len(feed_dict)} inputs, use_cuda_graph={use_cuda_graph}")
-        
-        # Copy input data to allocated tensors
         for name, buf in feed_dict.items():
-            if name not in self.tensors:
-                logger.warning(f"Engine.infer: Input '{name}' not found in allocated tensors. Available: {list(self.tensors.keys())}")
-                continue
-                
-            logger.debug(f"Engine.infer: Copying input '{name}' - shape: {buf.shape}, dtype: {buf.dtype}, range: [{buf.min().item():.6f}, {buf.max().item():.6f}]")
-            
-            # Check for NaN/Inf in inputs
-            if torch.isnan(buf).any():
-                nan_count = torch.isnan(buf).sum().item()
-                total_elements = buf.numel()
-                logger.warning(f"Engine.infer: NaN detected in input '{name}': {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%)")
-            if torch.isinf(buf).any():
-                inf_count = torch.isinf(buf).sum().item()
-                total_elements = buf.numel()
-                logger.warning(f"Engine.infer: Inf detected in input '{name}': {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%)")
-            if (buf == 0).all():
-                logger.debug(f"Engine.infer: All values in input '{name}' are zero (expected for some inputs)")
-            
             self.tensors[name].copy_(buf)
 
-        # Set tensor addresses for TensorRT context
-        logger.debug(f"Engine.infer: Setting tensor addresses for TensorRT context")
         for name, tensor in self.tensors.items():
             self.context.set_tensor_address(name, tensor.data_ptr())
 
-        # Execute inference
         if use_cuda_graph:
-            logger.debug(f"Engine.infer: Using CUDA Graph execution")
             if self.cuda_graph_instance is not None:
                 CUASSERT(cudart.cudaGraphLaunch(self.cuda_graph_instance, stream.ptr))
                 CUASSERT(cudart.cudaStreamSynchronize(stream.ptr))
             else:
-                logger.debug(f"Engine.infer: Capturing CUDA Graph (first run)")
                 # do inference before CUDA graph capture
                 noerror = self.context.execute_async_v3(stream.ptr)
                 if not noerror:
-                    logger.error(f"Engine.infer: Initial inference failed during CUDA graph capture")
                     raise ValueError("ERROR: inference failed.")
                 # capture cuda graph
                 CUASSERT(
@@ -388,35 +361,11 @@ class Engine:
                 self.graph = CUASSERT(cudart.cudaStreamEndCapture(stream.ptr))
                 self.cuda_graph_instance = CUASSERT(cudart.cudaGraphInstantiate(self.graph, 0))
         else:
-            logger.debug(f"Engine.infer: Using standard TensorRT execution")
             noerror = self.context.execute_async_v3(stream.ptr)
             if not noerror:
-                logger.error(f"Engine.infer: TensorRT inference execution failed")
                 raise ValueError("ERROR: inference failed.")
 
-        # Check output tensors
-        logger.debug(f"Engine.infer: Checking output tensors")
-        output_tensors = {}
-        for name, tensor in self.tensors.items():
-            if name not in feed_dict:  # This is an output tensor
-                logger.debug(f"Engine.infer: Output '{name}' - shape: {tensor.shape}, dtype: {tensor.dtype}, range: [{tensor.min().item():.6f}, {tensor.max().item():.6f}]")
-                
-                # Check for problematic values in outputs
-                if torch.isnan(tensor).any():
-                    nan_count = torch.isnan(tensor).sum().item()
-                    total_elements = tensor.numel()
-                    logger.error(f"Engine.infer: NaN detected in output '{name}': {nan_count}/{total_elements} ({100*nan_count/total_elements:.2f}%)")
-                if torch.isinf(tensor).any():
-                    inf_count = torch.isinf(tensor).sum().item()
-                    total_elements = tensor.numel()
-                    logger.error(f"Engine.infer: Inf detected in output '{name}': {inf_count}/{total_elements} ({100*inf_count/total_elements:.2f}%)")
-                if (tensor == 0).all():
-                    logger.error(f"Engine.infer: All values in output '{name}' are zero")
-                
-                output_tensors[name] = tensor
-        
-        logger.debug(f"Engine.infer: Inference completed, returning {len(output_tensors)} output tensors")
-        return output_tensors
+        return self.tensors
 
 
 def decode_images(images: torch.Tensor):
