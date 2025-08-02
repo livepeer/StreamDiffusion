@@ -47,7 +47,11 @@ class HandTrackingService {
   private processingFrame: boolean = false;
   private lastValues: Map<string, number> = new Map();
   private lastHandsDetected: Map<string, boolean> = new Map();
-  private readonly VALUE_CHANGE_THRESHOLD = 0.01; // Only send updates if value changes by more than this amount
+  private smoothedValues: Map<string, number> = new Map();
+  private lastUpdateTime: Map<string, number> = new Map();
+  private readonly VALUE_CHANGE_THRESHOLD = 0.003; // Very small threshold
+  private readonly SMOOTHING_FACTOR = 0.6; // More responsive smoothing
+  private readonly MAX_UPDATE_INTERVAL = 50; // Max 50ms between updates when hands are active
 
   async loadMediaPipeScript(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -126,6 +130,8 @@ class HandTrackingService {
     // Initialize tracking state for this callback
     this.lastValues.set(id, -1); // Use -1 to ensure first valid value triggers callback
     this.lastHandsDetected.set(id, false);
+    this.smoothedValues.set(id, 0);
+    this.lastUpdateTime.set(id, 0);
     
     // Start processing if this is the first callback and we're initialized
     if (this.callbacks.size === 1 && this.isInitialized && !this.isActive) {
@@ -137,6 +143,8 @@ class HandTrackingService {
     this.callbacks.delete(id);
     this.lastValues.delete(id);
     this.lastHandsDetected.delete(id);
+    this.smoothedValues.delete(id);
+    this.lastUpdateTime.delete(id);
     
     // Stop processing if no more callbacks
     if (this.callbacks.size === 0) {
@@ -145,12 +153,16 @@ class HandTrackingService {
   }
 
   private onResults(results: HandResults): void {
+    const currentTime = Date.now();
+    
     // Calculate distances for each registered callback
     this.callbacks.forEach((callback, callbackId) => {
       const lastValue = this.lastValues.get(callbackId) ?? -1;
       const lastHandsDetected = this.lastHandsDetected.get(callbackId) ?? false;
+      const lastSmoothedValue = this.smoothedValues.get(callbackId) ?? 0;
+      const lastUpdateTime = this.lastUpdateTime.get(callbackId) ?? 0;
       
-      let currentValue = 0;
+      let rawValue = 0;
       let handsCurrentlyDetected = false;
       
       if (results.multiHandLandmarks && callback.handIndex < results.multiHandLandmarks.length) {
@@ -172,19 +184,33 @@ class HandTrackingService {
           const normalizedDistance = Math.min(1.0, Math.max(0.0, distance / 0.25));
           
           // Apply sensitivity
-          currentValue = Math.min(1.0, normalizedDistance * callback.sensitivity);
+          rawValue = Math.min(1.0, normalizedDistance * callback.sensitivity);
         }
       }
       
-      // Only send value updates when:
-      // 1. Hands detection state changes (appeared/disappeared)
-      // 2. Hands are detected AND value changed significantly
-      const handsStateChanged = handsCurrentlyDetected !== lastHandsDetected;
-      const valueChangedSignificantly = Math.abs(currentValue - lastValue) >= this.VALUE_CHANGE_THRESHOLD;
+      // Apply exponential smoothing when hands are detected
+      let smoothedValue: number;
+      if (handsCurrentlyDetected) {
+        smoothedValue = (this.SMOOTHING_FACTOR * lastSmoothedValue) + ((1 - this.SMOOTHING_FACTOR) * rawValue);
+      } else {
+        smoothedValue = 0; // Reset immediately when hands disappear
+      }
       
-      if (handsStateChanged || (handsCurrentlyDetected && valueChangedSignificantly)) {
-        callback.onValueChange(currentValue);
-        this.lastValues.set(callbackId, currentValue);
+      // Update smoothed value
+      this.smoothedValues.set(callbackId, smoothedValue);
+      
+      // Send value updates when:
+      // 1. Hands detection state changes (appeared/disappeared)
+      // 2. Hands are detected AND (value changed OR enough time has passed)
+      const handsStateChanged = handsCurrentlyDetected !== lastHandsDetected;
+      const valueChangedSignificantly = Math.abs(smoothedValue - lastValue) >= this.VALUE_CHANGE_THRESHOLD;
+      const timeSinceLastUpdate = currentTime - lastUpdateTime;
+      const timeForUpdate = timeSinceLastUpdate >= this.MAX_UPDATE_INTERVAL;
+      
+      if (handsStateChanged || (handsCurrentlyDetected && (valueChangedSignificantly || timeForUpdate))) {
+        callback.onValueChange(smoothedValue);
+        this.lastValues.set(callbackId, smoothedValue);
+        this.lastUpdateTime.set(callbackId, currentTime);
       }
       
       // Update hands detection state
@@ -256,6 +282,8 @@ class HandTrackingService {
     this.callbacks.clear();
     this.lastValues.clear();
     this.lastHandsDetected.clear();
+    this.smoothedValues.clear();
+    this.lastUpdateTime.clear();
     this.isInitialized = false;
   }
 

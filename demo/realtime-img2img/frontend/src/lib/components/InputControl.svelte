@@ -344,25 +344,8 @@
     const scaledValue = control.min_value + (value * (control.max_value - control.min_value));
     control.current_value = scaledValue;
     
-    // Send parameter update to backend
-    if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.endsWith('_strength')) {
-      updateControlNetParameter(control, scaledValue);
-    } else if (control.parameter_name.startsWith('prompt_weight_')) {
-      updatePromptWeightParameter(control, scaledValue);
-    } else if (control.parameter_name.startsWith('seed_weight_')) {
-      updateSeedWeightParameter(control, scaledValue);
-    } else {
-      const endpoint = getParameterUpdateEndpoint(control.parameter_name);
-      if (endpoint) {
-        fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [getParameterKey(control.parameter_name)]: scaledValue })
-        }).catch(error => {
-          console.error('handleHandTrackingValueChange: Update failed:', error);
-        });
-      }
-    }
+    // Store pending update but don't send immediately - use same pattern as microphone control
+    control.pendingValue = scaledValue;
   }
 
   function getParameterUpdateEndpoint(parameterName: string): string | null {
@@ -472,6 +455,61 @@
     }
   }
 
+  async function startHandTrackingControl(control: any) {
+    // Initialize pending value tracking
+    control.pendingValue = null;
+    control.lastSentValue = null;
+    
+    // Set up controlled update interval like microphone control
+    const updateInterval = Math.max(50, control.update_rate * 1000);
+    control.intervalId = setInterval(async () => {
+      if (control.pendingValue !== null && control.pendingValue !== control.lastSentValue) {
+        try {
+          // Send parameter update to backend
+          if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.endsWith('_strength')) {
+            await updateControlNetParameter(control, control.pendingValue);
+          } else if (control.parameter_name.startsWith('prompt_weight_')) {
+            await updatePromptWeightParameter(control, control.pendingValue);
+          } else if (control.parameter_name.startsWith('seed_weight_')) {
+            await updateSeedWeightParameter(control, control.pendingValue);
+          } else {
+            const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+            if (endpoint) {
+              await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [getParameterKey(control.parameter_name)]: control.pendingValue })
+              });
+            }
+          }
+          control.lastSentValue = control.pendingValue;
+        } catch (error) {
+          console.error('startHandTrackingControl: Update failed:', error);
+        }
+      }
+    }, updateInterval);
+
+    control.is_active = true;
+    inputControlConfigs = [...inputControlConfigs];
+    statusMessage = `Started hand tracking control ${control.id}`;
+  }
+
+  function stopHandTrackingControl(control: any) {
+    // Clear interval like microphone control
+    if (control.intervalId) {
+      clearInterval(control.intervalId);
+      control.intervalId = null;
+    }
+    
+    // Clean up tracking state
+    control.pendingValue = null;
+    control.lastSentValue = null;
+    
+    control.is_active = false;
+    inputControlConfigs = [...inputControlConfigs];
+    statusMessage = `Stopped hand tracking control ${control.id}`;
+  }
+
   function removeInputControl(index: number) {
     const control = inputControlConfigs[index];
     if (control.is_active) {
@@ -491,17 +529,13 @@
       if (control.type === 'microphone') {
         stopMicrophoneControl(control);
       } else if (control.type === 'hand_tracking') {
-        control.is_active = false;
-        inputControlConfigs = [...inputControlConfigs];
-        statusMessage = `Stopped hand tracking control ${control.id}`;
+        stopHandTrackingControl(control);
       }
     } else {
       if (control.type === 'microphone') {
         startMicrophoneControl(control);
       } else if (control.type === 'hand_tracking') {
-        control.is_active = true;
-        inputControlConfigs = [...inputControlConfigs];
-        statusMessage = `Started hand tracking control ${control.id}`;
+        startHandTrackingControl(control);
       }
     }
   }
