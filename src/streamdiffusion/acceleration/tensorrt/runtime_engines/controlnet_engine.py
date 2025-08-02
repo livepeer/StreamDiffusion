@@ -49,7 +49,6 @@ class ControlNetModelEngine:
             self.mid_block_channels = 1280
             self.mid_downsample_factor = 8
         
-        # Cache for computed shapes
         self._shape_cache = {}
     
     def _resolve_output_shapes(self, batch_size: int, latent_height: int, latent_width: int) -> Dict[str, Tuple[int, ...]]:
@@ -118,10 +117,7 @@ class ControlNetModelEngine:
             use_cuda_graph=self.use_cuda_graph,
         )
         
-        if hasattr(self.stream, 'synchronize'):
-            self.stream.synchronize()
-        else:
-            torch.cuda.current_stream().synchronize()
+        self.stream.synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
         return down_blocks, mid_block
@@ -159,27 +155,18 @@ class HybridControlNet:
         self.stream = stream
         self.enable_pytorch_fallback = enable_pytorch_fallback
         
-        logger.debug(f"HybridControlNet.__init__: Initializing for model_id='{model_id}'")
-        logger.debug(f"HybridControlNet.__init__: Provided model_type='{model_type}'")
-        logger.debug(f"HybridControlNet.__init__: Has pytorch_model={pytorch_model is not None}")
-        
         # Use existing model detection if pytorch_model is available
         if pytorch_model is not None:
             try:
                 detected_type = detect_model_from_diffusers_unet(pytorch_model)
                 self.model_type = detected_type.lower()
-                logger.info(f"HybridControlNet.__init__: Model type detected from pytorch_model: '{self.model_type}' for {self.model_id}")
-                logger.info(f"ControlNet model type detected from pytorch_model: {self.model_type} for {self.model_id}")
+                logger.info(f"ControlNet model type detected: {self.model_type} for {self.model_id}")
             except Exception as e:
-                logger.warning(f"HybridControlNet.__init__: Model detection failed for {self.model_id}: {e}, using provided type: {model_type}")
                 logger.warning(f"Model detection failed for {self.model_id}: {e}, using provided type: {model_type}")
                 self.model_type = model_type.lower()
         else:
             self.model_type = model_type.lower()
-            logger.info(f"HybridControlNet.__init__: Using provided model type: '{self.model_type}' for {self.model_id}")
             logger.info(f"ControlNet using provided model type: {self.model_type} for {self.model_id}")
-        
-        logger.debug(f"HybridControlNet.__init__: Final model_type='{self.model_type}' for {self.model_id}")
         
         self.trt_engine: Optional[ControlNetModelEngine] = None
         self.use_tensorrt = False
@@ -192,67 +179,46 @@ class HybridControlNet:
         """Attempt to load TensorRT engine"""
         try:
             if self.engine_path and self.stream:
-                logger.info(f"HybridControlNet._try_load_tensorrt_engine: Loading TensorRT ControlNet engine: {self.engine_path}")
-                logger.debug(f"HybridControlNet._try_load_tensorrt_engine: Passing model_type='{self.model_type}' to ControlNetModelEngine")
                 logger.info(f"Loading TensorRT ControlNet engine: {self.engine_path}")
-                logger.info(f"ControlNet model type detected: {self.model_type} for {self.model_id}")
                 self.trt_engine = ControlNetModelEngine(self.engine_path, self.stream, model_type=self.model_type)
                 self.use_tensorrt = True
-                logger.info(f"HybridControlNet._try_load_tensorrt_engine: Successfully loaded TensorRT ControlNet engine for {self.model_id}")
                 logger.info(f"Successfully loaded TensorRT ControlNet engine for {self.model_id}")
                 return True
         except Exception as e:
             self.fallback_reason = f"TensorRT engine load failed: {e}"
-            logger.warning(f"HybridControlNet._try_load_tensorrt_engine: Failed to load TensorRT ControlNet engine for {self.model_id}: {e}")
             logger.warning(f"Failed to load TensorRT ControlNet engine for {self.model_id}: {e}")
-            logger.debug(f"TensorRT ControlNet engine load failure details:", exc_info=True)
         
         return False
     
     def __call__(self, *args, **kwargs) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """Forward pass with automatic TensorRT/PyTorch fallback"""
-        logger.debug(f"HybridControlNet.__call__: Starting inference for {self.model_id}")
-        logger.debug(f"HybridControlNet.__call__: use_tensorrt={self.use_tensorrt}, trt_engine is not None={self.trt_engine is not None}")
-        
         if self.use_tensorrt and self.trt_engine:
             try:
-                logger.debug(f"HybridControlNet.__call__: Attempting TensorRT inference for {self.model_id}")
-                result = self.trt_engine(*args, **kwargs)
-                logger.debug(f"HybridControlNet.__call__: TensorRT inference successful for {self.model_id}")
-                return result
+                return self.trt_engine(*args, **kwargs)
             except Exception as e:
                 self.use_tensorrt = False
                 self.fallback_reason = f"Runtime error: {e}"
-                logger.warning(f"HybridControlNet.__call__: TensorRT ControlNet runtime error for {self.model_id}, falling back to PyTorch: {e}")
                 logger.warning(f"TensorRT ControlNet runtime error for {self.model_id}, falling back to PyTorch: {e}")
-                logger.debug(f"TensorRT ControlNet runtime error details:", exc_info=True)
         
         if not self.enable_pytorch_fallback:
             raise RuntimeError(f"TensorRT acceleration failed for ControlNet {self.model_id} and PyTorch fallback is disabled. Error: {self.fallback_reason}")
         
         if self.pytorch_model is None:
-            logger.error(f"HybridControlNet.__call__: No PyTorch fallback available for ControlNet {self.model_id}")
             logger.error(f"No PyTorch fallback available for ControlNet {self.model_id}")
             raise RuntimeError(f"No PyTorch fallback available for ControlNet {self.model_id}")
         
-        logger.debug(f"HybridControlNet.__call__: Using PyTorch fallback for {self.model_id}")
-        logger.debug(f"Using PyTorch ControlNet for {self.model_id}")
         return self._call_pytorch_model(*args, **kwargs)
     
     def _call_pytorch_model(self, *args, **kwargs) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """Call PyTorch ControlNet model with proper output formatting"""
-        logger.debug(f"Executing PyTorch ControlNet model for {self.model_id}")
         result = self.pytorch_model(*args, **kwargs)
         
         if isinstance(result, tuple) and len(result) == 2:
-            logger.debug(f"PyTorch ControlNet returned standard tuple format")
             return result
         elif hasattr(result, 'down_block_res_samples') and hasattr(result, 'mid_block_res_sample'):
-            logger.debug(f"PyTorch ControlNet returned attribute-based format")
             return result.down_block_res_samples, result.mid_block_res_sample
         else:
             if isinstance(result, (list, tuple)) and len(result) >= 13:
-                logger.debug(f"PyTorch ControlNet returned list format with {len(result)} elements")
                 return list(result[:12]), result[12]
             else:
                 logger.error(f"Unexpected PyTorch ControlNet output format for {self.model_id}: {type(result)}")
