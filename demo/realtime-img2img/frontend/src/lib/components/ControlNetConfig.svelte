@@ -41,6 +41,78 @@
     }
   }
 
+  async function addControlNet(index: number) {
+    // Get current UI strength value
+    const currentStrength = controlnetInfo?.controlnets?.[index]?.strength ?? 1.0;
+    
+    try {
+      const response = await fetch('/api/controlnet/add', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          index: index,
+          conditioning_scale: currentStrength,
+        }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('addControlNet: Failed to add controlnet:', result.detail);
+        // Revert UI state on failure
+        if (controlnetInfo && controlnetInfo.controlnets) {
+          controlnetInfo.controlnets[index].enabled = false;
+          controlnetInfo = { ...controlnetInfo };
+        }
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('addControlNet: Add failed:', error);
+      // Revert UI state on failure
+      if (controlnetInfo && controlnetInfo.controlnets) {
+        controlnetInfo.controlnets[index].enabled = false;
+        controlnetInfo = { ...controlnetInfo };
+      }
+      return false;
+    }
+  }
+
+  async function removeControlNet(index: number) {
+    try {
+      const response = await fetch('/api/controlnet/remove', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          index: index,
+        }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('removeControlNet: Failed to remove controlnet:', result.detail);
+        // Revert UI state on failure
+        if (controlnetInfo && controlnetInfo.controlnets) {
+          controlnetInfo.controlnets[index].enabled = true;
+          controlnetInfo = { ...controlnetInfo };
+        }
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('removeControlNet: Remove failed:', error);
+      // Revert UI state on failure
+      if (controlnetInfo && controlnetInfo.controlnets) {
+        controlnetInfo.controlnets[index].enabled = true;
+        controlnetInfo = { ...controlnetInfo };
+      }
+      return false;
+    }
+  }
+
   function handleStrengthChange(index: number, event: Event) {
     const target = event.target as HTMLInputElement;
     const strength = parseFloat(target.value);
@@ -52,6 +124,28 @@
     }
     
     updateControlNetStrength(index, strength);
+  }
+
+  async function handleEnabledChange(index: number, event: Event) {
+    const target = event.target as HTMLInputElement;
+    const enabled = target.checked;
+    
+    // Update local state optimistically for responsiveness
+    if (controlnetInfo && controlnetInfo.controlnets) {
+      controlnetInfo.controlnets[index].enabled = enabled;
+      controlnetInfo = { ...controlnetInfo }; // Trigger reactivity
+    }
+    
+    // Call add or remove based on enabled state
+    let success = false;
+    if (enabled) {
+      success = await addControlNet(index);
+    } else {
+      success = await removeControlNet(index);
+    }
+    
+    // If API call failed, the state was already reverted in the function
+    // No additional action needed here
   }
 
   function handleTIndexChange(index: number, event: Event) {
@@ -184,9 +278,17 @@
             {#each controlnetInfo.controlnets as controlnet}
               <div class="bg-gray-50 dark:bg-gray-700 rounded p-2 space-y-1">
                 <div class="flex items-center justify-between">
-                  <span class="text-xs font-medium truncate">
-                    {controlnet.name}
-                  </span>
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={controlnet.enabled !== false}
+                      on:change={(e) => handleEnabledChange(controlnet.index, e)}
+                      class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                    />
+                    <span class="text-xs font-medium truncate">
+                      {controlnet.name}
+                    </span>
+                  </div>
                   <span class="text-xs text-gray-600 dark:text-gray-400">
                     {controlnet.strength.toFixed(2)}
                   </span>
@@ -199,6 +301,7 @@
                   value={controlnet.strength}
                   on:input={(e) => handleStrengthChange(controlnet.index, e)}
                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
+                  disabled={controlnet.enabled === false}
                 />
                 <p class="text-xs text-gray-500">{controlnet.preprocessor}</p>
               </div>

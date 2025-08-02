@@ -1565,8 +1565,8 @@ class StreamDiffusionWrapper:
                     'preprocessor_params': preprocessor_params or {}
                 }
 
-                # Add ControlNet with control image if provided
-                controlnet_pipeline.add_controlnet(cn_config, control_image)
+                # Add ControlNet with control image if provided (immediate during initialization)
+                controlnet_pipeline.add_controlnet(cn_config, control_image, immediate=True)
                 logger.info(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
             except Exception as e:
                 logger.error(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
@@ -1582,8 +1582,22 @@ class StreamDiffusionWrapper:
                        conditioning_scale: float = 1.0,
                        control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
                        enabled: bool = True,
-                       preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
-        """Forward add_controlnet call to the underlying ControlNet pipeline"""
+                       preprocessor_params: Optional[Dict[str, Any]] = None,
+                       immediate: bool = False) -> Optional[int]:
+        """Add a ControlNet to the pipeline
+        
+        Args:
+            model_id: ControlNet model ID
+            preprocessor: Preprocessor type (optional)
+            conditioning_scale: ControlNet conditioning scale
+            control_image: Control image (optional)
+            enabled: Whether ControlNet is enabled
+            preprocessor_params: Preprocessor parameters
+            immediate: If True, add immediately (blocking). If False, queue for deferred execution.
+        
+        Returns:
+            ControlNet index if immediate=True, None if deferred
+        """
         if not self.use_controlnet:
             raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
@@ -1594,7 +1608,7 @@ class StreamDiffusionWrapper:
             'enabled': enabled,
             'preprocessor_params': preprocessor_params or {}
         }
-        return self.stream.add_controlnet(cn_config, control_image)
+        return self.stream.add_controlnet(cn_config, control_image, immediate=immediate)
 
     def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
         """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
@@ -1609,6 +1623,32 @@ class StreamDiffusionWrapper:
             raise RuntimeError("update_controlnet_scale: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
         self.stream.update_controlnet_scale(index, scale)
+
+    def remove_controlnet(self, index: int, immediate: bool = False) -> None:
+        """Remove a ControlNet from the pipeline
+        
+        Args:
+            index: Index of ControlNet to remove
+            immediate: If True, remove immediately (blocking). If False, queue for deferred execution.
+        """
+        if not self.use_controlnet:
+            raise RuntimeError("remove_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
+
+        self.stream.remove_controlnet(index, immediate=immediate)
+
+    def get_queued_controlnet_operations_count(self) -> int:
+        """Get the number of queued ControlNet operations"""
+        if not self.use_controlnet:
+            return 0
+        
+        return self.stream.get_queued_operations_count()
+    
+    def is_controlnet_background_worker_alive(self) -> bool:
+        """Check if ControlNet background operations worker is alive"""
+        if not self.use_controlnet:
+            return False
+        
+        return self.stream.is_background_worker_alive()
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""

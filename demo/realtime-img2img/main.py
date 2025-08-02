@@ -586,6 +586,233 @@ class App:
                 logging.error(f"update_controlnet_strength: Failed to update strength: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update strength: {str(e)}")
 
+        @self.app.post("/api/controlnet/add")
+        async def add_controlnet(request: Request):
+            """Add a ControlNet to the pipeline"""
+            try:
+                data = await request.json()
+                config_index = data.get("index")
+                ui_conditioning_scale = data.get("conditioning_scale")  # Optional override from UI
+                
+                if config_index is None:
+                    raise HTTPException(status_code=400, detail="Missing index parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                if not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config):
+                    raise HTTPException(status_code=400, detail="ControlNet configuration not available")
+                
+                # Get the controlnet config from the loaded config
+                controlnets = self.pipeline.config.get('controlnets', [])
+                if config_index >= len(controlnets):
+                    raise HTTPException(status_code=400, detail=f"ControlNet config index {config_index} out of range")
+                
+                controlnet_config = controlnets[config_index]
+                model_id = controlnet_config['model_id']
+                
+                # Initialize tracking if needed
+                if not hasattr(self, '_active_controlnet_models'):
+                    self._active_controlnet_models = set()
+                    # Initialize with currently loaded controlnets from config
+                    for i, cfg in enumerate(controlnets):
+                        if cfg.get('enabled', True):
+                            self._active_controlnet_models.add(cfg['model_id'])
+                
+                # Check if this controlnet is already active
+                if model_id in self._active_controlnet_models:
+                    return JSONResponse({
+                        "status": "success", 
+                        "message": f"ControlNet {model_id} already active",
+                        "model_id": model_id,
+                        "config_index": config_index
+                    })
+                
+                # For debugging: check current state - look at the actual controlnet pipeline
+                wrapper = self.pipeline.stream
+                current_count = 0
+                if hasattr(wrapper, 'stream') and hasattr(wrapper.stream, 'controlnets'):
+                    current_count = len(wrapper.stream.controlnets)
+                elif hasattr(wrapper, 'controlnets'):
+                    current_count = len(wrapper.controlnets)
+                
+                logging.info(f"add_controlnet: Current pipeline has {current_count} controlnets")
+                logging.info(f"add_controlnet: Attempting to add config_index {config_index} (model: {model_id})")
+                
+                # Add the controlnet to the pipeline using the wrapper's method
+                if hasattr(self.pipeline, 'stream') and hasattr(self.pipeline.stream, 'add_controlnet'):
+                    # Use the wrapper's add_controlnet method directly (like in video test)
+                    logging.info(f"add_controlnet: Adding with model_id: {model_id}")
+                    # Use UI value if provided, otherwise fall back to config value
+                    conditioning_scale = ui_conditioning_scale if ui_conditioning_scale is not None else controlnet_config.get('conditioning_scale', 1.0)
+                    
+                    self.pipeline.stream.add_controlnet(
+                        model_id=model_id,
+                        preprocessor=controlnet_config.get('preprocessor'),
+                        conditioning_scale=conditioning_scale,
+                        enabled=True,
+                        preprocessor_params=controlnet_config.get('preprocessor_params', {})
+                    )
+                    logging.info(f"add_controlnet: Used conditioning_scale: {conditioning_scale} (UI: {ui_conditioning_scale}, Config: {controlnet_config.get('conditioning_scale', 1.0)})")
+                    self._active_controlnet_models.add(model_id)
+                    logging.info(f"add_controlnet: Successfully queued addition of {model_id}")
+                    
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Queued addition of ControlNet {model_id}",
+                    "model_id": model_id,
+                    "config_index": config_index,
+                    "action": "add",
+                    "conditioning_scale": conditioning_scale
+                })
+                
+            except Exception as e:
+                logging.error(f"add_controlnet: Failed to add controlnet: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add controlnet: {str(e)}")
+
+        @self.app.post("/api/controlnet/remove")
+        async def remove_controlnet(request: Request):
+            """Remove a ControlNet from the pipeline"""
+            try:
+                data = await request.json()
+                config_index = data.get("index")
+                
+                if config_index is None:
+                    raise HTTPException(status_code=400, detail="Missing index parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                if not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config):
+                    raise HTTPException(status_code=400, detail="ControlNet configuration not available")
+                
+                # Get the controlnet config from the loaded config
+                controlnets = self.pipeline.config.get('controlnets', [])
+                if config_index >= len(controlnets):
+                    raise HTTPException(status_code=400, detail=f"ControlNet config index {config_index} out of range")
+                
+                controlnet_config = controlnets[config_index]
+                model_id = controlnet_config['model_id']
+                
+                # Initialize tracking if needed
+                if not hasattr(self, '_active_controlnet_models'):
+                    self._active_controlnet_models = set()
+                    for i, cfg in enumerate(controlnets):
+                        if cfg.get('enabled', True):
+                            self._active_controlnet_models.add(cfg['model_id'])
+                
+                # Check if this controlnet is active
+                if model_id not in self._active_controlnet_models:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"ControlNet {model_id} already inactive",
+                        "model_id": model_id,
+                        "config_index": config_index
+                    })
+                
+                # Get current pipeline state
+                wrapper = self.pipeline.stream
+                current_count = 0
+                if hasattr(wrapper, 'stream') and hasattr(wrapper.stream, 'controlnets'):
+                    current_count = len(wrapper.stream.controlnets)
+                elif hasattr(wrapper, 'controlnets'):
+                    current_count = len(wrapper.controlnets)
+                
+                logging.info(f"remove_controlnet: Current pipeline has {current_count} controlnets")
+                logging.info(f"remove_controlnet: Attempting to remove config_index {config_index} (model: {model_id})")
+                
+                # Find the pipeline index that corresponds to this model_id
+                # This is more robust than assuming config_index == pipeline_index
+                pipeline_index = -1
+                if hasattr(wrapper, 'stream') and hasattr(wrapper.stream, 'controlnets'):
+                    for i, controlnet in enumerate(wrapper.stream.controlnets):
+                        if hasattr(controlnet, 'model_id') and controlnet.model_id == model_id:
+                            pipeline_index = i
+                            break
+                elif hasattr(wrapper, 'controlnets'):
+                    for i, controlnet in enumerate(wrapper.controlnets):
+                        if hasattr(controlnet, 'model_id') and controlnet.model_id == model_id:
+                            pipeline_index = i
+                            break
+                
+                # Remove controlnet using the wrapper's method
+                if hasattr(wrapper, 'remove_controlnet') and pipeline_index >= 0:
+                    logging.info(f"remove_controlnet: Removing pipeline index {pipeline_index} for model {model_id}")
+                    wrapper.remove_controlnet(pipeline_index)
+                    self._active_controlnet_models.discard(model_id)
+                    logging.info(f"remove_controlnet: Successfully queued removal of {model_id}")
+                elif current_count > 0:
+                    # Fallback: remove by config_index if model lookup failed
+                    fallback_index = min(config_index, current_count - 1)
+                    logging.warning(f"remove_controlnet: Model lookup failed, using fallback index {fallback_index}")
+                    wrapper.remove_controlnet(fallback_index)
+                    self._active_controlnet_models.discard(model_id)
+                    logging.info(f"remove_controlnet: Successfully queued removal using fallback")
+                else:
+                    logging.warning(f"remove_controlnet: No controlnets found to remove")
+                    
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Queued removal of ControlNet {model_id}",
+                    "model_id": model_id,
+                    "config_index": config_index,
+                    "action": "remove",
+                    "pipeline_index": pipeline_index if pipeline_index >= 0 else None
+                })
+                
+            except Exception as e:
+                logging.error(f"remove_controlnet: Failed to remove controlnet: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove controlnet: {str(e)}")
+
+        @self.app.get("/api/controlnet/queue-status")
+        async def get_controlnet_queue_status():
+            """Get the status of the ControlNet operation queue"""
+            try:
+                if not self.pipeline or not hasattr(self.pipeline, 'stream'):
+                    return JSONResponse({
+                        "status": "error",
+                        "message": "Pipeline not available"
+                    })
+                
+                wrapper = self.pipeline.stream
+                
+                # Check if this is the correct wrapper object
+                queue_count = 0
+                background_worker_alive = False
+                
+                if hasattr(wrapper, 'get_queued_operations_count'):
+                    queue_count = wrapper.get_queued_operations_count()
+                elif hasattr(wrapper, 'stream') and hasattr(wrapper.stream, 'get_queued_operations_count'):
+                    # The wrapper.stream is the actual controlnet pipeline
+                    queue_count = wrapper.stream.get_queued_operations_count()
+                    if hasattr(wrapper.stream, 'is_background_worker_alive'):
+                        background_worker_alive = wrapper.stream.is_background_worker_alive()
+                
+                # Get active controlnet count from the actual controlnet pipeline
+                active_count = 0
+                if hasattr(wrapper, 'stream') and hasattr(wrapper.stream, 'controlnets'):
+                    active_count = len(wrapper.stream.controlnets)
+                elif hasattr(wrapper, 'controlnets'):
+                    active_count = len(wrapper.controlnets)
+                
+                active_models = getattr(self, '_active_controlnet_models', set())
+                wrapper_type = type(wrapper).__name__
+                
+                return JSONResponse({
+                    "status": "success",
+                    "wrapper_type": wrapper_type,
+                    "queued_operations": queue_count,
+                    "active_controlnets": active_count,
+                    "background_worker_alive": background_worker_alive,
+                    "tracked_models": list(active_models),
+                    "has_stream_attr": hasattr(wrapper, 'stream'),
+                    "has_controlnets_attr": hasattr(wrapper, 'controlnets')
+                })
+                
+            except Exception as e:
+                logging.error(f"get_controlnet_queue_status: Failed to get status: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get queue status: {str(e)}")
+
         @self.app.post("/api/ipadapter/upload-style-image")
         async def upload_style_image(file: UploadFile = File(...)):
             """Upload a style image for IPAdapter"""
