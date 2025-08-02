@@ -541,9 +541,9 @@
     <div class="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
       
       <!-- Left Panel - Input and Basic Controls -->
-      <div class="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-y-auto">
-        <!-- Panel Header -->
-        <div class="flex items-center justify-between">
+      <div class="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-hidden">
+        <!-- Panel Header (Fixed) -->
+        <div class="flex items-center justify-between flex-shrink-0">
           <h2 class="text-lg font-semibold">Input & Controls</h2>
           <button 
             on:click={() => leftPanelCollapsed = !leftPanelCollapsed}
@@ -554,9 +554,9 @@
         </div>
         
         {#if !leftPanelCollapsed}
-          <!-- Video Input (Image Mode Only) -->
+          <!-- Video Input (Fixed - Always Visible in Image Mode) -->
           {#if isImageMode}
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex-shrink-0">
               <h3 class="text-md font-medium mb-3">Video Input</h3>
               <VideoInput
                 width={Number(pipelineParams.width.default)}
@@ -566,46 +566,49 @@
             </div>
           {/if}
 
-          <!-- Resolution Picker -->
-          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-            <button 
-              on:click={() => showResolutionPicker = !showResolutionPicker}
-              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
-            >
-              <h3 class="text-md font-medium">Resolution</h3>
-              <span class="text-sm">{showResolutionPicker ? '−' : '+'}</span>
-            </button>
-            {#if showResolutionPicker}
-              <div class="p-4 pt-0">
-                <ResolutionPicker {currentResolution} {pipelineParams} />
-              </div>
-            {/if}
-          </div>
+          <!-- Scrollable Controls Section -->
+          <div class="flex flex-col gap-4 overflow-y-auto flex-1 min-h-0">
+            <!-- Resolution Picker -->
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+              <button 
+                on:click={() => showResolutionPicker = !showResolutionPicker}
+                class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
+              >
+                <h3 class="text-md font-medium">Resolution</h3>
+                <span class="text-sm">{showResolutionPicker ? '−' : '+'}</span>
+              </button>
+              {#if showResolutionPicker}
+                <div class="p-4 pt-0">
+                  <ResolutionPicker {currentResolution} {pipelineParams} />
+                </div>
+              {/if}
+            </div>
 
-          <!-- Unified Blending Control -->
-          <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-            <button 
-              on:click={() => showPromptBlending = !showPromptBlending}
-              class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
-            >
-              <h3 class="text-md font-medium">Blending Controls</h3>
-              <span class="text-sm">{showPromptBlending ? '−' : '+'}</span>
-            </button>
-            {#if showPromptBlending}
-              <div class="p-4 pt-0">
-                <BlendingControl 
-                  {promptBlendingConfig} 
-                  {seedBlendingConfig}
-                  {normalizePromptWeights} 
-                  {normalizeSeedWeights}
-                  currentPrompt={$pipelineValues.prompt}
-                />
-              </div>
-            {/if}
-          </div>
+            <!-- Unified Blending Control -->
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+              <button 
+                on:click={() => showPromptBlending = !showPromptBlending}
+                class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
+              >
+                <h3 class="text-md font-medium">Blending Controls</h3>
+                <span class="text-sm">{showPromptBlending ? '−' : '+'}</span>
+              </button>
+              {#if showPromptBlending}
+                <div class="p-4 pt-0">
+                  <BlendingControl 
+                    {promptBlendingConfig} 
+                    {seedBlendingConfig}
+                    {normalizePromptWeights} 
+                    {normalizeSeedWeights}
+                    currentPrompt={$pipelineValues.prompt}
+                  />
+                </div>
+              {/if}
+            </div>
 
-          <!-- Input Controls (Microphone & Hand Tracking) -->
-          <InputControl />
+            <!-- Input Controls (Microphone & Hand Tracking) -->
+            <InputControl />
+          </div>
         {/if}
       </div>
 

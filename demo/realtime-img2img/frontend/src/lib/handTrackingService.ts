@@ -44,6 +44,7 @@ class HandTrackingService {
   private isInitialized: boolean = false;
   private isActive: boolean = false;
   private callbacks: Map<string, HandTrackingCallback> = new Map();
+  private handDetectionState: Map<string, boolean> = new Map();
   private processingFrame: boolean = false;
 
   async loadMediaPipeScript(): Promise<void> {
@@ -120,6 +121,7 @@ class HandTrackingService {
 
   registerCallback(id: string, callback: HandTrackingCallback): void {
     this.callbacks.set(id, callback);
+    this.handDetectionState.set(id, false); // Initialize as no hand detected
     
     // Start processing if this is the first callback and we're initialized
     if (this.callbacks.size === 1 && this.isInitialized && !this.isActive) {
@@ -129,6 +131,7 @@ class HandTrackingService {
 
   unregisterCallback(id: string): void {
     this.callbacks.delete(id);
+    this.handDetectionState.delete(id);
     
     // Stop processing if no more callbacks
     if (this.callbacks.size === 0) {
@@ -138,7 +141,9 @@ class HandTrackingService {
 
   private onResults(results: HandResults): void {
     // Calculate distances for each registered callback
-    this.callbacks.forEach((callback) => {
+    this.callbacks.forEach((callback, callbackId) => {
+      const wasHandDetected = this.handDetectionState.get(callbackId) || false;
+      
       if (results.multiHandLandmarks && callback.handIndex < results.multiHandLandmarks.length) {
         const landmarks = results.multiHandLandmarks[callback.handIndex];
         
@@ -147,6 +152,9 @@ class HandTrackingService {
         const indexTip = landmarks[8];
         
         if (thumbTip && indexTip) {
+          // Hand is detected
+          this.handDetectionState.set(callbackId, true);
+          
           // Calculate distance
           const distance = Math.sqrt(
             Math.pow(thumbTip.x - indexTip.x, 2) + 
@@ -163,8 +171,13 @@ class HandTrackingService {
           callback.onValueChange(sensitiveDistance);
         }
       } else {
-        // Hand index not found, reset distance
-        callback.onValueChange(0);
+        // Hand index not found
+        if (wasHandDetected) {
+          // Hand was detected before but is now lost - send minimum value once
+          this.handDetectionState.set(callbackId, false);
+          callback.onValueChange(0);
+        }
+        // If hand was already not detected, don't send any updates
       }
 
       // Send hands data for visualization if callback wants it
@@ -231,6 +244,7 @@ class HandTrackingService {
     }
     
     this.callbacks.clear();
+    this.handDetectionState.clear();
     this.isInitialized = false;
   }
 
