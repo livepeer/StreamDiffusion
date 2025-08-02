@@ -44,8 +44,10 @@ class HandTrackingService {
   private isInitialized: boolean = false;
   private isActive: boolean = false;
   private callbacks: Map<string, HandTrackingCallback> = new Map();
-  private handDetectionState: Map<string, boolean> = new Map();
   private processingFrame: boolean = false;
+  private lastValues: Map<string, number> = new Map();
+  private lastHandsDetected: Map<string, boolean> = new Map();
+  private readonly VALUE_CHANGE_THRESHOLD = 0.01; // Only send updates if value changes by more than this amount
 
   async loadMediaPipeScript(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -121,7 +123,9 @@ class HandTrackingService {
 
   registerCallback(id: string, callback: HandTrackingCallback): void {
     this.callbacks.set(id, callback);
-    this.handDetectionState.set(id, false); // Initialize as no hand detected
+    // Initialize tracking state for this callback
+    this.lastValues.set(id, -1); // Use -1 to ensure first valid value triggers callback
+    this.lastHandsDetected.set(id, false);
     
     // Start processing if this is the first callback and we're initialized
     if (this.callbacks.size === 1 && this.isInitialized && !this.isActive) {
@@ -131,7 +135,8 @@ class HandTrackingService {
 
   unregisterCallback(id: string): void {
     this.callbacks.delete(id);
-    this.handDetectionState.delete(id);
+    this.lastValues.delete(id);
+    this.lastHandsDetected.delete(id);
     
     // Stop processing if no more callbacks
     if (this.callbacks.size === 0) {
@@ -142,19 +147,21 @@ class HandTrackingService {
   private onResults(results: HandResults): void {
     // Calculate distances for each registered callback
     this.callbacks.forEach((callback, callbackId) => {
-      const wasHandDetected = this.handDetectionState.get(callbackId) || false;
+      const lastValue = this.lastValues.get(callbackId) ?? -1;
+      const lastHandsDetected = this.lastHandsDetected.get(callbackId) ?? false;
+      
+      let currentValue = 0;
+      let handsCurrentlyDetected = false;
       
       if (results.multiHandLandmarks && callback.handIndex < results.multiHandLandmarks.length) {
         const landmarks = results.multiHandLandmarks[callback.handIndex];
+        handsCurrentlyDetected = true;
         
         // Get thumb tip (landmark 4) and index finger tip (landmark 8)
         const thumbTip = landmarks[4];
         const indexTip = landmarks[8];
         
         if (thumbTip && indexTip) {
-          // Hand is detected
-          this.handDetectionState.set(callbackId, true);
-          
           // Calculate distance
           const distance = Math.sqrt(
             Math.pow(thumbTip.x - indexTip.x, 2) + 
@@ -165,20 +172,23 @@ class HandTrackingService {
           const normalizedDistance = Math.min(1.0, Math.max(0.0, distance / 0.25));
           
           // Apply sensitivity
-          const sensitiveDistance = Math.min(1.0, normalizedDistance * callback.sensitivity);
-          
-          // Trigger callback
-          callback.onValueChange(sensitiveDistance);
+          currentValue = Math.min(1.0, normalizedDistance * callback.sensitivity);
         }
-      } else {
-        // Hand index not found
-        if (wasHandDetected) {
-          // Hand was detected before but is now lost - send minimum value once
-          this.handDetectionState.set(callbackId, false);
-          callback.onValueChange(0);
-        }
-        // If hand was already not detected, don't send any updates
       }
+      
+      // Only send value updates when:
+      // 1. Hands detection state changes (appeared/disappeared)
+      // 2. Hands are detected AND value changed significantly
+      const handsStateChanged = handsCurrentlyDetected !== lastHandsDetected;
+      const valueChangedSignificantly = Math.abs(currentValue - lastValue) >= this.VALUE_CHANGE_THRESHOLD;
+      
+      if (handsStateChanged || (handsCurrentlyDetected && valueChangedSignificantly)) {
+        callback.onValueChange(currentValue);
+        this.lastValues.set(callbackId, currentValue);
+      }
+      
+      // Update hands detection state
+      this.lastHandsDetected.set(callbackId, handsCurrentlyDetected);
 
       // Send hands data for visualization if callback wants it
       if (callback.onHandsData) {
@@ -244,7 +254,8 @@ class HandTrackingService {
     }
     
     this.callbacks.clear();
-    this.handDetectionState.clear();
+    this.lastValues.clear();
+    this.lastHandsDetected.clear();
     this.isInitialized = false;
   }
 
