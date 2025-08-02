@@ -160,8 +160,6 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
         'compatibility_info': compatibility_info,
     }
 
-    logger.debug(f"[detect_model] {result}")
-
     return result
 
 

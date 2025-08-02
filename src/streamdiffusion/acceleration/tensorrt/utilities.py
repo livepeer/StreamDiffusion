@@ -173,7 +173,6 @@ class Engine:
             # Constant nodes in ONNX do not have inputs but have a constant output
             if n.op == "Constant":
                 name = map_name(n.outputs[0].name)
-                logger.debug(f"Add Constant {name}")
                 add_to_map(refit_dict, name, n.outputs[0].values)
 
             # Handle scale and bias weights
@@ -261,11 +260,8 @@ class Engine:
     def allocate_buffers(self, shape_dict=None, device="cuda"):
         # Check if we can reuse existing buffers (OPTIMIZATION)
         if self._can_reuse_buffers(shape_dict, device):
-            logger.debug(f"Engine.allocate_buffers: Reusing existing buffers")
             return
         
-        logger.debug(f"Engine.allocate_buffers: Allocating new buffers on {device} with {self.engine.num_io_tensors} I/O tensors")
-            
         # Clear existing buffers before reallocating
         self.tensors.clear()
         
@@ -280,8 +276,6 @@ class Engine:
             dtype_np = trt.nptype(self.engine.get_tensor_dtype(name))
             mode = self.engine.get_tensor_mode(name)
 
-            logger.debug(f"Engine.allocate_buffers: Tensor[{idx}] '{name}' - shape: {shape}, dtype: {dtype_np}, mode: {mode}")
-
             if mode == trt.TensorIOMode.INPUT:
                 self.context.set_input_shape(name, shape)
 
@@ -293,7 +287,6 @@ class Engine:
         # Cache allocation parameters for reuse check
         self._last_shape_dict = shape_dict.copy() if shape_dict else None
         self._last_device = device
-        logger.debug(f"Engine.allocate_buffers: Buffer allocation completed")
     
     def _can_reuse_buffers(self, shape_dict=None, device="cuda"):
         """
@@ -508,12 +501,10 @@ def export_onnx(
 
     # Detect if this is an SDXL model via detect_model
     if hasattr(model, 'unet'):
-        logger.debug(f"Found UNET, detecting model from {model.unet.__class__.__name__}")
         detection_result = detect_model(model.unet)
         if detection_result is not None:
             is_sdxl = detection_result.get('is_sdxl', False)
     elif hasattr(model, 'config'):
-        logger.debug(f"Detecting model directly from {model.__class__.__name__}")
         detection_result = detect_model(model)
         if detection_result is not None:
             is_sdxl = detection_result.get('is_sdxl', False)
@@ -575,8 +566,6 @@ def export_onnx(
             
             # Check if model is large enough to need external data
             if onnx_model.ByteSize() > 2147483648:  # 2GB
-                logger.debug(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - converting to external data format")
-                
                 # Create directory for external data
                 onnx_dir = os.path.dirname(onnx_path)
                 
@@ -590,8 +579,6 @@ def export_onnx(
                     convert_attribute=False,
                 )
                 logger.info(f"Converted to external data format with weights in weights.pb")
-            else:
-                logger.debug(f"   Model size: {onnx_model.ByteSize() / (1024**3):.2f} GB - keeping standard format")
             
             del onnx_model
     del wrapped_model
@@ -613,9 +600,6 @@ def optimize_onnx(
     uses_external_data = len(external_data_files) > 0
     
     if uses_external_data:
-        logger.debug(f"Optimizing ONNX model with external data format...")
-        logger.debug(f"   Found {len(external_data_files)} external data files")
-        
         # Load model with external data
         onnx_model = onnx.load(onnx_path, load_external_data=True)
         onnx_opt_graph = model_data.optimize(onnx_model)
@@ -631,7 +615,6 @@ def optimize_onnx(
                     os.remove(os.path.join(opt_dir, f))
         
         # Save optimized model with external data format
-        logger.debug(f"Saving optimized model with external data to: {onnx_opt_path}")
         onnx.save_model(
             onnx_opt_graph,
             onnx_opt_path,
@@ -643,7 +626,6 @@ def optimize_onnx(
         logger.info(f"ONNX optimization complete with external data")
         
     else:
-        logger.debug(f"Optimizing ONNX model (standard format)...")
         # Standard optimization for smaller models
         onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
         onnx.save(onnx_opt_graph, onnx_opt_path)
