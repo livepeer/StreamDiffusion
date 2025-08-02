@@ -2,6 +2,7 @@ from typing import *
 
 import torch
 import logging
+import os
 
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionOutput
 from diffusers.models.autoencoders.autoencoder_tiny import AutoencoderTinyOutput
@@ -21,11 +22,12 @@ class UNet2DConditionModelEngine:
         self.use_cuda_graph = use_cuda_graph
         self.use_control = False  # Will be set to True by wrapper if engine has ControlNet support
         self._cached_dummy_controlnet_inputs = None
+        
+        # Enable VRAM monitoring only if explicitly requested (defaults to False for performance)
+        self.debug_vram = os.getenv('STREAMDIFFUSION_DEBUG_VRAM', '').lower() in ('1', 'true')
 
-        logger.debug(f"UNet2DConditionModelEngine.__init__: Loading TensorRT engine from {filepath}")
         self.engine.load()
         self.engine.activate()
-        logger.debug(f"UNet2DConditionModelEngine.__init__: TensorRT engine loaded and activated successfully")
 
     def __call__(
         self,
@@ -38,6 +40,12 @@ class UNet2DConditionModelEngine:
         **kwargs,
     ) -> Any:
         
+      
+        
+
+        
+        
+
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
 
@@ -57,11 +65,9 @@ class UNet2DConditionModelEngine:
 
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:
-            logger.debug(f"Adding ControlNet conditioning dict")
             # Option 1: Direct ControlNet conditioning dict (organized by type)
             self._add_controlnet_conditioning_dict(controlnet_conditioning, shape_dict, input_dict)
         elif down_block_additional_residuals is not None or mid_block_additional_residual is not None:
-            logger.debug(f"Adding ControlNet residuals")
             # Option 2: Diffusers-style ControlNet residuals
             self._add_controlnet_residuals(
                 down_block_additional_residuals, 
@@ -71,21 +77,9 @@ class UNet2DConditionModelEngine:
             )
         else:
             # Check if this engine was compiled with ControlNet support but no conditioning is provided
-            # In that case, we need to provide dummy zero tensors for the expected ControlNet inputs
             if self.use_control:
-                logger.debug(f"Engine has ControlNet support but no conditioning provided - checking for dummy inputs")
-                
-                # Check if we have the required architecture info for dummy input generation
                 unet_arch = getattr(self, 'unet_arch', {})
-                
-                if not unet_arch:
-                    logger.warning(f"Engine was built with ControlNet support but no architecture info available.")
-                    logger.warning(f"Proceeding without ControlNet inputs - this may work if the engine can handle missing ControlNet inputs.")
-                    # Don't try to generate dummy inputs, just proceed
-                else:
-                    logger.debug(f"Architecture info available, generating dummy ControlNet inputs")
-                    
-                    # Check if we need to regenerate dummy inputs due to dimension change
+                if unet_arch:
                     current_latent_height = latent_model_input.shape[2]
                     current_latent_width = latent_model_input.shape[3]
                     
@@ -94,96 +88,45 @@ class UNet2DConditionModelEngine:
                         not hasattr(self, '_cached_latent_dims') or
                         self._cached_latent_dims != (current_latent_height, current_latent_width)):
                         
-                        logger.debug(f"Regenerating dummy inputs for latent dimensions {current_latent_height}x{current_latent_width}")
                         try:
                             self._cached_dummy_controlnet_inputs = self._generate_dummy_controlnet_specs(latent_model_input)
                             self._cached_latent_dims = (current_latent_height, current_latent_width)
-                        except RuntimeError as e:
-                            logger.warning(f"Failed to generate dummy ControlNet inputs: {e}")
-                            logger.warning(f"Proceeding without ControlNet inputs")
+                        except RuntimeError:
                             self._cached_dummy_controlnet_inputs = None
                     
-                    # Use cached dummy inputs if available
                     if self._cached_dummy_controlnet_inputs is not None:
                         self._add_cached_dummy_inputs(self._cached_dummy_controlnet_inputs, latent_model_input, shape_dict, input_dict)
 
-        logger.debug(f"Final shape_dict keys: {list(shape_dict.keys())}")
-        logger.debug(f"Final input_dict keys: {list(input_dict.keys())}")
-        for key, shape in shape_dict.items():
-            if key.startswith('input_control'):
-                logger.debug(f"UNetEngine: Control input {key}: {shape}")
-
         # Allocate buffers and run inference
-        logger.debug(f"UNetEngine: Allocating TensorRT buffers...")
-        logger.debug(f"[UNET_ENGINE] About to allocate TensorRT buffers with shape_dict: {[(k, v) for k, v in shape_dict.items()]}")
+        if self.debug_vram:
+            allocated_before = torch.cuda.memory_allocated() / 1024**3
+            logger.debug(f"VRAM before allocation: {allocated_before:.2f}GB")
         
-        # Check VRAM before allocation
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            cached = torch.cuda.memory_reserved() / 1024**3
-            logger.debug(f"[UNET_ENGINE] VRAM before allocation - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
+        self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
         
-        try:
-            self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
-            logger.debug(f"[UNET_ENGINE] ✅ Buffer allocation completed successfully")
-            
-            # Check VRAM after allocation
-            if torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated() / 1024**3
-                cached = torch.cuda.memory_reserved() / 1024**3
-                logger.debug(f"[UNET_ENGINE] VRAM after allocation - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
-        except Exception as e:
-            logger.debug(f"[UNET_ENGINE] *** ERROR: Buffer allocation failed: {e} ***")
-            raise
+        if self.debug_vram:
+            allocated_after = torch.cuda.memory_allocated() / 1024**3
+            logger.debug(f"VRAM after allocation: {allocated_after:.2f}GB")
 
-        logger.debug(f"UNetEngine: Running TensorRT inference...")
-        logger.debug(f"[UNET_ENGINE] About to call TensorRT engine.infer()...")
-        logger.debug(f"[UNET_ENGINE] Input dict keys: {list(input_dict.keys())}")
-        logger.debug(f"[UNET_ENGINE] Input dict shapes: {[(k, v.shape if hasattr(v, 'shape') else type(v)) for k, v in input_dict.items()]}")
-        logger.debug(f"[UNET_ENGINE] use_cuda_graph: {self.use_cuda_graph}")
+        outputs = self.engine.infer(
+            input_dict,
+            self.stream,
+            use_cuda_graph=self.use_cuda_graph,
+        )
         
-        # Check VRAM before inference
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            cached = torch.cuda.memory_reserved() / 1024**3
-            logger.debug(f"[UNET_ENGINE] VRAM before inference - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
-        
-        try:
-            logger.debug(f"[UNET_ENGINE] 🚀 Starting TensorRT inference...")
-            logger.debug(f"[UNET_ENGINE] This call may hang if there are VRAM issues...")
-            
-            # Set a timeout hint for debugging
-            import time
-            start_time = time.time()
-            
-            outputs = self.engine.infer(
-                input_dict,
-                self.stream,
-                use_cuda_graph=self.use_cuda_graph,
-            )
-            
-            elapsed_time = time.time() - start_time
-            logger.debug(f"[UNET_ENGINE] ✅ TensorRT inference completed successfully in {elapsed_time:.3f}s!")
-            logger.debug(f"[UNET_ENGINE] Output keys: {list(outputs.keys())}")
-            
-            # Check VRAM after inference
-            if torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated() / 1024**3
-                cached = torch.cuda.memory_reserved() / 1024**3
-                logger.debug(f"[UNET_ENGINE] VRAM after inference - Allocated: {allocated:.2f}GB, Cached: {cached:.2f}GB")
-                
-        except Exception as e:
-            logger.debug(f"[UNET_ENGINE] *** ERROR: TensorRT inference failed: {e} ***")
-            import traceback
-            traceback.print_exc()
-            raise
+        if self.debug_vram:
+            allocated_final = torch.cuda.memory_allocated() / 1024**3
+            logger.debug(f"VRAM after inference: {allocated_final:.2f}GB")
         
         if "latent" not in outputs:
             logger.error(f"*** ERROR: 'latent' output not found in TensorRT outputs! Available keys: {list(outputs.keys())} ***")
-            logger.debug(f"[UNET_ENGINE] *** ERROR: Expected 'latent' output not found! ***")
             raise ValueError("TensorRT engine did not produce expected 'latent' output")
         
         noise_pred = outputs["latent"]
+      
+        
+
+        
         return UNet2DConditionOutput(sample=noise_pred)
 
     def _add_controlnet_conditioning_dict(self, 
@@ -233,7 +176,6 @@ class UNet2DConditionModelEngine:
             shape_dict: Shape dictionary to update
             input_dict: Input dictionary to update
         """
-        logger.debug(f"UNetEngine: Adding ControlNet residuals - down_blocks: {len(down_block_additional_residuals) if down_block_additional_residuals else 0}, mid_block: {mid_block_additional_residual is not None}")
         
         # Add down block residuals as input controls
         if down_block_additional_residuals is not None:
@@ -242,14 +184,12 @@ class UNet2DConditionModelEngine:
                 input_name = f"input_control_{i:02d}"  # Use zero-padded names to match engine
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
-                logger.debug(f"UNetEngine: Added control input {input_name}: {tensor.shape}")
         
         # Add middle block residual
         if mid_block_additional_residual is not None:
             input_name = "input_control_middle"  # Match engine middle control name
             shape_dict[input_name] = mid_block_additional_residual.shape
             input_dict[input_name] = mid_block_additional_residual
-            logger.debug(f"UNetEngine: Added middle control input {input_name}: {mid_block_additional_residual.shape}")
 
     def _add_cached_dummy_inputs(self, 
                                dummy_inputs: Dict, 
