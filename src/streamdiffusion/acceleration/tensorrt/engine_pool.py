@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from polygraphy import cuda
 
-from .runtime_engines.controlnet_engine import ControlNetModelEngine, HybridControlNet
+from .runtime_engines.controlnet_engine import ControlNetModelEngine
 from .models.controlnet_models import create_controlnet_model
 from .builder import EngineBuilder, create_onnx_path
 from ...model_detection import detect_model
@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class ControlNetEnginePool:
-    """Manages multiple ControlNet TensorRT engines"""
+    """Manages multiple ControlNet TensorRT engines with integrated model detection and status tracking"""
     
     def __init__(self, engine_dir: str, stream: Optional['cuda.Stream'] = None, 
-                 image_width: int = 512, image_height: int = 512, enable_pytorch_fallback: bool = False):
+                 image_width: int = 512, image_height: int = 512):
         """Initialize ControlNet engine pool"""
         self.engine_dir = Path(engine_dir)
         self.engine_dir.mkdir(parents=True, exist_ok=True)
@@ -35,13 +35,15 @@ class ControlNetEnginePool:
                 self.stream = cuda.Stream()
             except ImportError:
                 self.stream = None
-        self.engines: Dict[str, HybridControlNet] = {}
+        self.engines: Dict[str, ControlNetModelEngine] = {}
         self.compiled_models: Set[str] = set()
         
         # Store image dimensions for engine compilation
         self.image_width = image_width
         self.image_height = image_height
-        self.enable_pytorch_fallback = enable_pytorch_fallback
+        
+        # Track engine status and metadata
+        self.engine_metadata: Dict[str, Dict[str, Any]] = {}
         
         self._discover_existing_engines()
     
@@ -101,8 +103,8 @@ class ControlNetEnginePool:
                           model_id: str,
                           pytorch_model: Any,
                           model_type: str = "sd15",
-                          batch_size: int = 1) -> HybridControlNet:
-        """Get or load ControlNet engine with TensorRT/PyTorch fallback"""
+                          batch_size: int = 1) -> ControlNetModelEngine:
+        """Get or load ControlNet TensorRT engine with integrated model detection and validation"""
         logger.info(f"ControlNetEnginePool.get_or_load_engine: Processing {model_id}")
         
         # Use dynamic cache key to match new naming convention
@@ -110,6 +112,9 @@ class ControlNetEnginePool:
         
         if cache_key in self.engines:
             return self.engines[cache_key]
+        
+        # Detect and validate model type from pytorch_model
+        validated_model_type = self._detect_and_validate_model_type(model_id, pytorch_model, model_type)
         
         # Use dynamic engine directory (no longer depends on specific width/height)
         model_engine_dir = self._get_model_engine_dir(model_id, batch_size, self.image_width, self.image_height)
@@ -119,17 +124,8 @@ class ControlNetEnginePool:
             logger.info(f"ControlNetEnginePool.get_or_load_engine: ControlNet engine not found for {model_id} ({self.image_width}x{self.image_height}), compiling now...")
             compilation_start = time.time()
             
-            try:
-                detection_result = detect_model(pytorch_model, None)
-                detected_type = detection_result['model_type']
-                model_type = detected_type.lower()
-                confidence = detection_result['confidence']
-                logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model: '{detected_type}' -> '{model_type}' (confidence: {confidence:.2f}) for {model_id}")
-            except Exception as e:
-                logger.warning(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed: {e}, using provided type: {model_type}")
-            
             success = self._compile_controlnet(
-                pytorch_model, model_type, str(engine_path), batch_size
+                pytorch_model, validated_model_type, str(engine_path), batch_size
             )
             
             compilation_time = time.time() - compilation_start
@@ -138,34 +134,61 @@ class ControlNetEnginePool:
                 logger.info(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation completed in {compilation_time:.2f}s")
             else:
                 logger.error(f"ControlNetEnginePool.get_or_load_engine: ControlNet compilation failed after {compilation_time:.2f}s")
-                if self.enable_pytorch_fallback:
-                    logger.info(f"ControlNetEnginePool.get_or_load_engine: Will use PyTorch fallback for {model_id}")
-                else:
-                    logger.warning(f"ControlNetEnginePool.get_or_load_engine: PyTorch fallback disabled for {model_id}")
+                raise RuntimeError(f"ControlNet TensorRT compilation failed for {model_id}")
+        
+        # Load TensorRT engine with error handling
+        engine = self._load_tensorrt_engine(model_id, str(engine_path), validated_model_type)
+        
+        # Store engine and metadata
+        self.engines[cache_key] = engine
+        self.engine_metadata[cache_key] = {
+            "model_id": model_id,
+            "model_type": validated_model_type,
+            "engine_path": str(engine_path),
+            "using_tensorrt": True,
+            "load_time": time.time()
+        }
+        
+        return engine
+    
+    def _detect_and_validate_model_type(self, model_id: str, pytorch_model: Any, provided_model_type: str) -> str:
+        """Detect and validate ControlNet model type using comprehensive model detection system"""
+        if pytorch_model is not None:
+            try:
+                detection_result = detect_model(pytorch_model, None)
+                detected_type = detection_result['model_type'].lower()
+                confidence = detection_result['confidence']
+                logger.info(f"ControlNet model type detected: {detected_type} (confidence: {confidence:.2f}) for {model_id}")
+                return detected_type
+            except Exception as e:
+                logger.warning(f"Model detection failed for {model_id}: {e}, using provided type: {provided_model_type}")
+                return provided_model_type.lower()
         else:
-            # Engine exists - try to detect model type from pytorch_model if available
-            if pytorch_model is not None:
-                try:
-                    detection_result = detect_model(pytorch_model, None)
-                    detected_type = detection_result['model_type']
-                    model_type = detected_type.lower()
-                    confidence = detection_result['confidence']
-                    logger.info(f"ControlNetEnginePool.get_or_load_engine: Model type detected from pytorch_model (engine exists): '{detected_type}' -> '{model_type}' (confidence: {confidence:.2f}) for {model_id}")
-                except Exception as e:
-                    logger.warning(f"ControlNetEnginePool.get_or_load_engine: Architecture detection failed (engine exists): {e}, using provided type: {model_type}")
-        
-        hybrid_controlnet = HybridControlNet(
-            model_id=model_id,
-            engine_path=str(engine_path) if engine_path.exists() else None,
-            pytorch_model=pytorch_model,
-            stream=self.stream,
-            enable_pytorch_fallback=self.enable_pytorch_fallback,
-            model_type=model_type
-        )
-        
-        self.engines[cache_key] = hybrid_controlnet
-        
-        return hybrid_controlnet
+            logger.info(f"ControlNet using provided model type: {provided_model_type.lower()} for {model_id}")
+            return provided_model_type.lower()
+    
+    def _load_tensorrt_engine(self, model_id: str, engine_path: str, model_type: str) -> ControlNetModelEngine:
+        """Load TensorRT engine with comprehensive error handling"""
+        try:
+            if engine_path and self.stream:
+                logger.info(f"Loading TensorRT ControlNet engine: {engine_path}")
+                engine = ControlNetModelEngine(engine_path, self.stream, model_type=model_type)
+                logger.info(f"Successfully loaded TensorRT ControlNet engine for {model_id}")
+                return engine
+        except Exception as e:
+            error_msg = f"TensorRT engine load failed: {e}"
+            logger.error(f"Failed to load TensorRT ControlNet engine for {model_id}: {e}")
+            raise RuntimeError(f"Failed to load ControlNet TensorRT engine for {model_id}: {error_msg}")
+    
+    def get_engine_status(self, model_id: str, batch_size: int = 1) -> Optional[Dict[str, Any]]:
+        """Get status information for a specific engine"""
+        cache_key = f"{model_id}--batch-{batch_size}--dyn-384-1024"
+        return self.engine_metadata.get(cache_key)
+    
+    def is_engine_using_tensorrt(self, model_id: str, batch_size: int = 1) -> bool:
+        """Check if engine is using TensorRT acceleration"""
+        cache_key = f"{model_id}--batch-{batch_size}--dyn-384-1024"
+        return cache_key in self.engines
     
     def _compile_controlnet(self, 
                            pytorch_model: Any,

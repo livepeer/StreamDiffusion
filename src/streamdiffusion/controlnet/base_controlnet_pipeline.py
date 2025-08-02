@@ -207,19 +207,21 @@ class BaseControlNetPipeline:
 
     def _load_controlnet_model(self, model_id: str):
         """Load a ControlNet model with TensorRT acceleration support"""
-        # First load the PyTorch model as fallback
-        pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
-        
         # Check if TensorRT engine pool is available
         if hasattr(self.stream, 'controlnet_engine_pool'):
             model_type = self._detected_model_type
             is_sdxl = self._is_sdxl
             
-            logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration support")
+            logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration")
             logger.info(f"  Model type: {model_type}, is_sdxl: {is_sdxl}")
             
-            # Debug: Check what batch size we're getting
+            # Load PyTorch model for engine compilation if needed
+            pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
+            
+            # Get batch size for engine compilation
             detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)
+            
+            # Pool now handles all the complexity (model detection, validation, error handling)
             return self.stream.controlnet_engine_pool.get_or_load_engine(
                 model_id=model_id,
                 pytorch_model=pytorch_controlnet,
@@ -229,7 +231,7 @@ class BaseControlNetPipeline:
         else:
             # Fallback to PyTorch only
             logger.info(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
-            return pytorch_controlnet
+            return self._load_pytorch_controlnet_model(model_id)
     
     def _load_pytorch_controlnet_model(self, model_id: str):
         """Load a ControlNet model from HuggingFace or local path"""
@@ -378,7 +380,7 @@ class BaseControlNetPipeline:
             
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
-            if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
+            if (hasattr(controlnet, 'engine') and controlnet.engine is not None and
                 control_image.shape[0] != main_batch_size):
                 # Only expand if needed for TensorRT and batch sizes don't match
                 if control_image.dim() == 4:

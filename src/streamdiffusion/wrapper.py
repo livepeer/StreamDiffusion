@@ -1526,7 +1526,7 @@ class StreamDiffusionWrapper:
 
             # Create engine pool with same engine directory structure as UNet
             stream_cuda = cuda.Stream()
-            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height, enable_pytorch_fallback=self.enable_pytorch_fallback)
+            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height)
 
             # Store pool on the pipeline for later use
             controlnet_pipeline._controlnet_pool = controlnet_pool
