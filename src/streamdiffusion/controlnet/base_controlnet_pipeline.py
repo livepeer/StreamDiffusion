@@ -59,9 +59,6 @@ class BaseControlNetPipeline:
             dtype=self.dtype, 
             max_workers=4
         )
-        
-        # Keep legacy cache for compatibility
-        self._active_indices_cache = []
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -192,11 +189,6 @@ class BaseControlNetPipeline:
         for i, processed_image in enumerate(processed_images):
             if processed_image is not None:
                 self.controlnet_images[i] = processed_image
-        
-        # Update active indices cache for compatibility
-        self._active_indices_cache = [
-            i for i, scale in enumerate(self.controlnet_scales) if scale > 0
-        ]
     
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """Update the conditioning scale for a specific ControlNet"""
