@@ -12,6 +12,7 @@
   import ResolutionPicker from '$lib/components/ResolutionPicker.svelte';
   import Spinner from '$lib/icons/spinner.svelte';
   import Warning from '$lib/components/Warning.svelte';
+  import InputControl from '$lib/components/InputControl.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
   import { getPipelineValues, deboucedPipelineValues, pipelineValues } from '$lib/store';
@@ -602,6 +603,9 @@
               </div>
             {/if}
           </div>
+
+          <!-- Input Controls (Microphone & Hand Tracking) -->
+          <InputControl />
         {/if}
       </div>
 

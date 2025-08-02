@@ -23,6 +23,7 @@ from config import config, Args
 from util import pil_to_frame, bytes_to_pil
 from connection_manager import ConnectionManager, ServerFullException
 from img2img import Pipeline
+from input_control import InputManager
 
 # fix mime error on windows
 mimetypes.add_type("application/javascript", ".js")
@@ -72,6 +73,9 @@ class App:
         self.new_height = 512
         # Store uploaded style image persistently
         self.uploaded_style_image = None
+        # Input control system
+        self.input_manager = InputManager()
+        self.input_manager.set_parameter_update_callback(self._handle_input_parameter_update)
         self.init_app()
 
     def cleanup(self):
@@ -80,6 +84,10 @@ class App:
         if self.pipeline:
             self._cleanup_pipeline(self.pipeline)
             self.pipeline = None
+        # Stop input controls
+        if hasattr(self, 'input_manager'):
+            asyncio.create_task(self.input_manager.stop_all())
+            logger.info("App cleanup: Input controls stopped")
         logger.info("App cleanup: Completed application cleanup")
 
     def init_app(self):
@@ -1303,6 +1311,91 @@ class App:
                 }
             })
 
+        # Input Control API endpoints
+        @self.app.post("/api/input-control/add")
+        async def add_input_control(request: Request):
+            """Add a new input control"""
+            try:
+                data = await request.json()
+                input_id = data.get("input_id")
+                input_type = data.get("input_type")
+                parameter_name = data.get("parameter_name")
+                min_value = data.get("min_value", 0.0)
+                max_value = data.get("max_value", 1.0)
+                sensitivity = data.get("sensitivity", 1.0)
+                update_rate = data.get("update_rate", 0.1)
+                
+                if not input_id or not input_type or not parameter_name:
+                    raise HTTPException(status_code=400, detail="Missing required parameters: input_id, input_type, parameter_name")
+                
+                # Note: Microphone inputs are handled in the frontend
+                # Only backend input types are created here
+                if input_type == "microphone":
+                    raise HTTPException(status_code=400, detail="Microphone inputs are managed in the frontend")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Unsupported input type: {input_type}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Added {input_type} input control for {parameter_name}"
+                })
+                
+            except Exception as e:
+                logging.error(f"add_input_control: Failed to add input control: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add input control: {str(e)}")
+
+        @self.app.post("/api/input-control/start/{input_id}")
+        async def start_input_control(input_id: str):
+            """Start a specific input control"""
+            try:
+                await self.input_manager.start_input(input_id)
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Started input control {input_id}"
+                })
+            except Exception as e:
+                logging.error(f"start_input_control: Failed to start input {input_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to start input control: {str(e)}")
+
+        @self.app.post("/api/input-control/stop/{input_id}")
+        async def stop_input_control(input_id: str):
+            """Stop a specific input control"""
+            try:
+                await self.input_manager.stop_input(input_id)
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Stopped input control {input_id}"
+                })
+            except Exception as e:
+                logging.error(f"stop_input_control: Failed to stop input {input_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to stop input control: {str(e)}")
+
+        @self.app.delete("/api/input-control/{input_id}")
+        async def remove_input_control(input_id: str):
+            """Remove an input control"""
+            try:
+                self.input_manager.remove_input(input_id)
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Removed input control {input_id}"
+                })
+            except Exception as e:
+                logging.error(f"remove_input_control: Failed to remove input {input_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove input control: {str(e)}")
+
+        @self.app.get("/api/input-control/status")
+        async def get_input_control_status():
+            """Get status of all input controls"""
+            try:
+                status = self.input_manager.get_input_status()
+                return JSONResponse({
+                    "status": "success",
+                    "inputs": status
+                })
+            except Exception as e:
+                logging.error(f"get_input_control_status: Failed to get status: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get input control status: {str(e)}")
+
         # Only mount static files if not in API-only mode
         if not self.args.api_only:
             if not os.path.exists("public"):
@@ -1723,6 +1816,32 @@ class App:
             # Make sure we don't leave the system in a broken state
             self.pipeline = None
             raise
+
+    def _handle_input_parameter_update(self, parameter_name: str, value: float) -> None:
+        """Handle parameter updates from input controls"""
+        try:
+            if not self.pipeline:
+                logging.warning(f"_handle_input_parameter_update: Pipeline not initialized, ignoring {parameter_name}={value}")
+                return
+            
+            # Map parameter names to pipeline methods
+            if parameter_name == "guidance_scale":
+                self.pipeline.stream.update_stream_params(guidance_scale=value)
+            elif parameter_name == "delta":
+                self.pipeline.stream.update_stream_params(delta=value)
+            elif parameter_name == "num_inference_steps":
+                self.pipeline.stream.update_stream_params(num_inference_steps=int(value))
+            elif parameter_name == "seed":
+                self.pipeline.stream.update_stream_params(seed=int(value))
+            elif parameter_name == "ipadapter_scale" and hasattr(self.pipeline, 'update_ipadapter_scale'):
+                self.pipeline.update_ipadapter_scale(value)
+            else:
+                logging.warning(f"_handle_input_parameter_update: Unknown parameter {parameter_name}")
+            
+            logging.info(f"_handle_input_parameter_update: Updated {parameter_name} to {value}")
+            
+        except Exception as e:
+            logging.error(f"_handle_input_parameter_update: Failed to update {parameter_name}: {e}")
 
 app = App(config).app
 
