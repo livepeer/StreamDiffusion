@@ -9,6 +9,7 @@
   export let guidanceScale: number = 1.1;
   export let delta: number = 0.7;
   export let numInferenceSteps: number = 50;
+  export let temporalMixingStrength: number = 0.1;
 
   const dispatch = createEventDispatcher();
 
@@ -122,6 +123,23 @@
     }
   }
 
+  async function updateTemporalMixingStrength(value: number) {
+    try {
+      temporalMixingStrength = value;
+      const response = await fetch('/api/update-temporal-mixing-strength', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ temporal_mixing_strength: value })
+      });
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateTemporalMixingStrength: Failed to update temporal_mixing_strength:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateTemporalMixingStrength: Update failed:', error);
+    }
+  }
+
   function handleGuidanceScaleChange(event: Event) {
     const target = event.target as HTMLInputElement;
     const value = parseFloat(target.value);
@@ -138,6 +156,12 @@
     const target = event.target as HTMLInputElement;
     const value = parseInt(target.value);
     updateNumInferenceSteps(value);
+  }
+
+  function handleTemporalMixingStrengthChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = parseFloat(target.value);
+    updateTemporalMixingStrength(value);
   }
 
   function handleHelpClick(event: Event) {
@@ -330,6 +354,24 @@
                 class="w-full appearance-none cursor-pointer h-2"
               />
               <p class="text-xs text-gray-500">Number of denoising steps</p>
+            </div>
+            
+            <!-- Temporal Mixing Strength -->
+            <div class="space-y-1">
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Temporal Mixing</label>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{temporalMixingStrength.toFixed(3)}</span>
+              </div>
+              <input
+                type="range"
+                min="0.0"
+                max="1.0"
+                step="0.001"
+                value={temporalMixingStrength}
+                on:input={handleTemporalMixingStrengthChange}
+                class="w-full appearance-none cursor-pointer h-2"
+              />
+              <p class="text-xs text-gray-500">Frame-to-frame temporal continuity</p>
             </div>
           </div>
         </div>

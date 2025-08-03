@@ -441,6 +441,12 @@ class StreamDiffusionWrapper:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        # Temporal mixing parameters
+        temporal_mixing_strength: Optional[float] = None,
+        temporal_ema_decay: Optional[float] = None,
+        temporal_stability_threshold: Optional[float] = None,
+        temporal_max_mixing: Optional[float] = None,
+        temporal_min_mixing: Optional[float] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -475,6 +481,19 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
+        temporal_mixing_strength : Optional[float]
+            Base strength of temporal mixing between frames. Range 0.0 (no mixing) to 1.0 (full mixing).
+            Controls how much of the previous frame's output latent is mixed into the current frame's input.
+        temporal_ema_decay : Optional[float]
+            Exponential moving average decay factor for temporal stability. Range 0.0-1.0, default 0.9.
+            Higher values provide more temporal smoothing but slower adaptation to changes.
+        temporal_stability_threshold : Optional[float]
+            Similarity threshold for detecting stable vs unstable content. Range 0.0-1.0, default 0.7.
+            Only reduces mixing when content is extremely unstable (potential feedback loops).
+        temporal_max_mixing : Optional[float]
+            Maximum allowed mixing strength for stable content. Default 1.0 (no limit).
+        temporal_min_mixing : Optional[float]
+            Minimum mixing strength for unstable content. Default 0.0 (allow complete disable).
         """
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -489,6 +508,11 @@ class StreamDiffusionWrapper:
             seed_interpolation_method=seed_interpolation_method,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            temporal_mixing_strength=temporal_mixing_strength,
+            temporal_ema_decay=temporal_ema_decay,
+            temporal_stability_threshold=temporal_stability_threshold,
+            temporal_max_mixing=temporal_max_mixing,
+            temporal_min_mixing=temporal_min_mixing,
         )
 
     def get_normalize_prompt_weights(self) -> bool:

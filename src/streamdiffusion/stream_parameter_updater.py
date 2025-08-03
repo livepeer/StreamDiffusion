@@ -276,8 +276,30 @@ class StreamParameterUpdater:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        temporal_mixing_strength: Optional[float] = None,
+        temporal_ema_decay: Optional[float] = None,
+        temporal_stability_threshold: Optional[float] = None,
+        temporal_max_mixing: Optional[float] = None,
+        temporal_min_mixing: Optional[float] = None,
     ) -> None:
-        """Update streaming parameters efficiently in a single call."""
+        """Update streaming parameters efficiently in a single call.
+        
+        Parameters
+        ----------
+        temporal_mixing_strength : Optional[float]
+            Base strength of temporal mixing between frames. Range 0.0 (no mixing) to 1.0 (full mixing).
+            Controls how much of the previous frame's output latent is mixed into the current frame's input.
+        temporal_ema_decay : Optional[float]
+            Exponential moving average decay factor for temporal stability. Range 0.0-1.0, default 0.9.
+            Higher values provide more temporal smoothing but slower adaptation to changes.
+        temporal_stability_threshold : Optional[float]
+            Similarity threshold for detecting stable vs unstable content. Range 0.0-1.0, default 0.7.
+            Only reduces mixing when content is extremely unstable (potential feedback loops).
+        temporal_max_mixing : Optional[float]
+            Maximum allowed mixing strength for stable content. Default 1.0 (no limit).
+        temporal_min_mixing : Optional[float]
+            Minimum mixing strength for unstable content. Default 0.0 (allow complete disable).
+        """
 
         if num_inference_steps is not None:
             self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
@@ -294,6 +316,26 @@ class StreamParameterUpdater:
 
         if delta is not None:
             self.stream.delta = delta
+
+        if temporal_mixing_strength is not None:
+            self.stream.temporal_mixing_strength = temporal_mixing_strength
+            logger.info(f"update_stream_params: Temporal mixing strength set to {temporal_mixing_strength}")
+
+        if temporal_ema_decay is not None:
+            self.stream.temporal_ema_decay = temporal_ema_decay
+            logger.info(f"update_stream_params: Temporal EMA decay set to {temporal_ema_decay}")
+
+        if temporal_stability_threshold is not None:
+            self.stream.temporal_stability_threshold = temporal_stability_threshold
+            logger.info(f"update_stream_params: Temporal stability threshold set to {temporal_stability_threshold}")
+
+        if temporal_max_mixing is not None:
+            self.stream.temporal_max_mixing = temporal_max_mixing
+            logger.info(f"update_stream_params: Temporal max mixing set to {temporal_max_mixing}")
+
+        if temporal_min_mixing is not None:
+            self.stream.temporal_min_mixing = temporal_min_mixing
+            logger.info(f"update_stream_params: Temporal min mixing set to {temporal_min_mixing}")
 
         if seed is not None:
             self._update_seed(seed)

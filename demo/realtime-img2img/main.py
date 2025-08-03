@@ -847,6 +847,31 @@ class App:
                 logging.error(f"update_seed: Failed to update seed: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update seed: {str(e)}")
 
+        @self.app.post("/api/update-temporal-mixing-strength")
+        async def update_temporal_mixing_strength(request: Request):
+            """Update temporal_mixing_strength value in real-time"""
+            try:
+                data = await request.json()
+                temporal_mixing_strength = data.get("temporal_mixing_strength")
+                
+                if temporal_mixing_strength is None:
+                    raise HTTPException(status_code=400, detail="Missing temporal_mixing_strength parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update temporal_mixing_strength in the pipeline
+                self.pipeline.stream.update_stream_params(temporal_mixing_strength=float(temporal_mixing_strength))
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated temporal_mixing_strength to {temporal_mixing_strength}"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_temporal_mixing_strength: Failed to update temporal_mixing_strength: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update temporal_mixing_strength: {str(e)}")
+
         @self.app.post("/api/update-resolution")
         async def update_resolution(request: Request):
             """Update resolution (width x height) by creating a new pipeline"""

@@ -28,6 +28,7 @@
   let delta: number = 0.7;
   let numInferenceSteps: number = 50;
   let seed: number = 2;
+  let temporalMixingStrength: number = 0.1;
   let promptBlendingConfig: any = null;
   let seedBlendingConfig: any = null;
   let normalizePromptWeights: boolean = true;
@@ -111,6 +112,7 @@
       delta = settings.delta || 0.7;
       numInferenceSteps = settings.num_inference_steps || 50;
       seed = settings.seed || 2;
+      temporalMixingStrength = settings.temporal_mixing_strength || 0.1;
       promptBlendingConfig = settings.prompt_blending || null;
       seedBlendingConfig = settings.seed_blending || null;
       normalizePromptWeights = settings.normalize_prompt_weights ?? true;
@@ -652,6 +654,7 @@
             {guidanceScale}
             {delta}
             {numInferenceSteps}
+            {temporalMixingStrength}
             on:controlnetUpdated={handleControlNetUpdate}
             on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
           ></ControlNetConfig>

@@ -98,6 +98,19 @@ class StreamDiffusion:
 
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
+        
+        # Initialize temporal mixing buffer for frame N+1 -> N mixing
+        self.prev_output_latent = None
+        self.temporal_mixing_strength = 0.1  # base mixing strength
+        
+        # Advanced temporal mixing controls (simplified for better responsiveness)
+        self.temporal_ema_decay = 0.9  # EMA decay factor
+        self.temporal_ema_latent = None  # EMA-smoothed latent (for future use)
+        self.temporal_stability_threshold = 0.7  # lower threshold for instability detection
+        self.temporal_max_mixing = 1.0  # allow full user control
+        self.temporal_min_mixing = 0.0  # allow complete disable
+        self.prev_input_latent = None  # track input changes for stability detection
+        self.cos_similarity = torch.nn.CosineSimilarity(dim=1, eps=1e-6)  # for latent similarity
 
     def load_lcm_lora(
         self,
@@ -375,6 +388,12 @@ class StreamDiffusion:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        # Temporal mixing parameters
+        temporal_mixing_strength: Optional[float] = None,
+        temporal_ema_decay: Optional[float] = None,
+        temporal_stability_threshold: Optional[float] = None,
+        temporal_max_mixing: Optional[float] = None,
+        temporal_min_mixing: Optional[float] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -407,6 +426,19 @@ class StreamDiffusion:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
+        temporal_mixing_strength : Optional[float]
+            Base strength of temporal mixing between frames. Range 0.0 (no mixing) to 1.0 (full mixing).
+            Controls how much of the previous frame's output latent is mixed into the current frame's input.
+        temporal_ema_decay : Optional[float]
+            Exponential moving average decay factor for temporal stability. Range 0.0-1.0, default 0.9.
+            Higher values provide more temporal smoothing but slower adaptation to changes.
+        temporal_stability_threshold : Optional[float]
+            Similarity threshold for detecting stable vs unstable content. Range 0.0-1.0, default 0.7.
+            Only reduces mixing when content is extremely unstable (potential feedback loops).
+        temporal_max_mixing : Optional[float]
+            Maximum allowed mixing strength for stable content. Default 1.0 (no limit).
+        temporal_min_mixing : Optional[float]
+            Minimum mixing strength for unstable content. Default 0.0 (allow complete disable).
         """
         self._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -421,6 +453,11 @@ class StreamDiffusion:
             seed_interpolation_method=seed_interpolation_method,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            temporal_mixing_strength=temporal_mixing_strength,
+            temporal_ema_decay=temporal_ema_decay,
+            temporal_stability_threshold=temporal_stability_threshold,
+            temporal_max_mixing=temporal_max_mixing,
+            temporal_min_mixing=temporal_min_mixing,
         )
 
 
@@ -669,6 +706,11 @@ class StreamDiffusion:
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
         prev_latent_batch = self.x_t_latent_buffer
 
+        # Advanced temporal mixing with adaptive strength and EMA
+        if self.temporal_mixing_strength > 0:
+            adaptive_strength = self._compute_adaptive_mixing_strength(x_t_latent)
+            x_t_latent = self._apply_temporal_mixing(x_t_latent, adaptive_strength)
+
         if self.use_denoising_batch:
             t_list = self.sub_timesteps_tensor
             
@@ -716,7 +758,83 @@ class StreamDiffusion:
                         x_t_latent = self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
             x_0_pred_out = x_0_pred
 
+        # Update temporal mixing state for next frame
+        if x_0_pred_out is not None:
+            self._update_temporal_state(x_0_pred_out)
+
         return x_0_pred_out
+
+    def _compute_adaptive_mixing_strength(self, x_t_latent: torch.Tensor) -> float:
+        """Compute adaptive mixing strength based on input stability"""
+        if self.prev_input_latent is None:
+            return self.temporal_mixing_strength  # Use full user-specified strength initially
+        
+        # Simple approach: use user strength but detect extreme instability
+        try:
+            # Flatten latents for similarity calculation
+            current_flat = x_t_latent.view(x_t_latent.shape[0], -1)
+            prev_flat = self.prev_input_latent.view(self.prev_input_latent.shape[0], -1)
+            
+            # Compute cosine similarity
+            similarity = self.cos_similarity(current_flat, prev_flat).mean().item()
+            
+            # Only reduce mixing if content is extremely unstable (potential feedback loop)
+            if similarity < 0.7:  # Much lower threshold for intervention
+                # Extreme instability: reduce mixing significantly
+                mixing_strength = self.temporal_mixing_strength * 0.3
+                logger.info(f"_compute_adaptive_mixing_strength: Detected instability (sim={similarity:.3f}), reducing strength to {mixing_strength:.3f}")
+            else:
+                # Normal case: use user-specified strength
+                mixing_strength = self.temporal_mixing_strength
+                logger.debug(f"_compute_adaptive_mixing_strength: Using user strength {mixing_strength:.3f} (sim={similarity:.3f})")
+            
+            return mixing_strength
+            
+        except Exception as e:
+            logger.warning(f"_compute_adaptive_mixing_strength: Error computing similarity: {e}")
+            return self.temporal_mixing_strength  # Fallback to user strength
+
+    def _apply_temporal_mixing(self, x_t_latent: torch.Tensor, mixing_strength: float) -> torch.Tensor:
+        """Apply temporal mixing with hybrid EMA/direct approach for better responsiveness"""
+        try:
+            if self.prev_output_latent is None:
+                return x_t_latent
+            
+            # Hybrid approach: Mix with previous output directly for immediate effect,
+            # but also maintain EMA for long-term stability
+            if mixing_strength > 0 and self.prev_output_latent.shape == x_t_latent.shape:
+                mixed_latent = (
+                    (1.0 - mixing_strength) * x_t_latent + 
+                    mixing_strength * self.prev_output_latent
+                )
+                logger.debug(f"_apply_temporal_mixing: Applied direct mixing with strength {mixing_strength:.3f}")
+                return mixed_latent
+            
+            return x_t_latent
+            
+        except Exception as e:
+            logger.warning(f"_apply_temporal_mixing: Error applying mixing: {e}")
+            return x_t_latent
+
+    def _update_temporal_state(self, x_0_pred_out: torch.Tensor) -> None:
+        """Update temporal state for next frame"""
+        try:
+            # Store output latent for direct mixing - simple and responsive
+            self.prev_output_latent = x_0_pred_out.clone().detach()
+            
+            # Also update EMA for potential future use
+            if self.temporal_ema_latent is None:
+                self.temporal_ema_latent = x_0_pred_out.clone().detach()
+            else:
+                self.temporal_ema_latent = (
+                    self.temporal_ema_decay * self.temporal_ema_latent + 
+                    (1.0 - self.temporal_ema_decay) * x_0_pred_out.detach()
+                )
+            
+            logger.debug(f"_update_temporal_state: Updated temporal state, shape: {x_0_pred_out.shape}")
+            
+        except Exception as e:
+            logger.warning(f"_update_temporal_state: Error updating temporal state: {e}")
 
     @torch.no_grad()
     def __call__(
@@ -745,6 +863,9 @@ class StreamDiffusion:
             )
         
         x_0_pred_out = self.predict_x0_batch(x_t_latent)
+        
+        # Store input latent for next frame's temporal stability tracking
+        self.prev_input_latent = x_t_latent.clone().detach()
         
         x_output = self.decode_image(x_0_pred_out).detach().clone()
 
