@@ -23,6 +23,23 @@ class FeedbackPreprocessor(BasePreprocessor):
     For the first frame (when no previous output exists), it falls back to the input image.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Feedback Loop",
+            "description": "Creates a configurable blend between the current input image and the previous frame's diffusion output for temporal consistency.",
+            "parameters": {
+                "feedback_strength": {
+                    "type": "float",
+                    "default": 0.5,
+                    "range": [0.0, 1.0],
+                    "step": 0.01,
+                    "description": "Strength of feedback blend (0.0 = pure input, 1.0 = pure feedback)"
+                }
+            },
+            "use_cases": ["Temporal consistency", "Video-like generation", "Smooth transitions", "Deforum", "Blast off"]
+        }
+    
     def __init__(self, 
                  pipeline_ref: Optional[Any] = None,
                  image_resolution: int = 512,

@@ -10,6 +10,15 @@ class IPAdapterEmbeddingPreprocessor(BasePreprocessor):
     Leverages existing preprocessing infrastructure for parallel IPAdapter embedding generation.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "IPAdapter Embedding",
+            "description": "Generates IPAdapter embeddings for style transfer and image conditioning instead of spatial control maps.",
+            "parameters": {},
+            "use_cases": ["Style transfer", "Image conditioning", "Semantic control", "Content-aware generation"]
+        }
+    
     def __init__(self, ipadapter: Any, **kwargs):
         super().__init__(**kwargs)
         self.ipadapter = ipadapter

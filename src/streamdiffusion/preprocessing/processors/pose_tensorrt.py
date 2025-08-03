@@ -213,6 +213,15 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
     Uses TensorRT-optimized YoloNas Pose model for fast pose estimation.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Pose Detection (TensorRT)",
+            "description": "Fast TensorRT-optimized pose detection using YOLO-NAS Pose model. Detects human pose keypoints with high performance.",
+            "parameters": {},
+            "use_cases": ["Human pose control", "Character animation", "Pose-guided generation", "Real-time pose detection"]
+        }
+    
     def __init__(self, 
                  engine_path: str = None,
                  detect_resolution: int = 640,
