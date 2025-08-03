@@ -144,6 +144,14 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
     
+    # Set StreamV2V usage if configured
+    if 'streamv2v' in config and config['streamv2v']:
+        param_map['use_streamv2v'] = True
+        param_map['streamv2v_config'] = config['streamv2v']
+    else:
+        param_map['use_streamv2v'] = config.get('use_streamv2v', False)
+        param_map['streamv2v_config'] = config.get('streamv2v_config')
+    
     return {k: v for k, v in param_map.items() if v is not None}
 
 

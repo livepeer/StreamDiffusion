@@ -110,6 +110,9 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # StreamV2V options
+        use_streamv2v: bool = False,
+        streamv2v_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -198,6 +201,8 @@ class StreamDiffusionWrapper:
         self.enable_pytorch_fallback = enable_pytorch_fallback
         self.use_ipadapter = use_ipadapter
         self.ipadapter_config = ipadapter_config
+        self.use_streamv2v = use_streamv2v
+        self.streamv2v_config = streamv2v_config
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -256,6 +261,8 @@ class StreamDiffusionWrapper:
             enable_pytorch_fallback=enable_pytorch_fallback,
             use_ipadapter=use_ipadapter,
             ipadapter_config=ipadapter_config,
+            use_streamv2v=use_streamv2v,
+            streamv2v_config=streamv2v_config,
         )
 
         # Store acceleration settings for ControlNet integration
@@ -771,6 +778,8 @@ class StreamDiffusionWrapper:
         enable_pytorch_fallback: bool = False,
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        use_streamv2v: bool = False,
+        streamv2v_config: Optional[Dict[str, Any]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -1489,6 +1498,10 @@ class StreamDiffusionWrapper:
         if use_controlnet and controlnet_config:
             stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
 
+        # Apply StreamV2V patch if needed
+        if use_streamv2v:
+            stream = self._apply_streamv2v_patch(stream, streamv2v_config)
+
         return stream
 
     def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False) -> Any:
@@ -1575,6 +1588,24 @@ class StreamDiffusionWrapper:
 
         return controlnet_pipeline
 
+    def _apply_streamv2v_patch(self, stream: StreamDiffusion, streamv2v_config: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        Apply StreamV2V patch to StreamDiffusion for temporal consistency.
+
+        Args:
+            stream: Base StreamDiffusion instance
+            streamv2v_config: StreamV2V configuration
+
+        Returns:
+            StreamV2V-enabled pipeline
+        """
+        from streamdiffusion.streamv2v import StreamV2VPipeline
+        
+        streamv2v_pipeline = StreamV2VPipeline(stream, self.device, self.dtype)
+        streamv2v_pipeline.enable_streamv2v(streamv2v_config or {})
+        
+        return streamv2v_pipeline
+
     # ControlNet convenience methods
     def add_controlnet(self,
                        model_id: str,
@@ -1609,6 +1640,35 @@ class StreamDiffusionWrapper:
             raise RuntimeError("update_controlnet_scale: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
         self.stream.update_controlnet_scale(index, scale)
+
+    # StreamV2V convenience methods
+    def enable_streamv2v(self, config: Optional[Dict[str, Any]] = None) -> None:
+        """Enable StreamV2V temporal consistency"""
+        if not self.use_streamv2v:
+            raise RuntimeError("enable_streamv2v: StreamV2V support not enabled. Set use_streamv2v=True in constructor.")
+        
+        self.stream.enable_streamv2v(config)
+
+    def disable_streamv2v(self) -> None:
+        """Disable StreamV2V temporal consistency"""
+        if not self.use_streamv2v:
+            raise RuntimeError("disable_streamv2v: StreamV2V support not enabled. Set use_streamv2v=True in constructor.")
+        
+        self.stream.disable_streamv2v()
+
+    def clear_streamv2v_cache(self) -> None:
+        """Clear StreamV2V feature banks to reset temporal state"""
+        if not self.use_streamv2v:
+            raise RuntimeError("clear_streamv2v_cache: StreamV2V support not enabled. Set use_streamv2v=True in constructor.")
+        
+        self.stream.clear_feature_banks()
+
+    def update_streamv2v_params(self, **kwargs) -> None:
+        """Update StreamV2V parameters at runtime"""
+        if not self.use_streamv2v:
+            raise RuntimeError("update_streamv2v_params: StreamV2V support not enabled. Set use_streamv2v=True in constructor.")
+        
+        self.stream.update_streamv2v_params(**kwargs)
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
