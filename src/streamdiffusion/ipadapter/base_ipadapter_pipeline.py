@@ -396,8 +396,17 @@ class BaseIPAdapterPipeline:
         return enhanced_prompt_embeds, enhanced_negative_prompt_embeds
     
     def prepare(self, *args, **kwargs):
-        """Forward prepare calls to the underlying StreamDiffusion"""        
-        return self._original_wrapper.prepare(*args, **kwargs)
+        """Forward prepare calls to the underlying StreamDiffusion"""
+        # Try original wrapper first, then fallback to stream
+        try:
+            original_wrapper = self.__dict__.get('_original_wrapper')
+            if original_wrapper is not None:
+                return original_wrapper.prepare(*args, **kwargs)
+        except (AttributeError, KeyError):
+            pass
+        
+        # Fallback to underlying stream
+        return self.stream.prepare(*args, **kwargs)
         
      
     
@@ -413,8 +422,12 @@ class BaseIPAdapterPipeline:
     def __getattr__(self, name):
         """Forward attribute access to the original wrapper first, then to the underlying StreamDiffusion"""
         # Try original wrapper first (for methods like preprocess_image)
-        if hasattr(self, '_original_wrapper') and hasattr(self._original_wrapper, name):
-            return getattr(self._original_wrapper, name)
+        try:
+            original_wrapper = self.__dict__.get('_original_wrapper')
+            if original_wrapper is not None:
+                return getattr(original_wrapper, name)
+        except (AttributeError, KeyError):
+            pass
         
         # Fallback to underlying stream
         return getattr(self.stream, name) 

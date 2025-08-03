@@ -68,6 +68,4 @@ class StreamV2VPipeline(BaseStreamV2VPipeline):
 
     # Forward any missing attributes/methods to underlying stream
     def __getattr__(self, name):
-        if hasattr(self.stream, name):
-            return getattr(self.stream, name)
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        return getattr(self.stream, name)

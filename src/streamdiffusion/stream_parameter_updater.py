@@ -276,6 +276,13 @@ class StreamParameterUpdater:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        # StreamV2V parameters
+        feature_injection_strength: Optional[float] = None,
+        feature_similarity_threshold: Optional[float] = None,
+        interval: Optional[int] = None,
+        use_tome_cache: Optional[bool] = None,
+        tome_ratio: Optional[float] = None,
+        use_grid: Optional[bool] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -320,6 +327,21 @@ class StreamParameterUpdater:
                 seed_list=seed_list,
                 interpolation_method=seed_interpolation_method
             )
+
+        # Handle StreamV2V parameters if provided
+        streamv2v_params = {
+            k: v for k, v in {
+                'feature_injection_strength': feature_injection_strength,
+                'feature_similarity_threshold': feature_similarity_threshold,
+                'interval': interval,
+                'use_tome_cache': use_tome_cache,
+                'tome_ratio': tome_ratio,
+                'use_grid': use_grid,
+            }.items() if v is not None
+        }
+        
+        if streamv2v_params and hasattr(self.stream, 'update_streamv2v_params'):
+            self.stream.update_streamv2v_params(**streamv2v_params)
 
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)

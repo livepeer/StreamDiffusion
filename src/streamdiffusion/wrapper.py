@@ -448,6 +448,13 @@ class StreamDiffusionWrapper:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        # StreamV2V parameters
+        feature_injection_strength: Optional[float] = None,
+        feature_similarity_threshold: Optional[float] = None,
+        interval: Optional[int] = None,
+        use_tome_cache: Optional[bool] = None,
+        tome_ratio: Optional[float] = None,
+        use_grid: Optional[bool] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -482,7 +489,20 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
+        feature_injection_strength : Optional[float]
+            StreamV2V feature injection strength (0.0 to 1.0), by default None.
+        feature_similarity_threshold : Optional[float]
+            StreamV2V feature similarity threshold for temporal consistency, by default None.
+        interval : Optional[int]
+            StreamV2V cache update interval, by default None.
+        use_tome_cache : Optional[bool]
+            Whether to use ToMe token merging for StreamV2V caching, by default None.
+        tome_ratio : Optional[float]
+            ToMe token reduction ratio for StreamV2V, by default None.
+        use_grid : Optional[bool]
+            Whether to use grid-based token merging in StreamV2V, by default None.
         """
+        # Update all streaming parameters via StreamParameterUpdater (includes StreamV2V)
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
@@ -496,6 +516,13 @@ class StreamDiffusionWrapper:
             seed_interpolation_method=seed_interpolation_method,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            # StreamV2V parameters
+            feature_injection_strength=feature_injection_strength,
+            feature_similarity_threshold=feature_similarity_threshold,
+            interval=interval,
+            use_tome_cache=use_tome_cache,
+            tome_ratio=tome_ratio,
+            use_grid=use_grid,
         )
 
     def get_normalize_prompt_weights(self) -> bool:
@@ -1498,9 +1525,14 @@ class StreamDiffusionWrapper:
         if use_controlnet and controlnet_config:
             stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
 
-        # Apply StreamV2V patch if needed
+        # Apply IPAdapter patch first (if enabled)
+        if use_ipadapter and ipadapter_config:
+            stream = self._apply_ipadapter_patch(stream, ipadapter_config)
+
+        # Apply StreamV2V patch second (if enabled) - use combined processors if IPAdapter is also enabled
         if use_streamv2v:
-            stream = self._apply_streamv2v_patch(stream, streamv2v_config)
+            use_combined_ipadapter = use_ipadapter and ipadapter_config is not None
+            stream = self._apply_streamv2v_patch(stream, streamv2v_config, use_combined_ipadapter=use_combined_ipadapter)
 
         return stream
 
@@ -1588,13 +1620,49 @@ class StreamDiffusionWrapper:
 
         return controlnet_pipeline
 
-    def _apply_streamv2v_patch(self, stream: StreamDiffusion, streamv2v_config: Optional[Dict[str, Any]] = None) -> Any:
+    def _apply_ipadapter_patch(self, stream: StreamDiffusion, ipadapter_config: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Any:
+        """
+        Apply IPAdapter patch to StreamDiffusion for image conditioning.
+
+        Args:
+            stream: Base StreamDiffusion instance
+            ipadapter_config: IPAdapter configuration
+
+        Returns:
+            IPAdapter-enabled pipeline
+        """
+        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
+        
+        ipadapter_pipeline = BaseIPAdapterPipeline(stream, self.device, self.dtype)
+        
+        # Configure IPAdapter from config
+        if not isinstance(ipadapter_config, list):
+            ipadapter_config = [ipadapter_config]
+        
+        for config in ipadapter_config:
+            model_path = config.get('ipadapter_model_path')
+            encoder_path = config.get('image_encoder_path')
+            style_image = config.get('style_image')
+            scale = config.get('scale', 1.0)
+            
+            if model_path and encoder_path:
+                ipadapter_pipeline.set_ipadapter(
+                    ipadapter_model_path=model_path,
+                    image_encoder_path=encoder_path,
+                    style_image=style_image,
+                    scale=scale
+                )
+        
+        return ipadapter_pipeline
+
+    def _apply_streamv2v_patch(self, stream: StreamDiffusion, streamv2v_config: Optional[Dict[str, Any]] = None, use_combined_ipadapter: bool = False) -> Any:
         """
         Apply StreamV2V patch to StreamDiffusion for temporal consistency.
 
         Args:
             stream: Base StreamDiffusion instance
             streamv2v_config: StreamV2V configuration
+            use_combined_ipadapter: Whether to use combined IPAdapter+StreamV2V processors
 
         Returns:
             StreamV2V-enabled pipeline
@@ -1602,7 +1670,7 @@ class StreamDiffusionWrapper:
         from streamdiffusion.streamv2v import StreamV2VPipeline
         
         streamv2v_pipeline = StreamV2VPipeline(stream, self.device, self.dtype)
-        streamv2v_pipeline.enable_streamv2v(streamv2v_config or {})
+        streamv2v_pipeline.enable_streamv2v(streamv2v_config or {}, use_combined_ipadapter=use_combined_ipadapter)
         
         return streamv2v_pipeline
 
