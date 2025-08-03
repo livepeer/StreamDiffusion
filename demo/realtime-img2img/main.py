@@ -1198,9 +1198,8 @@ class App:
                 if not current_preprocessor:
                     raise HTTPException(status_code=400, detail=f"No preprocessor found at index {controlnet_index}")
                 
-                # Filter out system-managed parameters
-                user_params = {k: v for k, v in preprocessor_params.items() 
-                              if k not in current_preprocessor._SYSTEM_PARAMS}
+                # Use all provided parameters
+                user_params = preprocessor_params
                 
                 # Update preprocessor parameters
                 current_preprocessor.params.update(user_params)
