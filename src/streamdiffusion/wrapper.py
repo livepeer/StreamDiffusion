@@ -449,12 +449,11 @@ class StreamDiffusionWrapper:
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
         # StreamV2V parameters
+        use_feature_injection: Optional[bool] = None,
         feature_injection_strength: Optional[float] = None,
         feature_similarity_threshold: Optional[float] = None,
         interval: Optional[int] = None,
-        use_tome_cache: Optional[bool] = None,
-        tome_ratio: Optional[float] = None,
-        use_grid: Optional[bool] = None,
+        max_frames: Optional[int] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -489,18 +488,16 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
+        use_feature_injection : Optional[bool]
+            Whether to enable StreamV2V feature injection, by default None.
         feature_injection_strength : Optional[float]
             StreamV2V feature injection strength (0.0 to 1.0), by default None.
         feature_similarity_threshold : Optional[float]
             StreamV2V feature similarity threshold for temporal consistency, by default None.
         interval : Optional[int]
             StreamV2V cache update interval, by default None.
-        use_tome_cache : Optional[bool]
-            Whether to use ToMe token merging for StreamV2V caching, by default None.
-        tome_ratio : Optional[float]
-            ToMe token reduction ratio for StreamV2V, by default None.
-        use_grid : Optional[bool]
-            Whether to use grid-based token merging in StreamV2V, by default None.
+        max_frames : Optional[int]
+            Maximum number of frames for StreamV2V caching, by default None.
         """
         # Update all streaming parameters via StreamParameterUpdater (includes StreamV2V)
         self.stream._param_updater.update_stream_params(
@@ -517,12 +514,11 @@ class StreamDiffusionWrapper:
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
             # StreamV2V parameters
+            use_feature_injection=use_feature_injection,
             feature_injection_strength=feature_injection_strength,
             feature_similarity_threshold=feature_similarity_threshold,
             interval=interval,
-            use_tome_cache=use_tome_cache,
-            tome_ratio=tome_ratio,
-            use_grid=use_grid,
+            max_frames=max_frames,
         )
 
     def get_normalize_prompt_weights(self) -> bool:

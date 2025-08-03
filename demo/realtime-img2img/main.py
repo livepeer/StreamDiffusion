@@ -384,6 +384,7 @@ class App:
                     "page_content": page_content if info.page_content else "",
                     "controlnet": controlnet_info,
                     "ipadapter": ipadapter_info,
+                    "streamv2v": self._get_streamv2v_info(),
                     "config_prompt": config_prompt,
                     "t_index_list": current_t_index_list,
                     "acceleration": current_acceleration,
@@ -479,9 +480,11 @@ class App:
                 if aspect_ratio:
                     current_resolution += f" ({aspect_ratio})"
                 
-                # Get updated IPAdapter info for response
+                # Get updated IPAdapter and StreamV2V info for response
                 response_ipadapter_info = self._get_ipadapter_info()
+                response_streamv2v_info = self._get_streamv2v_info()
                 print(f"upload_controlnet_config: Returning IPAdapter info to frontend: {response_ipadapter_info}")
+                print(f"upload_controlnet_config: Returning StreamV2V info to frontend: {response_streamv2v_info}")
                 
                 return JSONResponse({
                     "status": "success",
@@ -489,6 +492,7 @@ class App:
                     "controls_updated": True,  # Flag for frontend to update controls
                     "controlnet": self._get_controlnet_info(),
                     "ipadapter": response_ipadapter_info,  # Include updated IPAdapter info
+                    "streamv2v": response_streamv2v_info,  # Include updated StreamV2V info
                     "config_prompt": config_prompt,
                     "t_index_list": t_index_list,
                     "acceleration": config_acceleration,
@@ -1018,6 +1022,118 @@ class App:
                 logger.error(f"update_prompt_blending: Error: {e}")
                 logging.error(f"update_prompt_blending: Failed to update prompt blending: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update prompt blending: {str(e)}")
+
+        @self.app.post("/api/streamv2v/update-param")
+        async def update_streamv2v_param(request: Request):
+            """Update StreamV2V parameters in real-time"""
+            try:
+                data = await request.json()
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if StreamV2V is enabled
+                streamv2v_enabled = False
+                if self.uploaded_controlnet_config:
+                    use_streamv2v = self.uploaded_controlnet_config.get('use_streamv2v', False)
+                    streamv2v_config = self.uploaded_controlnet_config.get('streamv2v', {})
+                    streamv2v_enabled = use_streamv2v or streamv2v_config.get('enabled', False)
+                
+                if not streamv2v_enabled:
+                    raise HTTPException(status_code=400, detail="StreamV2V is not enabled")
+                
+                # Validate StreamV2V parameters
+                validated_data = {}
+                
+                if 'use_feature_injection' in data:
+                    validated_data['use_feature_injection'] = bool(data['use_feature_injection'])
+                
+                if 'feature_injection_strength' in data:
+                    strength = float(data['feature_injection_strength'])
+                    if not (-2.0 <= strength <= 3.0):
+                        raise HTTPException(status_code=400, detail="feature_injection_strength must be between -2.0 and 3.0")
+                    validated_data['feature_injection_strength'] = strength
+                
+                if 'feature_similarity_threshold' in data:
+                    threshold = float(data['feature_similarity_threshold'])
+                    if not (0.0 <= threshold <= 1.0):
+                        raise HTTPException(status_code=400, detail="feature_similarity_threshold must be between 0.0 and 1.0")
+                    validated_data['feature_similarity_threshold'] = threshold
+                
+                if 'interval' in data:
+                    interval = int(data['interval'])
+                    if not (1 <= interval <= 100):
+                        raise HTTPException(status_code=400, detail="interval must be between 1 and 100 frames")
+                    validated_data['interval'] = interval
+                
+                if 'max_frames' in data:
+                    max_frames = int(data['max_frames'])
+                    if not (1 <= max_frames <= 50):
+                        raise HTTPException(status_code=400, detail="max_frames must be between 1 and 50")
+                    validated_data['max_frames'] = max_frames
+                
+                if 'use_tome_cache' in data:
+                    validated_data['use_tome_cache'] = bool(data['use_tome_cache'])
+                
+                if 'tome_ratio' in data:
+                    ratio = float(data['tome_ratio'])
+                    if not (0.0 <= ratio <= 1.0):
+                        raise HTTPException(status_code=400, detail="tome_ratio must be between 0.0 and 1.0")
+                    validated_data['tome_ratio'] = ratio
+                
+                if 'use_grid' in data:
+                    validated_data['use_grid'] = bool(data['use_grid'])
+                
+                if not validated_data:
+                    raise HTTPException(status_code=400, detail="No valid StreamV2V parameters provided")
+                
+                # Update StreamV2V parameters using stream_parameter_updater
+                self.pipeline.stream.update_stream_params(**validated_data)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated StreamV2V parameters: {list(validated_data.keys())}"
+                })
+                
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid parameter value: {str(e)}")
+            except Exception as e:
+                logging.error(f"update_streamv2v_param: Failed to update StreamV2V parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update StreamV2V parameters: {str(e)}")
+
+        @self.app.post("/api/streamv2v/clear-feature-banks")
+        async def clear_streamv2v_feature_banks(request: Request):
+            """Clear StreamV2V feature banks to reset temporal state"""
+            try:
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if StreamV2V is enabled
+                streamv2v_enabled = False
+                if self.uploaded_controlnet_config:
+                    use_streamv2v = self.uploaded_controlnet_config.get('use_streamv2v', False)
+                    streamv2v_config = self.uploaded_controlnet_config.get('streamv2v', {})
+                    streamv2v_enabled = use_streamv2v or streamv2v_config.get('enabled', False)
+                
+                if not streamv2v_enabled:
+                    raise HTTPException(status_code=400, detail="StreamV2V is not enabled")
+                
+                # Clear feature banks if pipeline has StreamV2V support
+                if hasattr(self.pipeline, 'clear_feature_banks'):
+                    self.pipeline.clear_feature_banks()
+                elif hasattr(self.pipeline.stream, 'clear_feature_banks'):
+                    self.pipeline.stream.clear_feature_banks()
+                else:
+                    raise HTTPException(status_code=400, detail="StreamV2V feature banks not available")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": "StreamV2V feature banks cleared successfully"
+                })
+                
+            except Exception as e:
+                logging.error(f"clear_streamv2v_feature_banks: Failed to clear feature banks: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to clear feature banks: {str(e)}")
 
         @self.app.post("/api/seed-blending/update")
         async def update_seed_blending(request: Request):
@@ -1562,6 +1678,77 @@ class App:
                 pass
         
         return ipadapter_info
+
+    def _get_streamv2v_info(self):
+        """Get StreamV2V information from uploaded config or active pipeline"""
+        streamv2v_info = {
+            "enabled": False,
+            "config_loaded": False,
+            "use_feature_injection": True,
+            "feature_injection_strength": 0.8,
+            "feature_similarity_threshold": 0.98,
+            "interval": 4,
+            "max_frames": 1,
+            "use_tome_cache": True,
+            "tome_ratio": 0.5,
+            "use_grid": False
+        }
+        
+        # Check uploaded config first
+        if self.uploaded_controlnet_config:
+            # Check for top-level use_streamv2v flag OR streamv2v.enabled
+            use_streamv2v = self.uploaded_controlnet_config.get('use_streamv2v', False)
+            streamv2v_config = self.uploaded_controlnet_config.get('streamv2v', {})
+            streamv2v_enabled = streamv2v_config.get('enabled', False)
+            
+            if use_streamv2v or streamv2v_enabled:
+                streamv2v_info["enabled"] = True
+                streamv2v_info["config_loaded"] = True
+                
+                # Update with config values
+                streamv2v_info["use_feature_injection"] = streamv2v_config.get('use_feature_injection', True)
+                streamv2v_info["feature_injection_strength"] = streamv2v_config.get('feature_injection_strength', 0.8)
+                streamv2v_info["feature_similarity_threshold"] = streamv2v_config.get('feature_similarity_threshold', 0.98)
+                streamv2v_info["interval"] = streamv2v_config.get('interval', 4)
+                streamv2v_info["max_frames"] = streamv2v_config.get('max_frames', 1)
+                streamv2v_info["use_tome_cache"] = streamv2v_config.get('use_tome_cache', True)
+                streamv2v_info["tome_ratio"] = streamv2v_config.get('tome_ratio', 0.5)
+                streamv2v_info["use_grid"] = streamv2v_config.get('use_grid', False)
+                    
+        # Otherwise check active pipeline
+        elif self.pipeline and self.pipeline.use_config and self.pipeline.config:
+            # Check for top-level use_streamv2v flag OR streamv2v.enabled
+            use_streamv2v = self.pipeline.config.get('use_streamv2v', False)
+            streamv2v_config = self.pipeline.config.get('streamv2v', {})
+            streamv2v_enabled = streamv2v_config.get('enabled', False)
+            
+            if use_streamv2v or streamv2v_enabled:
+                streamv2v_info["enabled"] = True
+                streamv2v_info["config_loaded"] = True
+                
+                # Update with config values
+                streamv2v_info["use_feature_injection"] = streamv2v_config.get('use_feature_injection', True)
+                streamv2v_info["feature_injection_strength"] = streamv2v_config.get('feature_injection_strength', 0.8)
+                streamv2v_info["feature_similarity_threshold"] = streamv2v_config.get('feature_similarity_threshold', 0.98)
+                streamv2v_info["interval"] = streamv2v_config.get('interval', 4)
+                streamv2v_info["max_frames"] = streamv2v_config.get('max_frames', 1)
+                streamv2v_info["use_tome_cache"] = streamv2v_config.get('use_tome_cache', True)
+                streamv2v_info["tome_ratio"] = streamv2v_config.get('tome_ratio', 0.5)
+                streamv2v_info["use_grid"] = streamv2v_config.get('use_grid', False)
+                    
+            # Try to get current values from active pipeline if available
+            try:
+                if hasattr(self.pipeline, 'get_streamv2v_info'):
+                    pipeline_info = self.pipeline.get_streamv2v_info()
+                    if pipeline_info.get("enabled"):
+                        # Update with current runtime values
+                        for key in streamv2v_info:
+                            if key in pipeline_info:
+                                streamv2v_info[key] = pipeline_info[key]
+            except:
+                pass
+        
+        return streamv2v_info
 
     def _calculate_aspect_ratio(self, width: int, height: int) -> str:
         """Calculate and return aspect ratio as a string"""

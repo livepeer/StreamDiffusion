@@ -276,16 +276,17 @@ class StreamParameterUpdater:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
-        # StreamV2V parameters
+        # StreamV2V parameters (optional, only passed to pipelines that support them)
+        use_feature_injection: Optional[bool] = None,
         feature_injection_strength: Optional[float] = None,
         feature_similarity_threshold: Optional[float] = None,
         interval: Optional[int] = None,
-        use_tome_cache: Optional[bool] = None,
-        tome_ratio: Optional[float] = None,
-        use_grid: Optional[bool] = None,
+        max_frames: Optional[int] = None,
     ) -> None:
-        """Update streaming parameters efficiently in a single call."""
-
+        """
+        Update streaming parameters efficiently in a single call.
+        Also supports updating StreamV2V parameters if the underlying pipeline supports it.
+        """
         if num_inference_steps is not None:
             self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
             self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
@@ -328,23 +329,26 @@ class StreamParameterUpdater:
                 interpolation_method=seed_interpolation_method
             )
 
-        # Handle StreamV2V parameters if provided
-        streamv2v_params = {
-            k: v for k, v in {
-                'feature_injection_strength': feature_injection_strength,
-                'feature_similarity_threshold': feature_similarity_threshold,
-                'interval': interval,
-                'use_tome_cache': use_tome_cache,
-                'tome_ratio': tome_ratio,
-                'use_grid': use_grid,
-            }.items() if v is not None
-        }
-        
-        if streamv2v_params and hasattr(self.stream, 'update_streamv2v_params'):
-            self.stream.update_streamv2v_params(**streamv2v_params)
-
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
+
+        # StreamV2V parameter update (if supported)
+        streamv2v_kwargs = {}
+        if use_feature_injection is not None:
+            streamv2v_kwargs["use_feature_injection"] = use_feature_injection
+        if feature_injection_strength is not None:
+            streamv2v_kwargs["feature_injection_strength"] = feature_injection_strength
+        if feature_similarity_threshold is not None:
+            streamv2v_kwargs["feature_similarity_threshold"] = feature_similarity_threshold
+        if interval is not None:
+            streamv2v_kwargs["interval"] = interval
+        if max_frames is not None:
+            streamv2v_kwargs["max_frames"] = max_frames
+
+        if streamv2v_kwargs:
+            update_fn = getattr(self.stream, "update_streamv2v_params", None)
+            if callable(update_fn):
+                update_fn(**streamv2v_kwargs)
 
     @torch.no_grad()
     def update_prompt_weights(

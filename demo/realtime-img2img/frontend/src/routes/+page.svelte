@@ -8,6 +8,7 @@
   import PipelineOptions from '$lib/components/PipelineOptions.svelte';
   import ControlNetConfig from '$lib/components/ControlNetConfig.svelte';
   import IPAdapterConfig from '$lib/components/IPAdapterConfig.svelte';
+  import StreamV2VConfig from '$lib/components/StreamV2VConfig.svelte';
   import BlendingControl from '$lib/components/BlendingControl.svelte';
   import ResolutionPicker from '$lib/components/ResolutionPicker.svelte';
   import Spinner from '$lib/icons/spinner.svelte';
@@ -22,6 +23,7 @@
   let pipelineInfo: PipelineInfo;
   let controlnetInfo: any = null;
   let ipadapterInfo: any = null;
+  let streamv2vInfo: any = null;
   let ipadapterScale: number = 1.0;
   let tIndexList: number[] = [35, 45];
   let guidanceScale: number = 1.1;
@@ -105,6 +107,7 @@
       
       controlnetInfo = settings.controlnet || null;
       ipadapterInfo = settings.ipadapter || null;
+      streamv2vInfo = settings.streamv2v || null;
       ipadapterScale = settings.ipadapter?.scale || 1.0;
       tIndexList = settings.t_index_list || [35, 45];
       guidanceScale = settings.guidance_scale || 1.1;
@@ -395,6 +398,12 @@
           ipadapterScale = result.ipadapter.scale || 1.0;
         }
         
+        // Update StreamV2V info
+        if (result.streamv2v) {
+          streamv2vInfo = result.streamv2v;
+          console.log('uploadConfig: Updated StreamV2V info:', streamv2vInfo);
+        }
+        
         // Update streaming parameters
         if (result.t_index_list) {
           tIndexList = [...result.t_index_list];
@@ -660,6 +669,10 @@
             {ipadapterInfo} 
             currentScale={ipadapterScale}
           ></IPAdapterConfig>
+          
+          <StreamV2VConfig 
+            {streamv2vInfo}
+          ></StreamV2VConfig>
         {/if}
       </div>
     </div>
