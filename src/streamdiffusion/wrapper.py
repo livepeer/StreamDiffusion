@@ -835,7 +835,7 @@ class StreamDiffusionWrapper:
         try:
             self.cleanup_gpu_memory()
         except Exception as e:
-            logger.warning(f"⚠️ GPU cleanup warning: {e}")
+            logger.warning(f"GPU cleanup warning: {e}")
 
         # First, try to detect if this is an SDXL model before loading
         # TODO: CAN we do this step with model_detection.py?
@@ -906,7 +906,7 @@ class StreamDiffusionWrapper:
             raise RuntimeError(error_msg)
 
         # If we get here, the model loaded successfully - break out of retry loop
-        logger.info(f"✅ Model loading succeeded")
+        logger.info(f"Model loading succeeded")
 
         # Use comprehensive model detection instead of basic detection
         detection_result = detect_model(pipe.unet, pipe)
@@ -1020,11 +1020,11 @@ class StreamDiffusionWrapper:
                     confidence = getattr(self, '_detection_confidence', 0.0)
                     
                     if is_sdxl:
-                        logger.info(f"🎯 Building TensorRT engines for SDXL model: {model_type}")
+                        logger.info(f"Building TensorRT engines for SDXL model: {model_type}")
                         logger.info(f"   Turbo variant: {is_turbo}")
                         logger.info(f"   Detection confidence: {confidence:.2f}")
                     else:
-                        logger.info(f"🎯 Building TensorRT engines for {model_type}")
+                        logger.info(f"Building TensorRT engines for {model_type}")
                     
                     # Enable IPAdapter TensorRT if configured and available
                     if has_ipadapter:
@@ -1062,7 +1062,7 @@ class StreamDiffusionWrapper:
                         unet_arch = {}
                         
                 except Exception as e:
-                    logger.error(f"⚠️ Advanced model detection failed: {e}")
+                    logger.error(f"Advanced model detection failed: {e}")
                     logger.error("   Falling back to basic TensorRT")
                     
                     # Fallback to basic detection
@@ -1155,11 +1155,11 @@ class StreamDiffusionWrapper:
                 if is_sdxl:
                     # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
                     embedding_dim = 2048
-                    logger.info(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
+                    logger.info(f"SDXL model detected! Using embedding_dim = {embedding_dim}")
                 else:
                     # SD1.5, SD2.1, etc. use single text encoder
                     embedding_dim = stream.text_encoder.config.hidden_size
-                    logger.info(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
+                    logger.info(f"Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
 
                 # Gather parameters for unified wrapper - validate IPAdapter first for consistent token count
                 control_input_names = None
@@ -1259,7 +1259,7 @@ class StreamDiffusionWrapper:
                 # Try to load TensorRT UNet engine with OOM recovery
                 tensorrt_unet_loaded = False
                 try:
-                    logger.info("🚀 Loading TensorRT UNet engine...")
+                    logger.info("Loading TensorRT UNet engine...")
                     # Compile and load UNet engine using EngineManager
                     stream.unet = engine_manager.compile_and_load_engine(
                         EngineType.UNET,
@@ -1278,7 +1278,7 @@ class StreamDiffusionWrapper:
                     )
                     
                     tensorrt_unet_loaded = True
-                    logger.info("✅ TensorRT UNet engine loaded successfully")
+                    logger.info("TensorRT UNet engine loaded successfully")
                     
                 except Exception as e:
                     error_msg = str(e).lower()
@@ -1286,9 +1286,9 @@ class StreamDiffusionWrapper:
                                    'oom' in error_msg or 'cuda error' in error_msg)
                     
                     if is_oom_error:
-                        logger.error(f"❌ TensorRT UNet engine OOM: {e}")
-                        logger.info("🔄 Falling back to PyTorch UNet (no TensorRT acceleration)")
-                        logger.info("💡 This will be slower but should work with less memory")
+                        logger.error(f"TensorRT UNet engine OOM: {e}")
+                        logger.info("Falling back to PyTorch UNet (no TensorRT acceleration)")
+                        logger.info("This will be slower but should work with less memory")
                         
                         # Clean up any partial TensorRT state
                         if hasattr(stream, 'unet'):
@@ -1301,19 +1301,19 @@ class StreamDiffusionWrapper:
                         
                         # Fall back to original PyTorch UNet
                         try:
-                            logger.info("📦 Loading PyTorch UNet as fallback...")
+                            logger.info("Loading PyTorch UNet as fallback...")
                             # Keep the original UNet from the pipe
                             if hasattr(stream, 'pipe') and hasattr(stream.pipe, 'unet'):
                                 stream.unet = stream.pipe.unet
-                                logger.info("✅ PyTorch UNet fallback successful")
+                                logger.info("PyTorch UNet fallback successful")
                             else:
                                 raise RuntimeError("No PyTorch UNet available for fallback")
                         except Exception as fallback_error:
-                            logger.error(f"❌ PyTorch UNet fallback also failed: {fallback_error}")
+                            logger.error(f"PyTorch UNet fallback also failed: {fallback_error}")
                             raise RuntimeError(f"Both TensorRT and PyTorch UNet loading failed. TensorRT error: {e}, Fallback error: {fallback_error}")
                     else:
                         # Non-OOM error, re-raise
-                        logger.error(f"❌ TensorRT UNet engine loading failed (non-OOM): {e}")
+                        logger.error(f"TensorRT UNet engine loading failed (non-OOM): {e}")
                         raise e
 
                 # Load VAE engines using paths returned by EngineManager
@@ -1333,7 +1333,7 @@ class StreamDiffusionWrapper:
                 # Try to load TensorRT VAE engines with OOM recovery
                 tensorrt_vae_loaded = False
                 try:
-                    logger.info("🚀 Loading TensorRT VAE engines...")
+                    logger.info("Loading TensorRT VAE engines...")
                     stream.vae = AutoencoderKLEngine(
                         vae_encoder_path,
                         vae_decoder_path,
@@ -1345,7 +1345,7 @@ class StreamDiffusionWrapper:
                     stream.vae.dtype = vae_dtype
                     
                     tensorrt_vae_loaded = True
-                    logger.info("✅ TensorRT VAE engines loaded successfully")
+                    logger.info("TensorRT VAE engines loaded successfully")
                     
                 except Exception as e:
                     error_msg = str(e).lower()
@@ -1353,9 +1353,9 @@ class StreamDiffusionWrapper:
                                    'oom' in error_msg or 'cuda error' in error_msg)
                     
                     if is_oom_error:
-                        logger.error(f"❌ TensorRT VAE engine OOM: {e}")
-                        logger.info("🔄 Falling back to PyTorch VAE (no TensorRT acceleration)")
-                        logger.info("💡 This will be slower but should work with less memory")
+                        logger.error(f"TensorRT VAE engine OOM: {e}")
+                        logger.info("Falling back to PyTorch VAE (no TensorRT acceleration)")
+                        logger.info("This will be slower but should work with less memory")
                         
                         # Clean up any partial TensorRT state
                         if hasattr(stream, 'vae'):
@@ -1368,19 +1368,19 @@ class StreamDiffusionWrapper:
                         
                         # Fall back to original PyTorch VAE
                         try:
-                            logger.info("📦 Loading PyTorch VAE as fallback...")
+                            logger.info("Loading PyTorch VAE as fallback...")
                             # Keep the original VAE from the pipe
                             if hasattr(stream, 'pipe') and hasattr(stream.pipe, 'vae'):
                                 stream.vae = stream.pipe.vae
-                                logger.info("✅ PyTorch VAE fallback successful")
+                                logger.info("PyTorch VAE fallback successful")
                             else:
                                 raise RuntimeError("No PyTorch VAE available for fallback")
                         except Exception as fallback_error:
-                            logger.error(f"❌ PyTorch VAE fallback also failed: {fallback_error}")
+                            logger.error(f"PyTorch VAE fallback also failed: {fallback_error}")
                             raise RuntimeError(f"Both TensorRT and PyTorch VAE loading failed. TensorRT error: {e}, Fallback error: {fallback_error}")
                     else:
                         # Non-OOM error, re-raise
-                        logger.error(f"❌ TensorRT VAE engine loading failed (non-OOM): {e}")
+                        logger.error(f"TensorRT VAE engine loading failed (non-OOM): {e}")
                         raise e
                     
             if acceleration == "sfast":
@@ -1677,13 +1677,13 @@ class StreamDiffusionWrapper:
         import gc
         import torch
         
-        logger.info("🧹 Cleaning up GPU memory...")
+        logger.info("Cleaning up GPU memory...")
         
         # Clear prompt caches
         if hasattr(self, 'stream') and self.stream:
             try:
                 self.stream._param_updater.clear_caches()
-                logger.info("   ✅ Cleared prompt caches")
+                logger.info("   Cleared prompt caches")
             except:
                 pass
         
@@ -1693,7 +1693,7 @@ class StreamDiffusionWrapper:
                 # Cleanup UNet TensorRT engine
                 if hasattr(self.stream, 'unet'):
                     unet_engine = self.stream.unet
-                    logger.info("   🔧 Cleaning up TensorRT UNet engine...")
+                    logger.info("   Cleaning up TensorRT UNet engine...")
                     
                     # Check if it's a TensorRT engine and cleanup properly
                     if hasattr(unet_engine, 'engine') and hasattr(unet_engine.engine, '__del__'):
@@ -1717,12 +1717,12 @@ class StreamDiffusionWrapper:
                             pass
                     
                     del self.stream.unet
-                    logger.info("   ✅ UNet engine cleanup completed")
+                    logger.info("   UNet engine cleanup completed")
                     
                 # Cleanup VAE TensorRT engines
                 if hasattr(self.stream, 'vae'):
                     vae_engine = self.stream.vae
-                    logger.info("   🔧 Cleaning up TensorRT VAE engines...")
+                    logger.info("   Cleaning up TensorRT VAE engines...")
                     
                     # VAE has encoder and decoder engines
                     for engine_name in ['vae_encoder', 'vae_decoder']:
@@ -1739,26 +1739,26 @@ class StreamDiffusionWrapper:
                                 pass
                     
                     del self.stream.vae
-                    logger.info("   ✅ VAE engines cleanup completed")
+                    logger.info("   VAE engines cleanup completed")
                 
                 # Cleanup ControlNet engine pool if it exists
                 if hasattr(self.stream, 'controlnet_engine_pool'):
-                    logger.info("   🔧 Cleaning up ControlNet engine pool...")
+                    logger.info("   Cleaning up ControlNet engine pool...")
                     try:
                         self.stream.controlnet_engine_pool.cleanup()
                         del self.stream.controlnet_engine_pool
-                        logger.info("   ✅ ControlNet engine pool cleanup completed")
+                        logger.info("   ControlNet engine pool cleanup completed")
                     except:
                         pass
                     
             except Exception as e:
-                logger.error(f"   ⚠️ TensorRT cleanup warning: {e}")
+                logger.error(f"   TensorRT cleanup warning: {e}")
         
         # Clear the entire stream object to free all models
         if hasattr(self, 'stream'):
             try:
                 del self.stream
-                logger.info("   ✅ Cleared stream object")
+                logger.info("   Cleared stream object")
             except:
                 pass
             self.stream = None
@@ -1779,9 +1779,9 @@ class StreamDiffusionWrapper:
             # Get memory info
             allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
             cached = torch.cuda.memory_reserved() / (1024**3)     # GB
-            logger.info(f"   📊 GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
+            logger.info(f"   GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
         
-        logger.info("   ✅ Enhanced GPU memory cleanup complete")
+        logger.info("   Enhanced GPU memory cleanup complete")
 
     def check_gpu_memory_for_engine(self, engine_size_gb: float) -> bool:
         """
@@ -1808,7 +1808,7 @@ class StreamDiffusionWrapper:
             # Add 20% overhead for safety
             required_memory = engine_size_gb * 1.2
             
-            logger.info(f"📊 GPU Memory Check:")
+            logger.info(f"GPU Memory Check:")
             logger.info(f"   Total: {total_memory:.2f}GB")
             logger.info(f"   Allocated: {allocated:.2f}GB") 
             logger.info(f"   Cached: {cached:.2f}GB")
@@ -1816,14 +1816,14 @@ class StreamDiffusionWrapper:
             logger.info(f"   Required: {required_memory:.2f}GB (engine: {engine_size_gb:.2f}GB + 20% overhead)")
             
             if free_memory >= required_memory:
-                logger.info(f"   ✅ Sufficient memory available")
+                logger.info(f"   Sufficient memory available")
                 return True
             else:
-                logger.error(f"   ❌ Insufficient memory! Need {required_memory:.2f}GB but only {free_memory:.2f}GB available")
+                logger.error(f"   Insufficient memory! Need {required_memory:.2f}GB but only {free_memory:.2f}GB available")
                 return False
                 
         except Exception as e:
-            logger.error(f"   ⚠️ Memory check failed: {e}")
+            logger.error(f"   Memory check failed: {e}")
             return True  # Assume OK if check fails
 
     def cleanup_engines_and_rebuild(self, reduce_batch_size: bool = True, reduce_resolution: bool = False) -> None:
@@ -1840,7 +1840,7 @@ class StreamDiffusionWrapper:
         import shutil
         import os
         
-        logger.info("🔧 Cleaning up engines and rebuilding with smaller settings...")
+        logger.info("Cleaning up engines and rebuilding with smaller settings...")
         
         # Clean up GPU memory first
         self.cleanup_gpu_memory()
@@ -1850,22 +1850,22 @@ class StreamDiffusionWrapper:
         if os.path.exists(engines_dir):
             try:
                 shutil.rmtree(engines_dir)
-                logger.info(f"   ✅ Removed engines directory: {engines_dir}")
+                logger.info(f"   Removed engines directory: {engines_dir}")
             except Exception as e:
-                logger.error(f"   ⚠️ Failed to remove engines: {e}")
+                logger.error(f"   Failed to remove engines: {e}")
         
         # Reduce settings
         if reduce_batch_size:
             if hasattr(self, 'batch_size') and self.batch_size > 1:
                 old_batch = self.batch_size
                 self.batch_size = 1
-                logger.info(f"   🔧 Reduced batch size: {old_batch} → {self.batch_size}")
+                logger.info(f"   Reduced batch size: {old_batch} -> {self.batch_size}")
             
             # Also reduce frame buffer size if needed
             if hasattr(self, 'frame_buffer_size') and self.frame_buffer_size > 1:
                 old_buffer = self.frame_buffer_size
                 self.frame_buffer_size = 1  
-                logger.info(f"   🔧 Reduced frame buffer size: {old_buffer} → {self.frame_buffer_size}")
+                logger.info(f"   Reduced frame buffer size: {old_buffer} -> {self.frame_buffer_size}")
         
         if reduce_resolution:
             if hasattr(self, 'width') and hasattr(self, 'height'):
@@ -1875,9 +1875,9 @@ class StreamDiffusionWrapper:
                 # Round to multiples of 64 for compatibility
                 self.width = (self.width // 64) * 64
                 self.height = (self.height // 64) * 64
-                logger.info(f"   🔧 Reduced resolution: {old_width}x{old_height} → {self.width}x{self.height}")
+                logger.info(f"   Reduced resolution: {old_width}x{old_height} -> {self.width}x{self.height}")
         
-        logger.info("   💡 Next model load will rebuild engines with these smaller settings")
+        logger.info("   Next model load will rebuild engines with these smaller settings")
 
     def update_prompt_at_index(
         self,
