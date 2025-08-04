@@ -3,34 +3,45 @@
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
 
   export let currentResolution: ResolutionInfo;
-  export let pipelineParams: any; // Add pipeline params prop
+  export let pipelineParams: any;
 
-  // Parse resolution values from pipeline params
-  $: resolutionOptions = pipelineParams?.resolution?.values || [];
+  // Generate resolution options from 384 to 1024, divisible by 64
+  const resolutionValues = Array.from({ length: 11 }, (_, i) => 384 + (i * 64));
 
-  function handleResolutionChange(value: string) {
-    pipelineValues.update(values => ({
-      ...values,
-      resolution: value
-    }));
+  // Local state for selected values (not yet applied)
+  let selectedWidth = currentResolution?.width || 512;
+  let selectedHeight = currentResolution?.height || 512;
+
+  // Update local state when currentResolution changes
+  $: if (currentResolution) {
+    selectedWidth = currentResolution.width;
+    selectedHeight = currentResolution.height;
   }
 
+  function handleWidthChange(event: Event) {
+    selectedWidth = parseInt((event.target as HTMLSelectElement).value);
+  }
 
+  function handleHeightChange(event: Event) {
+    selectedHeight = parseInt((event.target as HTMLSelectElement).value);
+  }
 
-  // Parse resolution string to get width, height, and aspect ratio
-  function parseResolutionOption(option: string) {
-    const match = option.match(/^(\d+)x(\d+)\s*\(([^)]+)\)$/);
-    if (match) {
-      const [, width, height, aspectRatio] = match;
-      return {
-        label: `${width}×${height}`,
-        value: option,
-        aspectRatio: aspectRatio,
-        width: parseInt(width),
-        height: parseInt(height)
-      };
+  function updateResolution() {
+    const aspectRatio = selectedWidth / selectedHeight;
+    let aspectRatioString = "1:1";
+    
+    if (aspectRatio > 1.1) {
+      aspectRatioString = "Landscape";
+    } else if (aspectRatio < 0.9) {
+      aspectRatioString = "Portrait";
     }
-    return null;
+    
+    const resolutionString = `${selectedWidth}x${selectedHeight} (${aspectRatioString})`;
+    
+    pipelineValues.update(values => ({
+      ...values,
+      resolution: resolutionString
+    }));
   }
 </script>
 
@@ -48,85 +59,45 @@
     {/if}
   </div>
 
-  {#if resolutionOptions.length > 0}
-    <div class="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto">
-      {#each resolutionOptions as option}
-        {@const parsed = parseResolutionOption(option)}
-        {#if parsed}
-          <button
-            on:click={() => handleResolutionChange(parsed.value)}
-            class="p-2 text-xs border rounded-lg transition-colors {$pipelineValues.resolution === parsed.value 
-              ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200' 
-              : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'}"
-            title="Aspect Ratio: {parsed.aspectRatio}"
-          >
-            <div class="font-medium">{parsed.label}</div>
-            <div class="text-xs opacity-75">{parsed.aspectRatio}</div>
-          </button>
-        {/if}
-      {/each}
-    </div>
-  {:else}
-    <!-- Fallback to basic presets if no pipeline options -->
-    <div class="grid grid-cols-2 gap-2">
-      <button
-        on:click={() => handleResolutionChange('512x512 (1:1)')}
-        class="p-2 text-xs border rounded-lg transition-colors {$pipelineValues.resolution === '512x512 (1:1)' 
-          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200' 
-          : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'}"
+  <div class="flex gap-2">
+    <div class="flex-1">
+      <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+        Width
+      </label>
+      <select
+        class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+        value={selectedWidth}
+        on:change={handleWidthChange}
       >
-        <div class="font-medium">512×512</div>
-        <div class="text-xs opacity-75">1:1</div>
-      </button>
-      <button
-        on:click={() => handleResolutionChange('768x768 (1:1)')}
-        class="p-2 text-xs border rounded-lg transition-colors {$pipelineValues.resolution === '768x768 (1:1)' 
-          ? 'bg-blue-100 dark:bg-blue-900 border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-200' 
-          : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'}"
-      >
-        <div class="font-medium">768×768</div>
-        <div class="text-xs opacity-75">1:1</div>
-      </button>
+        {#each resolutionValues as value}
+          <option value={value}>{value}</option>
+        {/each}
+      </select>
     </div>
-  {/if}
+    
+    <div class="flex-1">
+      <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+        Height
+      </label>
+      <select
+        class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+        value={selectedHeight}
+        on:change={handleHeightChange}
+      >
+        {#each resolutionValues as value}
+          <option value={value}>{value}</option>
+        {/each}
+      </select>
+    </div>
+  </div>
 
-  <!-- Custom resolution input -->
-  <div class="space-y-2">
-    <label class="text-xs font-medium text-gray-600 dark:text-gray-400">
-      Custom Resolution
-    </label>
-    <div class="flex gap-2">
-      <input
-        type="number"
-        placeholder="Width"
-        class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
-        min="64"
-        max="2048"
-        step="64"
-        on:change={(e) => {
-          const width = e.target.value;
-          const height = currentResolution?.height || 512;
-          if (width) {
-            handleResolutionChange(`${width}x${height} (${width}:${height})`);
-          }
-        }}
-      />
-      <span class="text-xs text-gray-500 dark:text-gray-400 self-center">×</span>
-      <input
-        type="number"
-        placeholder="Height"
-        class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
-        min="64"
-        max="2048"
-        step="64"
-        on:change={(e) => {
-          const height = e.target.value;
-          const width = currentResolution?.width || 512;
-          if (height) {
-            handleResolutionChange(`${width}x${height} (${width}:${height})`);
-          }
-        }}
-      />
-    </div>
+  <!-- Update Button -->
+  <div class="flex justify-end">
+    <button
+      on:click={updateResolution}
+      class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+    >
+      Update Resolution
+    </button>
   </div>
 </div> 
