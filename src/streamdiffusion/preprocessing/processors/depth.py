@@ -19,6 +19,17 @@ class DepthPreprocessor(BasePreprocessor):
     Estimates depth maps from input images using the MiDaS depth estimation model.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Depth Estimation",
+            "description": "Estimates depth from the input image using MiDaS. Good for adding depth-based control to generation.",
+            "parameters": {
+ 
+            },
+            "use_cases": ["3D-aware generation", "Depth preservation", "Scene understanding"]
+        }
+    
     def __init__(self, 
                  model_name: str = "Intel/dpt-large",
                  detect_resolution: int = 512,
