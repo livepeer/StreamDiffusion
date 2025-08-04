@@ -8,20 +8,26 @@
   // Generate resolution options from 384 to 1024, divisible by 64
   const resolutionValues = Array.from({ length: 11 }, (_, i) => 384 + (i * 64));
 
+  // Local state for selected values (not yet applied)
+  let selectedWidth = currentResolution?.width || 512;
+  let selectedHeight = currentResolution?.height || 512;
+
+  // Update local state when currentResolution changes
+  $: if (currentResolution) {
+    selectedWidth = currentResolution.width;
+    selectedHeight = currentResolution.height;
+  }
+
   function handleWidthChange(event: Event) {
-    const width = parseInt((event.target as HTMLSelectElement).value);
-    const height = currentResolution?.height || 512;
-    updateResolution(width, height);
+    selectedWidth = parseInt((event.target as HTMLSelectElement).value);
   }
 
   function handleHeightChange(event: Event) {
-    const height = parseInt((event.target as HTMLSelectElement).value);
-    const width = currentResolution?.width || 512;
-    updateResolution(width, height);
+    selectedHeight = parseInt((event.target as HTMLSelectElement).value);
   }
 
-  function updateResolution(width: number, height: number) {
-    const aspectRatio = width / height;
+  function updateResolution() {
+    const aspectRatio = selectedWidth / selectedHeight;
     let aspectRatioString = "1:1";
     
     if (aspectRatio > 1.1) {
@@ -30,7 +36,7 @@
       aspectRatioString = "Portrait";
     }
     
-    const resolutionString = `${width}x${height} (${aspectRatioString})`;
+    const resolutionString = `${selectedWidth}x${selectedHeight} (${aspectRatioString})`;
     
     pipelineValues.update(values => ({
       ...values,
@@ -60,7 +66,7 @@
       </label>
       <select
         class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
-        value={currentResolution?.width || 512}
+        value={selectedWidth}
         on:change={handleWidthChange}
       >
         {#each resolutionValues as value}
@@ -75,7 +81,7 @@
       </label>
       <select
         class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
-        value={currentResolution?.height || 512}
+        value={selectedHeight}
         on:change={handleHeightChange}
       >
         {#each resolutionValues as value}
@@ -83,5 +89,15 @@
         {/each}
       </select>
     </div>
+  </div>
+
+  <!-- Update Button -->
+  <div class="flex justify-end">
+    <button
+      on:click={updateResolution}
+      class="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
+    >
+      Update Resolution
+    </button>
   </div>
 </div> 
