@@ -968,21 +968,14 @@ class StreamDiffusionWrapper:
                 stream.pipe.enable_xformers_memory_efficient_attention()
             if acceleration == "tensorrt":
                 from polygraphy import cuda
-                from streamdiffusion.acceleration.tensorrt import (
-                    TorchVAEEncoder,
-                    compile_unet,
-                    compile_vae_decoder,
-                    compile_vae_encoder,
-                )
-                from streamdiffusion.acceleration.tensorrt.runtime_engines.unet_engine import (
-                    AutoencoderKLEngine,
-                    UNet2DConditionModelEngine,
-                )
+                from streamdiffusion.acceleration.tensorrt import TorchVAEEncoder
+                from streamdiffusion.acceleration.tensorrt.runtime_engines.unet_engine import AutoencoderKLEngine
                 from streamdiffusion.acceleration.tensorrt.models.models import (
                     VAE,
                     UNet,
                     VAEEncoder,
                 )
+                from streamdiffusion.acceleration.tensorrt.engine_manager import EngineManager, EngineType
                 # Add ControlNet detection and support
                 from streamdiffusion.model_detection import (
                     extract_unet_architecture,
@@ -992,26 +985,8 @@ class StreamDiffusionWrapper:
                 from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_ipadapter_export import create_ipadapter_wrapper
 
                 # Legacy TensorRT implementation (fallback)
-                def create_prefix(
-                    model_id_or_path: str,
-                    max_batch: int,
-                    min_batch_size: int,
-                    ipadapter_scale: Optional[float] = None,
-                    ipadapter_tokens: Optional[int] = None,
-                ):
-                    maybe_path = Path(model_id_or_path)
-                    base_name = maybe_path.stem if maybe_path.exists() else model_id_or_path
-                    
-                    prefix = f"{base_name}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}"
-                    
-                    # Add IPAdapter parameters to engine name when provided
-                    if ipadapter_scale is not None:
-                        prefix += f"--ipa{ipadapter_scale}"
-                    if ipadapter_tokens is not None:
-                        prefix += f"--tokens{ipadapter_tokens}"
-                    
-                    prefix += f"--mode-{self.mode}"
-                    return prefix
+                # Initialize engine manager
+                engine_manager = EngineManager(engine_dir)
 
                 # Enhanced SDXL and ControlNet TensorRT support
                 use_controlnet_trt = False
@@ -1120,55 +1095,48 @@ class StreamDiffusionWrapper:
                         ipadapter_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
                     else:
                         ipadapter_tokens = 4  # Default fallback
-                unet_path = os.path.join(
-                    engine_dir,
-                    create_prefix(
-                        model_id_or_path=model_id_or_path,
-                        max_batch=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
-                        ipadapter_scale=ipadapter_scale,
-                        ipadapter_tokens=ipadapter_tokens,
-                    ),
-                    "unet.engine",
+                # Generate engine paths using EngineManager
+                unet_path = engine_manager.get_engine_path(
+                    EngineType.UNET,
+                    model_id_or_path=model_id_or_path,
+                    max_batch=stream.trt_unet_batch_size,
+                    min_batch_size=stream.trt_unet_batch_size,
+                    mode=self.mode,
+                    use_lcm_lora=use_lcm_lora,
+                    use_tiny_vae=use_tiny_vae,
+                    ipadapter_scale=ipadapter_scale,
+                    ipadapter_tokens=ipadapter_tokens
                 )
-                vae_encoder_path = os.path.join(
-                    engine_dir,
-                    create_prefix(
-                        model_id_or_path=model_id_or_path,
-                        max_batch=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        ipadapter_scale=ipadapter_scale,
-                        ipadapter_tokens=ipadapter_tokens,
-                    ),
-                    "vae_encoder.engine",
+                vae_encoder_path = engine_manager.get_engine_path(
+                    EngineType.VAE_ENCODER,
+                    model_id_or_path=model_id_or_path,
+                    max_batch=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    mode=self.mode,
+                    use_lcm_lora=use_lcm_lora,
+                    use_tiny_vae=use_tiny_vae,
+                    ipadapter_scale=ipadapter_scale,
+                    ipadapter_tokens=ipadapter_tokens
                 )
-                vae_decoder_path = os.path.join(
-                    engine_dir,
-                    create_prefix(
-                        model_id_or_path=model_id_or_path,
-                        max_batch=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        ipadapter_scale=ipadapter_scale,
-                        ipadapter_tokens=ipadapter_tokens,
-                    ),
-                    "vae_decoder.engine",
+                vae_decoder_path = engine_manager.get_engine_path(
+                    EngineType.VAE_DECODER,
+                    model_id_or_path=model_id_or_path,
+                    max_batch=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    mode=self.mode,
+                    use_lcm_lora=use_lcm_lora,
+                    use_tiny_vae=use_tiny_vae,
+                    ipadapter_scale=ipadapter_scale,
+                    ipadapter_tokens=ipadapter_tokens
                 )
 
                 # Check if all required engines exist
                 missing_engines = []
-                if not os.path.exists(unet_path):
+                if not unet_path.exists():
                     missing_engines.append(f"UNet engine: {unet_path}")
-                if not os.path.exists(vae_decoder_path):
+                if not vae_decoder_path.exists():
                     missing_engines.append(f"VAE decoder engine: {vae_decoder_path}")
-                if not os.path.exists(vae_encoder_path):
+                if not vae_encoder_path.exists():
                     missing_engines.append(f"VAE encoder engine: {vae_encoder_path}")
 
                 if missing_engines:
@@ -1183,134 +1151,105 @@ class StreamDiffusionWrapper:
                         error_msg += f"\nTo build engines, set build_engines_if_missing=True or run the build script manually."
                         raise RuntimeError(error_msg)
 
-                if not os.path.exists(unet_path):
-                    os.makedirs(os.path.dirname(unet_path), exist_ok=True)
+                # Determine correct embedding dimension based on model type
+                if is_sdxl:
+                    # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
+                    embedding_dim = 2048
+                    logger.info(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
+                else:
+                    # SD1.5, SD2.1, etc. use single text encoder
+                    embedding_dim = stream.text_encoder.config.hidden_size
+                    logger.info(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
 
-                    logger.info(f"Creating UNet model for image size: {self.width}x{self.height}")
+                # Gather parameters for unified wrapper - validate IPAdapter first for consistent token count
+                control_input_names = None
+                num_tokens = 4  # Default for non-IPAdapter mode
+                
+                if use_ipadapter_trt:
+                    if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
+                        raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
+                    num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
 
-                    # Determine correct embedding dimension based on model type
-                    if is_sdxl:
-                        # SDXL uses concatenated embeddings from dual text encoders (768 + 1280 = 2048)
-                        embedding_dim = 2048
-                        logger.info(f"🎯 SDXL model detected! Using embedding_dim = {embedding_dim}")
-                    else:
-                        # SD1.5, SD2.1, etc. use single text encoder
-                        embedding_dim = stream.text_encoder.config.hidden_size
-                        logger.info(f"🎯 Non-SDXL model ({model_type}) detected! Using embedding_dim = {embedding_dim}")
+                # Compile UNet engine using EngineManager
+                logger.info(f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}")
+                
+                unet_model = UNet(
+                    fp16=True,
+                    device=stream.device,
+                    max_batch=stream.trt_unet_batch_size,
+                    min_batch_size=stream.trt_unet_batch_size,
+                    embedding_dim=embedding_dim,
+                    unet_dim=stream.unet.config.in_channels,
+                    use_control=use_controlnet_trt,
+                    unet_arch=unet_arch if use_controlnet_trt else None,
+                    use_ipadapter=use_ipadapter_trt,
+                    num_image_tokens=num_tokens,
+                    image_height=self.height,
+                    image_width=self.width,
+                )
 
-                    # Gather parameters for unified wrapper - validate IPAdapter first for consistent token count
-                    control_input_names = None
-                    num_tokens = 4  # Default for non-IPAdapter mode
-                    
-                    if use_ipadapter_trt:
-                        if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
-                            raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
-                        num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                # Use ControlNet wrapper if ControlNet support is enabled
+                if use_controlnet_trt:
+                    control_input_names = unet_model.get_input_names()
+                
+                # Unified compilation path 
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
 
-                    unet_model = UNet(
-                        fp16=True,
-                        device=stream.device,
-                        max_batch=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
-                        embedding_dim=embedding_dim,
-                        unet_dim=stream.unet.config.in_channels,
-                        use_control=use_controlnet_trt,
-                        unet_arch=unet_arch if use_controlnet_trt else None,
-                        use_ipadapter=use_ipadapter_trt,
-                        num_image_tokens=num_tokens,  # Use same token count for consistency
-                        image_height=self.height,
-                        image_width=self.width,
-                    )
+                wrapped_unet = UnifiedExportWrapper(
+                    stream.unet,
+                    use_controlnet=use_controlnet_trt,
+                    use_ipadapter=use_ipadapter_trt,
+                    control_input_names=control_input_names,
+                    num_tokens=num_tokens
+                )
 
-                    # Use ControlNet wrapper if ControlNet support is enabled
-                    if use_controlnet_trt:
-                        control_input_names = unet_model.get_input_names()
-                    
-                    # Unified compilation path 
-                    from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
+                # Compile VAE decoder engine using EngineManager
+                vae_decoder_model = VAE(
+                    device=stream.device,
+                    max_batch=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                )
 
-                    wrapped_unet = UnifiedExportWrapper(
-                        stream.unet,
-                        use_controlnet=use_controlnet_trt,
-                        use_ipadapter=use_ipadapter_trt,
-                        control_input_names=control_input_names,
-                        num_tokens=num_tokens
-                    )
-                    
-                    # Single compilation call for all cases
-                    compile_unet(
-                        wrapped_unet,
-                        unet_model,
-                        unet_path + ".onnx",
-                        unet_path + ".opt.onnx",
-                        unet_path,
-                        opt_batch_size=stream.trt_unet_batch_size,
-                        engine_build_options={
-                            'opt_image_height': self.height,
-                            'opt_image_width': self.width,
-                        },
-                    )
+                engine_manager.compile_and_load_engine(
+                    EngineType.VAE_DECODER,
+                    vae_decoder_path,
+                    model=stream.vae,
+                    model_config=vae_decoder_model,
+                    batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    cuda_stream=None,
+                    stream_vae=stream.vae,
+                    engine_build_options={
+                        'opt_image_height': self.height,
+                        'opt_image_width': self.width,
+                        'build_dynamic_shape': True,
+                        'min_image_resolution': 384,
+                        'max_image_resolution': 1024,
+                    }
+                )
 
-                if not os.path.exists(vae_decoder_path):
-                    os.makedirs(os.path.dirname(vae_decoder_path), exist_ok=True)
-                    stream.vae.forward = stream.vae.decode
-                    vae_decoder_model = VAE(
-                        device=stream.device,
-                        max_batch=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                    )
-                    compile_vae_decoder(
-                        stream.vae,
-                        vae_decoder_model,
-                        vae_decoder_path + ".onnx",
-                        vae_decoder_path + ".opt.onnx",
-                        vae_decoder_path,
-                        opt_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        engine_build_options={
-                            'opt_image_height': self.height,
-                            'opt_image_width': self.width,
-                            'build_dynamic_shape': True,  # Force dynamic shapes
-                            'min_image_resolution': 384,
-                            'max_image_resolution': 1024,
-                        },
-                    )
-                    delattr(stream.vae, "forward")
+                # Compile VAE encoder engine using EngineManager
+                vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
+                vae_encoder_model = VAEEncoder(
+                    device=stream.device,
+                    max_batch=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                )
 
-                if not os.path.exists(vae_encoder_path):
-                    os.makedirs(os.path.dirname(vae_encoder_path), exist_ok=True)
-                    vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
-                    vae_encoder_model = VAEEncoder(
-                        device=stream.device,
-                        max_batch=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        min_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                    )
-                    compile_vae_encoder(
-                        vae_encoder,
-                        vae_encoder_model,
-                        vae_encoder_path + ".onnx",
-                        vae_encoder_path + ".opt.onnx",
-                        vae_encoder_path,
-                        opt_batch_size=self.batch_size
-                        if self.mode == "txt2img"
-                        else stream.frame_bff_size,
-                        engine_build_options={
-                            'opt_image_height': self.height,
-                            'opt_image_width': self.width,
-                            'build_dynamic_shape': True,  # Force dynamic shapes
-                            'min_image_resolution': 384,
-                            'max_image_resolution': 1024,
-                        },
-                    )
+                vae_encoder_path = engine_manager.compile_and_load_engine(
+                    EngineType.VAE_ENCODER,
+                    vae_encoder_path,
+                    model=vae_encoder,
+                    model_config=vae_encoder_model,
+                    batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                    cuda_stream=None,
+                    engine_build_options={
+                        'opt_image_height': self.height,
+                        'opt_image_width': self.width,
+                        'build_dynamic_shape': True,
+                        'min_image_resolution': 384,
+                        'max_image_resolution': 1024,
+                    }
+                )
 
                 cuda_stream = cuda.Stream()
 
@@ -1321,19 +1260,22 @@ class StreamDiffusionWrapper:
                 tensorrt_unet_loaded = False
                 try:
                     logger.info("🚀 Loading TensorRT UNet engine...")
-                    stream.unet = UNet2DConditionModelEngine(
-                        unet_path, cuda_stream, use_cuda_graph=True
+                    # Compile and load UNet engine using EngineManager
+                    stream.unet = engine_manager.compile_and_load_engine(
+                        EngineType.UNET,
+                        unet_path,
+                        model=wrapped_unet,
+                        model_config=unet_model,
+                        batch_size=stream.trt_unet_batch_size,
+                        cuda_stream=cuda_stream,
+                        use_controlnet_trt=use_controlnet_trt,
+                        use_ipadapter_trt=use_ipadapter_trt,
+                        unet_arch=unet_arch,
+                        engine_build_options={
+                            'opt_image_height': self.height,
+                            'opt_image_width': self.width,
+                        }
                     )
-
-                    # Store metadata on the engine for runtime use
-                    setattr(stream.unet, 'use_control', use_controlnet_trt)
-                    setattr(stream.unet, 'use_ipadapter', use_ipadapter_trt)
-                    
-                    if use_controlnet_trt:
-                        setattr(stream.unet, 'unet_arch', unet_arch)
-                        
-                    if use_ipadapter_trt:
-                        setattr(stream.unet, 'ipadapter_arch', unet_arch)
                     
                     tensorrt_unet_loaded = True
                     logger.info("✅ TensorRT UNet engine loaded successfully")
@@ -1374,10 +1316,10 @@ class StreamDiffusionWrapper:
                         logger.error(f"❌ TensorRT UNet engine loading failed (non-OOM): {e}")
                         raise e
 
-                # Load VAE engines
+                # Load VAE engines using paths returned by EngineManager
                 stream.vae = AutoencoderKLEngine(
-                    vae_encoder_path,
-                    vae_decoder_path,
+                    str(vae_encoder_path),
+                    str(vae_decoder_path),
                     cuda_stream,
                     stream.pipe.vae_scale_factor,
                     use_cuda_graph=True,
@@ -1487,11 +1429,15 @@ class StreamDiffusionWrapper:
 
         # Apply ControlNet patch if needed
         if use_controlnet and controlnet_config:
-            stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
+            # Pass engine_manager and cuda_stream if TensorRT is being used
+            if acceleration == "tensorrt":
+                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl, engine_manager, cuda_stream)
+            else:
+                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
 
         return stream
 
-    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False) -> Any:
+    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False, engine_manager = None, cuda_stream = None) -> Any:
         """
         Apply ControlNet patch to StreamDiffusion using detected model type
 
@@ -1518,22 +1464,38 @@ class StreamDiffusionWrapper:
         controlnet_pipeline._detected_model_type = model_type
         controlnet_pipeline._is_sdxl = is_sdxl
 
-        # Initialize ControlNet engine pool if using TensorRT acceleration
-        if use_controlnet_tensorrt:
-            from streamdiffusion.acceleration.tensorrt.engine_pool import ControlNetEnginePool
-            from polygraphy import cuda
-
-
-            # Create engine pool with same engine directory structure as UNet
-            stream_cuda = cuda.Stream()
-            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height)
-
-            # Store pool on the pipeline for later use
-            controlnet_pipeline._controlnet_pool = controlnet_pool
+        # Initialize ControlNet engine management if using TensorRT acceleration
+        if use_controlnet_tensorrt and engine_manager is not None:
+            # Use the same unified EngineManager for ControlNet engines
+            # Create a ControlNet-specific subdirectory for organization
+            controlnet_engine_dir = os.path.join(engine_dir, "controlnet")
+            
+            # Store unified engine manager on the pipeline for later use
+            controlnet_pipeline._engine_manager = engine_manager
+            controlnet_pipeline._controlnet_engine_dir = controlnet_engine_dir
             controlnet_pipeline._use_tensorrt = True
-            # Also set on stream where ControlNet pipeline expects to find it
-            stream.controlnet_engine_pool = controlnet_pool
-            logger.info("Initialized ControlNet TensorRT engine pool")
+            
+            # Also set engine manager on stream where ControlNet pipeline expects to find it
+            # Create a wrapper that provides the old interface but uses EngineManager internally
+            class ControlNetEnginePoolWrapper:
+                def __init__(self, engine_manager, controlnet_engine_dir, cuda_stream):
+                    self.engine_manager = engine_manager
+                    self.engine_dir = controlnet_engine_dir
+                    self.cuda_stream = cuda_stream
+                
+                def get_or_load_engine(self, model_id, pytorch_model, model_type="sd15", batch_size=1):
+                    """get_or_load_engine: Compatibility wrapper for ControlNet pipeline"""
+                    return self.engine_manager.get_or_load_controlnet_engine(
+                        model_id=model_id,
+                        pytorch_model=pytorch_model,
+                        model_type=model_type,
+                        batch_size=batch_size,
+                        cuda_stream=self.cuda_stream,
+                        use_cuda_graph=True
+                    )
+            
+            stream.controlnet_engine_pool = ControlNetEnginePoolWrapper(engine_manager, controlnet_engine_dir, cuda_stream)
+            logger.info("get_or_load_controlnet_engine: Initialized ControlNet TensorRT engine management with unified EngineManager")
         else:
             controlnet_pipeline._use_tensorrt = False
             logger.info("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
