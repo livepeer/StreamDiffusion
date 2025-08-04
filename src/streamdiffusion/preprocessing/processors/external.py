@@ -11,6 +11,17 @@ class ExternalPreprocessor(BasePreprocessor):
     
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "External",
+            "description": "Allows using external preprocessing tools or custom processing pipelines.",
+            "parameters": {
+
+            },
+            "use_cases": ["Custom processing", "Third-party tools integration", "Pre-processed control images"]
+        }
+    
     def __init__(self,
                  image_resolution: int = 512,
                  validate_input: bool = True,

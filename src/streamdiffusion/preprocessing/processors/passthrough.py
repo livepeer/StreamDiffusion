@@ -16,6 +16,17 @@ class PassthroughPreprocessor(BasePreprocessor):
     - Custom ControlNets that don't need preprocessing
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Passthrough",
+            "description": "Passes the input image through with minimal processing. Used for tile ControlNet or when you want to use the input image directly.",
+            "parameters": {
+
+            },
+            "use_cases": ["Tile ControlNet", "Image-to-image with structure preservation", "Upscaling with control"]
+        }
+    
     def __init__(self, 
                  image_resolution: int = 512,
                  **kwargs):

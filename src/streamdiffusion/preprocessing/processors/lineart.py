@@ -22,6 +22,26 @@ class LineartPreprocessor(BasePreprocessor):
     Optimized for real-time performance - no fallbacks.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Line Art Detection",
+            "description": "Detects line art and sketches from input images. Good for converting photos to line drawings.",
+            "parameters": {
+                "coarse": {
+                    "type": "bool",
+                    "default": True,
+                    "description": "Whether to use coarse line art detection (faster but less detailed)"
+                },
+                "anime_style": {
+                    "type": "bool",
+                    "default": False,
+                    "description": "Whether to use anime-style line art detection"
+                }
+            },
+            "use_cases": ["Sketch to image", "Line art generation", "Clean line extraction"]
+        }
+    
     def __init__(self, 
                  detect_resolution: int = 512,
                  image_resolution: int = 512,
