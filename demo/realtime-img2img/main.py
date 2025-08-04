@@ -1461,18 +1461,26 @@ class App:
             new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
         
         # Apply style image (uploaded or default) if pipeline has IPAdapter
-        if getattr(new_pipeline, 'has_ipadapter', False):
+        has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
+        print(f"_create_pipeline_with_config: Pipeline has_ipadapter: {has_ipadapter}")
+        
+        if has_ipadapter:
             style_image = None
             style_source = ""
             
             if self.uploaded_style_image:
                 style_image = self.uploaded_style_image
                 style_source = "uploaded"
+                print("_create_pipeline_with_config: Using uploaded style image")
             else:
                 # Try to load default style image
+                print("_create_pipeline_with_config: No uploaded style image, trying to load default")
                 style_image = self._load_default_style_image()
                 if style_image:
                     style_source = "default"
+                    print("_create_pipeline_with_config: Default style image loaded successfully")
+                else:
+                    print("_create_pipeline_with_config: Failed to load default style image")
             
             if style_image:
                 print(f"_create_pipeline_with_config: Applying {style_source} style image to new pipeline")
@@ -1491,6 +1499,10 @@ class App:
                         print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
                 else:
                     print(f"_create_pipeline_with_config: Failed to apply {style_source} style image")
+            else:
+                print("_create_pipeline_with_config: No style image available (neither uploaded nor default)")
+        else:
+            print("_create_pipeline_with_config: Pipeline does not have IPAdapter enabled")
         
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
@@ -1546,7 +1558,7 @@ class App:
             
             if os.path.exists(default_image_path):
                 print(f"_load_default_style_image: Loading default style image (input.png) from {default_image_path}")
-                return Image.open(default_image_path)
+                return Image.open(default_image_path).convert("RGB")
             else:
                 print(f"_load_default_style_image: Default style image not found at {default_image_path}")
                 return None
@@ -1705,18 +1717,26 @@ class App:
                 new_pipeline = self._create_default_pipeline()
             
             # Apply style image (uploaded or default) if pipeline has IPAdapter
-            if getattr(new_pipeline, 'has_ipadapter', False):
+            has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
+            print(f"_update_resolution: Pipeline has_ipadapter: {has_ipadapter}")
+            
+            if has_ipadapter:
                 style_image = None
                 style_source = ""
                 
                 if self.uploaded_style_image:
                     style_image = self.uploaded_style_image
                     style_source = "uploaded"
+                    print("_update_resolution: Using uploaded style image")
                 else:
                     # Try to load default style image
+                    print("_update_resolution: No uploaded style image, trying to load default")
                     style_image = self._load_default_style_image()
                     if style_image:
                         style_source = "default"
+                        print("_update_resolution: Default style image loaded successfully")
+                    else:
+                        print("_update_resolution: Failed to load default style image")
                 
                 if style_image:
                     print(f"_update_resolution: Applying {style_source} style image to new pipeline")
@@ -1735,6 +1755,10 @@ class App:
                             print(f"_update_resolution: Failed to force prompt re-encoding: {e}")
                     else:
                         print(f"_update_resolution: Failed to apply {style_source} style image")
+                else:
+                    print("_update_resolution: No style image available (neither uploaded nor default)")
+            else:
+                print("_update_resolution: Pipeline does not have IPAdapter enabled")
             
             # Set the new pipeline
             self.pipeline = new_pipeline
