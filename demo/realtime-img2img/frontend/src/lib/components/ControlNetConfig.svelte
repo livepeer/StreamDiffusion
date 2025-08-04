@@ -416,7 +416,7 @@
               <input
                 type="range"
                 min="0.1"
-                max="1.0"
+                max="3.0"
                 step="0.01"
                 value={delta}
                 on:input={handleDeltaChange}
