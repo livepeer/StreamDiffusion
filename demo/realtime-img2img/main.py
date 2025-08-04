@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File, Response
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -702,6 +702,26 @@ class App:
                 
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to retrieve style image: {str(e)}")
+
+        @self.app.get("/api/default-image")
+        async def get_default_image():
+            """Get the default image (input.png)"""
+            try:
+                import os
+                default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+                
+                if not os.path.exists(default_image_path):
+                    raise HTTPException(status_code=404, detail="Default image not found")
+                
+                # Read and return the default image file
+                with open(default_image_path, "rb") as image_file:
+                    image_content = image_file.read()
+                
+                return Response(content=image_content, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+                
+            except Exception as e:
+                logging.error(f"get_default_image: Failed to retrieve default image: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to retrieve default image: {str(e)}")
 
         @self.app.post("/api/ipadapter/update-scale")
         async def update_ipadapter_scale(request: Request):
@@ -1440,24 +1460,49 @@ class App:
             default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
             new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
         
-        # Apply uploaded style image if available and pipeline has IPAdapter
-        if self.uploaded_style_image and getattr(new_pipeline, 'has_ipadapter', False):
-            print("_create_pipeline_with_config: Applying stored style image to new pipeline")
-            success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
-            if success:
-                print("_create_pipeline_with_config: Style image applied successfully")
-                
-                # Force prompt re-encoding to apply style image embeddings
-                try:
-                    current_prompts = new_pipeline.stream.get_current_prompts()
-                    if current_prompts:
-                        print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
-                        new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
-                        print("_create_pipeline_with_config: Prompt re-encoding completed")
-                except Exception as e:
-                    print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
+        # Apply style image (uploaded or default) if pipeline has IPAdapter
+        has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
+        print(f"_create_pipeline_with_config: Pipeline has_ipadapter: {has_ipadapter}")
+        
+        if has_ipadapter:
+            style_image = None
+            style_source = ""
+            
+            if self.uploaded_style_image:
+                style_image = self.uploaded_style_image
+                style_source = "uploaded"
+                print("_create_pipeline_with_config: Using uploaded style image")
             else:
-                print("_create_pipeline_with_config: Failed to apply style image")
+                # Try to load default style image
+                print("_create_pipeline_with_config: No uploaded style image, trying to load default")
+                style_image = self._load_default_style_image()
+                if style_image:
+                    style_source = "default"
+                    print("_create_pipeline_with_config: Default style image loaded successfully")
+                else:
+                    print("_create_pipeline_with_config: Failed to load default style image")
+            
+            if style_image:
+                print(f"_create_pipeline_with_config: Applying {style_source} style image to new pipeline")
+                success = new_pipeline.update_ipadapter_style_image(style_image)
+                if success:
+                    print(f"_create_pipeline_with_config: {style_source.capitalize()} style image applied successfully")
+                    
+                    # Force prompt re-encoding to apply style image embeddings
+                    try:
+                        current_prompts = new_pipeline.stream.get_current_prompts()
+                        if current_prompts:
+                            print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
+                            new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                            print("_create_pipeline_with_config: Prompt re-encoding completed")
+                    except Exception as e:
+                        print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
+                else:
+                    print(f"_create_pipeline_with_config: Failed to apply {style_source} style image")
+            else:
+                print("_create_pipeline_with_config: No style image available (neither uploaded nor default)")
+        else:
+            print("_create_pipeline_with_config: Pipeline does not have IPAdapter enabled")
         
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
@@ -1503,6 +1548,25 @@ class App:
         
         return controlnet_info
 
+    def _load_default_style_image(self):
+        """Load the default style image for IPAdapter"""
+        try:
+            import os
+            from PIL import Image
+            
+            default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+            
+            if os.path.exists(default_image_path):
+                print(f"_load_default_style_image: Loading default style image (input.png) from {default_image_path}")
+                return Image.open(default_image_path).convert("RGB")
+            else:
+                print(f"_load_default_style_image: Default style image not found at {default_image_path}")
+                return None
+                
+        except Exception as e:
+            print(f"_load_default_style_image: Failed to load default style image: {e}")
+            return None
+
     def _get_ipadapter_info(self):
         """Get IPAdapter information from uploaded config or active pipeline"""
         ipadapter_info = {
@@ -1525,13 +1589,20 @@ class App:
                 ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
-                # Check for style image - prioritize uploaded style image over config style image
+                # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
                 elif 'style_image' in first_ipadapter:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                else:
+                    # Check if default image exists
+                    import os
+                    default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+                    if os.path.exists(default_image_path):
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/default-image"
                     
         # Otherwise check active pipeline
         elif self.pipeline and self.pipeline.use_config and self.pipeline.config and 'ipadapters' in self.pipeline.config:
@@ -1544,13 +1615,20 @@ class App:
                 ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
-                # Check for style image - prioritize uploaded style image over config style image
+                # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
                 elif 'style_image' in first_ipadapter:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                else:
+                    # Check if default image exists
+                    import os
+                    default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+                    if os.path.exists(default_image_path):
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/default-image"
                     
             # Try to get current scale from active pipeline if available
             try:
@@ -1638,24 +1716,49 @@ class App:
             else:
                 new_pipeline = self._create_default_pipeline()
             
-            # Apply uploaded style image if available and pipeline has IPAdapter
-            if self.uploaded_style_image and getattr(new_pipeline, 'has_ipadapter', False):
-                print("_update_resolution: Applying stored style image to new pipeline")
-                success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
-                if success:
-                    print("_update_resolution: Style image applied successfully")
-                    
-                    # Force prompt re-encoding to apply style image embeddings
-                    try:
-                        current_prompts = new_pipeline.stream.get_current_prompts()
-                        if current_prompts:
-                            print("_update_resolution: Forcing prompt re-encoding to apply style image")
-                            new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
-                            print("_update_resolution: Prompt re-encoding completed")
-                    except Exception as e:
-                        print(f"_update_resolution: Failed to force prompt re-encoding: {e}")
+            # Apply style image (uploaded or default) if pipeline has IPAdapter
+            has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
+            print(f"_update_resolution: Pipeline has_ipadapter: {has_ipadapter}")
+            
+            if has_ipadapter:
+                style_image = None
+                style_source = ""
+                
+                if self.uploaded_style_image:
+                    style_image = self.uploaded_style_image
+                    style_source = "uploaded"
+                    print("_update_resolution: Using uploaded style image")
                 else:
-                    print("_update_resolution: Failed to apply style image")
+                    # Try to load default style image
+                    print("_update_resolution: No uploaded style image, trying to load default")
+                    style_image = self._load_default_style_image()
+                    if style_image:
+                        style_source = "default"
+                        print("_update_resolution: Default style image loaded successfully")
+                    else:
+                        print("_update_resolution: Failed to load default style image")
+                
+                if style_image:
+                    print(f"_update_resolution: Applying {style_source} style image to new pipeline")
+                    success = new_pipeline.update_ipadapter_style_image(style_image)
+                    if success:
+                        print(f"_update_resolution: {style_source.capitalize()} style image applied successfully")
+                        
+                        # Force prompt re-encoding to apply style image embeddings
+                        try:
+                            current_prompts = new_pipeline.stream.get_current_prompts()
+                            if current_prompts:
+                                print("_update_resolution: Forcing prompt re-encoding to apply style image")
+                                new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                                print("_update_resolution: Prompt re-encoding completed")
+                        except Exception as e:
+                            print(f"_update_resolution: Failed to force prompt re-encoding: {e}")
+                    else:
+                        print(f"_update_resolution: Failed to apply {style_source} style image")
+                else:
+                    print("_update_resolution: No style image available (neither uploaded nor default)")
+            else:
+                print("_update_resolution: Pipeline does not have IPAdapter enabled")
             
             # Set the new pipeline
             self.pipeline = new_pipeline
