@@ -11,6 +11,7 @@ class BasePreprocessor(ABC):
     Base class for ControlNet preprocessors with template method pattern
     """
     
+    
     def __init__(self, **kwargs):
         """
         Initialize the preprocessor
@@ -21,6 +22,26 @@ class BasePreprocessor(ABC):
         self.params = kwargs
         self.device = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         self.dtype = kwargs.get('dtype', torch.float16)
+    
+    @classmethod
+    def get_preprocessor_metadata(cls) -> Dict[str, Any]:
+        """
+        Get comprehensive metadata for this preprocessor.
+        Subclasses should override this to define their specific metadata.
+        
+        Returns:
+            Dictionary containing:
+            - display_name: Human-readable name
+            - description: Detailed description
+            - parameters: User-configurable parameters with metadata
+            - use_cases: List of common use cases
+        """
+        return {
+            "display_name": cls.__name__.replace("Preprocessor", ""),
+            "description": f"Preprocessor for {cls.__name__.replace('Preprocessor', '').lower()}",
+            "parameters": {},
+            "use_cases": []
+        }
     
     def process(self, image: Union[Image.Image, np.ndarray, torch.Tensor]) -> Image.Image:
         """

@@ -17,6 +17,29 @@ class StandardLineartPreprocessor(BasePreprocessor):
     pre-trained models. GPU-accelerated with PyTorch for optimal real-time performance.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Standard Line Art",
+            "description": "Traditional computer vision approach to line art detection using Gaussian blur and intensity calculations.",
+            "parameters": {
+                "gaussian_sigma": {
+                    "type": "float",
+                    "default": 6.0,
+                    "range": [1.0, 20.0],
+                    "step": 0.1,
+                    "description": "Standard deviation for Gaussian blur (higher = smoother lines)"
+                },
+                "intensity_threshold": {
+                    "type": "int",
+                    "default": 8,
+                    "range": [1, 50],
+                    "description": "Threshold for intensity calculation (lower = more sensitive)"
+                }
+            },
+            "use_cases": ["Traditional line art", "Simple edge detection", "No AI model required"]
+        }
+    
     def __init__(self, 
                  detect_resolution: int = 512,
                  image_resolution: int = 512,

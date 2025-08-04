@@ -3,6 +3,8 @@
   import Button from './Button.svelte';
   import InputRange from './InputRange.svelte';
   import PreprocessorDocs from './PreprocessorDocs.svelte';
+  import PreprocessorSelector from './PreprocessorSelector.svelte';
+  import PreprocessorParams from './PreprocessorParams.svelte';
 
   export let controlnetInfo: any = null;
   export let tIndexList: number[] = [35, 45];
@@ -18,6 +20,12 @@
   let showControlNet: boolean = true;
   let showTimesteps: boolean = true;
   let showStreamingParams: boolean = true;
+  let showPreprocessorParams: boolean = true;
+  
+  // Preprocessor state
+  let currentPreprocessors: { [index: number]: string } = {};
+  let preprocessorInfos: { [index: number]: any } = {};
+  let preprocessorParams: { [index: number]: { [key: string]: any } } = {};
 
   async function updateControlNetStrength(index: number, strength: number) {
     try {
@@ -144,6 +152,81 @@
     event.stopPropagation();
     showDocs = true;
   }
+
+  function handlePreprocessorChanged(event: CustomEvent) {
+    const { controlnet_index, preprocessor, preprocessor_info, current_params } = event.detail;
+    console.log('ControlNetConfig: handlePreprocessorChanged called with:', event.detail);
+    
+    currentPreprocessors[controlnet_index] = preprocessor;
+    preprocessorInfos[controlnet_index] = preprocessor_info;
+    
+    // Initialize parameters with current values or defaults
+    if (preprocessor_info && preprocessor_info.parameters) {
+      const newParams: { [key: string]: any } = {};
+      for (const [paramName, paramInfo] of Object.entries(preprocessor_info.parameters)) {
+        const paramData = paramInfo as any;
+        
+        // Use current value if available, otherwise use default
+        if (current_params && current_params[paramName] !== undefined) {
+          newParams[paramName] = current_params[paramName];
+        } else if (paramData.default !== undefined) {
+          newParams[paramName] = paramData.default;
+        } else {
+          // Set reasonable defaults based on type
+          switch (paramData.type) {
+            case 'bool': newParams[paramName] = false; break;
+            case 'int': newParams[paramName] = paramData.range ? paramData.range[0] : 0; break;
+            case 'float': newParams[paramName] = paramData.range ? paramData.range[0] : 0.0; break;
+            default: newParams[paramName] = ''; break;
+          }
+        }
+      }
+      preprocessorParams[controlnet_index] = newParams;
+      console.log('ControlNetConfig: Initialized params for CN', controlnet_index, ':', newParams);
+    }
+    
+    // Force reactivity by creating new objects
+    currentPreprocessors = { ...currentPreprocessors };
+    preprocessorInfos = { ...preprocessorInfos };
+    preprocessorParams = { ...preprocessorParams };
+    
+    console.log('ControlNetConfig: State after change:', { 
+      currentPreprocessors, 
+      preprocessorInfos: Object.keys(preprocessorInfos), 
+      preprocessorParams: Object.keys(preprocessorParams) 
+    });
+  }
+
+  function handleParametersUpdated(event: CustomEvent) {
+    const { controlnet_index, parameters } = event.detail;
+    preprocessorParams[controlnet_index] = { ...preprocessorParams[controlnet_index], ...parameters };
+    console.log('ControlNetConfig: Parameters updated:', { controlnet_index, parameters });
+  }
+  
+  // Initialize preprocessor states when controlnet info is available
+  $: if (controlnetInfo && controlnetInfo.controlnets) {
+    controlnetInfo.controlnets.forEach(async (controlnet: any, index: number) => {
+      if (controlnet.preprocessor && !currentPreprocessors[index]) {
+        currentPreprocessors[index] = controlnet.preprocessor;
+        
+        // Also initialize parameters by fetching current values
+        try {
+          const response = await fetch(`/api/preprocessors/current-params/${index}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.parameters && Object.keys(data.parameters).length > 0) {
+              preprocessorParams[index] = { ...data.parameters };
+              // Force reactivity
+              preprocessorParams = { ...preprocessorParams };
+              console.log('ControlNetConfig: Loaded initial params for CN', index, ':', data.parameters);
+            }
+          }
+        } catch (err) {
+          console.warn('ControlNetConfig: Failed to load initial params for CN', index, ':', err);
+        }
+      }
+    });
+  }
 </script>
 
 <div class="space-y-4">
@@ -179,28 +262,56 @@
 
         <!-- ControlNet Strength Controls -->
         {#if controlnetInfo?.enabled && controlnetInfo?.controlnets?.length > 0}
-          <div class="space-y-2">
-            <h5 class="text-sm font-medium">ControlNet Strengths</h5>
+          <div class="space-y-3">
+            <h5 class="text-sm font-medium">ControlNet Configuration</h5>
             {#each controlnetInfo.controlnets as controlnet}
-              <div class="bg-gray-50 dark:bg-gray-700 rounded p-2 space-y-1">
+              <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 space-y-3">
                 <div class="flex items-center justify-between">
-                  <span class="text-xs font-medium truncate">
+                  <span class="text-sm font-semibold truncate">
                     {controlnet.name}
                   </span>
                   <span class="text-xs text-gray-600 dark:text-gray-400">
-                    {controlnet.strength.toFixed(2)}
+                    Index: {controlnet.index}
                   </span>
                 </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.01"
-                  value={controlnet.strength}
-                  on:input={(e) => handleStrengthChange(controlnet.index, e)}
-                  class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
-                />
-                <p class="text-xs text-gray-500">{controlnet.preprocessor}</p>
+                
+                <!-- Strength Control -->
+                <div class="space-y-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium">Strength</span>
+                    <span class="text-xs text-gray-600 dark:text-gray-400">
+                      {controlnet.strength.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="0.01"
+                    value={controlnet.strength}
+                    on:input={(e) => handleStrengthChange(controlnet.index, e)}
+                    class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
+                  />
+                </div>
+                
+                <!-- Preprocessor Selector -->
+                <div class="space-y-2">
+                  <PreprocessorSelector
+                    controlnetIndex={controlnet.index}
+                    currentPreprocessor={currentPreprocessors[controlnet.index] || controlnet.preprocessor || 'passthrough'}
+                    on:preprocessorChanged={handlePreprocessorChanged}
+                  />
+                </div>
+                
+                <!-- Preprocessor Parameters -->
+                <div class="border-t border-gray-200 dark:border-gray-600 pt-2">
+                  <PreprocessorParams
+                    controlnetIndex={controlnet.index}
+                    preprocessorInfo={preprocessorInfos[controlnet.index] || {}}
+                    currentParams={preprocessorParams[controlnet.index] || {}}
+                    on:parametersUpdated={handleParametersUpdated}
+                  />
+                </div>
               </div>
             {/each}
           </div>
@@ -305,7 +416,7 @@
               <input
                 type="range"
                 min="0.1"
-                max="1.0"
+                max="3.0"
                 step="0.01"
                 value={delta}
                 on:input={handleDeltaChange}

@@ -2,10 +2,13 @@
   import { lcmLiveStatus, LCMLiveStatus, streamId } from '$lib/lcmLive';
   import { getPipelineValues, pipelineValues } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
+  import { onDestroy } from 'svelte';
 
   import Button from '$lib/components/Button.svelte';
   import Floppy from '$lib/icons/floppy.svelte';
   import { snapImage } from '$lib/utils';
+
+  let isFullscreen = false;
 
   export let currentResolution: ResolutionInfo | undefined = undefined;
 
@@ -43,6 +46,35 @@
       });
     }
   }
+
+  async function toggleFullscreen() {
+    if (!imageEl) return;
+    
+    try {
+      if (!document.fullscreenElement) {
+        await imageEl.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error('toggleFullscreen: Error toggling fullscreen:', err);
+    }
+  }
+
+  function handleFullscreenChange() {
+    isFullscreen = !!document.fullscreenElement;
+  }
+
+  // Listen for fullscreen changes
+  if (typeof window !== 'undefined') {
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+  }
+
+  onDestroy(() => {
+    if (typeof window !== 'undefined') {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    }
+  });
 </script>
 
 <div 
@@ -65,7 +97,21 @@
       </div>
     {/if}
     
-    <div class="absolute bottom-2 right-2">
+    <div class="absolute bottom-2 right-2 flex gap-2">
+      <Button
+        on:click={toggleFullscreen}
+        disabled={!isLCMRunning}
+        title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+        classList={'text-sm text-white bg-black bg-opacity-50 hover:bg-opacity-70 p-2 shadow-lg rounded-lg backdrop-blur-sm transition-all'}
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          {#if isFullscreen}
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V6a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v3M6 15v3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-3M9 12h6"></path>
+          {:else}
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0-5 5M4 16v4m0 0h4m-4 0 5-5m11 1v4m0 0h-4m4 0-5-5"></path>
+          {/if}
+        </svg>
+      </Button>
       <Button
         on:click={takeSnapshot}
         disabled={!isLCMRunning}
