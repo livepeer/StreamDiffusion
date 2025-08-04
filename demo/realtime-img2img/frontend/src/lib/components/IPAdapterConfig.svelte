@@ -153,14 +153,18 @@
                 <div class="mb-3">
                   <img 
                     src={ipadapterInfo.style_image_path} 
-                    alt="Style image from config" 
+                    alt="Style image" 
                     class="w-full max-w-32 h-32 object-cover rounded border border-gray-200 dark:border-gray-600"
                   />
-                  <!-- Show different text for uploaded vs config style images -->
+                  <!-- Show different text for uploaded vs config vs default style images -->
                   <p class="text-xs text-gray-500 mt-1">
-                    {ipadapterInfo.style_image_path.includes('/api/ipadapter/uploaded-style-image') 
-                      ? 'Uploaded style image' 
-                      : `From config: ${ipadapterInfo.style_image_path}`}
+                    {#if ipadapterInfo.style_image_path.includes('/api/ipadapter/uploaded-style-image')}
+                      Uploaded style image
+                    {:else if ipadapterInfo.style_image_path.includes('/api/default-image')}
+                      Default style image (input.png)
+                    {:else}
+                      From config: {ipadapterInfo.style_image_path}
+                    {/if}
                   </p>
                 </div>
               {/if}
@@ -193,7 +197,7 @@
               {/if}
               
               <p class="text-xs text-gray-500 mt-2">
-                Upload an image to use as style reference for IPAdapter conditioning.
+                Upload an image to use as style reference for IPAdapter conditioning. If no image is uploaded, the default input.png will be used.
               </p>
             </div>
 

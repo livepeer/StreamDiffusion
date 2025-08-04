@@ -20,6 +20,40 @@ class MediaPipeSegmentationPreprocessor(BasePreprocessor):
     Outputs binary masks suitable for ControlNet conditioning.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "MediaPipe Segmentation",
+            "description": "MediaPipe-based image segmentation for precise object control using Selfie Segmentation model.",
+            "parameters": {
+                "model_selection": {
+                    "type": "int",
+                    "default": 1,
+                    "range": [0, 1],
+                    "description": "Model type (0=general/faster, 1=landscape/better quality)"
+                },
+                "threshold": {
+                    "type": "float",
+                    "default": 0.5,
+                    "range": [0.0, 1.0],
+                    "step": 0.01,
+                    "description": "Confidence threshold for segmentation"
+                },
+                "blur_radius": {
+                    "type": "int",
+                    "default": 0,
+                    "range": [0, 20],
+                    "description": "Blur radius for mask smoothing (0=no blur)"
+                },
+                "invert_mask": {
+                    "type": "bool",
+                    "default": False,
+                    "description": "Whether to invert the segmentation mask"
+                }
+            },
+            "use_cases": ["Precise object control", "Background replacement", "Person segmentation", "Mask generation"]
+        }
+    
     def __init__(self,
                  detect_resolution: int = 512,
                  image_resolution: int = 512,

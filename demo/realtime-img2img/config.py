@@ -32,7 +32,7 @@ MAX_QUEUE_SIZE = int(os.environ.get("MAX_QUEUE_SIZE", 0))
 TIMEOUT = float(os.environ.get("TIMEOUT", 0))
 SAFETY_CHECKER = os.environ.get("SAFETY_CHECKER", None) == "True"
 ENGINE_DIR = os.environ.get("ENGINE_DIR", "engines")
-ACCELERATION = os.environ.get("ACCELERATION", "tensorrt")
+ACCELERATION = os.environ.get("ACCELERATION", "xformers")
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
 default_host = os.getenv("HOST", "0.0.0.0")

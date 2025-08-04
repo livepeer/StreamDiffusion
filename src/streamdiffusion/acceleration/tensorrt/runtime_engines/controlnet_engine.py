@@ -8,7 +8,6 @@ from typing import List, Optional, Tuple, Dict, Any
 from polygraphy import cuda
 
 from ..utilities import Engine
-from ....model_detection import detect_model, detect_model_from_diffusers_unet
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -138,106 +137,4 @@ class ControlNetModelEngine:
 
 
 
-class HybridControlNet:
-    """Wrapper that handles TensorRT/PyTorch fallback for ControlNet"""
-    
-    def __init__(self, 
-                 model_id: str,
-                 engine_path: Optional[str] = None,
-                 pytorch_model: Optional[Any] = None,
-                 stream: Optional['cuda.Stream'] = None,
-                 enable_pytorch_fallback: bool = False,
-                 model_type: str = "sd15"):
-        """Initialize hybrid ControlNet wrapper"""
-        self.model_id = model_id
-        self.engine_path = engine_path
-        self.pytorch_model = pytorch_model
-        self.stream = stream
-        self.enable_pytorch_fallback = enable_pytorch_fallback
-        
-        # Use existing model detection if pytorch_model is available
-        if pytorch_model is not None:
-            try:
-                detected_type = detect_model_from_diffusers_unet(pytorch_model)
-                self.model_type = detected_type.lower()
-                logger.info(f"ControlNet model type detected: {self.model_type} for {self.model_id}")
-            except Exception as e:
-                logger.warning(f"Model detection failed for {self.model_id}: {e}, using provided type: {model_type}")
-                self.model_type = model_type.lower()
-        else:
-            self.model_type = model_type.lower()
-            logger.info(f"ControlNet using provided model type: {self.model_type} for {self.model_id}")
-        
-        self.trt_engine: Optional[ControlNetModelEngine] = None
-        self.use_tensorrt = False
-        self.fallback_reason = None
-        
-        if engine_path:
-            self._try_load_tensorrt_engine()
-    
-    def _try_load_tensorrt_engine(self) -> bool:
-        """Attempt to load TensorRT engine"""
-        try:
-            if self.engine_path and self.stream:
-                logger.info(f"Loading TensorRT ControlNet engine: {self.engine_path}")
-                self.trt_engine = ControlNetModelEngine(self.engine_path, self.stream, model_type=self.model_type)
-                self.use_tensorrt = True
-                logger.info(f"Successfully loaded TensorRT ControlNet engine for {self.model_id}")
-                return True
-        except Exception as e:
-            self.fallback_reason = f"TensorRT engine load failed: {e}"
-            logger.warning(f"Failed to load TensorRT ControlNet engine for {self.model_id}: {e}")
-        
-        return False
-    
-    def __call__(self, *args, **kwargs) -> Tuple[List[torch.Tensor], torch.Tensor]:
-        """Forward pass with automatic TensorRT/PyTorch fallback"""
-        if self.use_tensorrt and self.trt_engine:
-            try:
-                return self.trt_engine(*args, **kwargs)
-            except Exception as e:
-                self.use_tensorrt = False
-                self.fallback_reason = f"Runtime error: {e}"
-                logger.warning(f"TensorRT ControlNet runtime error for {self.model_id}, falling back to PyTorch: {e}")
-        
-        if not self.enable_pytorch_fallback:
-            raise RuntimeError(f"TensorRT acceleration failed for ControlNet {self.model_id} and PyTorch fallback is disabled. Error: {self.fallback_reason}")
-        
-        if self.pytorch_model is None:
-            logger.error(f"No PyTorch fallback available for ControlNet {self.model_id}")
-            raise RuntimeError(f"No PyTorch fallback available for ControlNet {self.model_id}")
-        
-        return self._call_pytorch_model(*args, **kwargs)
-    
-    def _call_pytorch_model(self, *args, **kwargs) -> Tuple[List[torch.Tensor], torch.Tensor]:
-        """Call PyTorch ControlNet model with proper output formatting"""
-        result = self.pytorch_model(*args, **kwargs)
-        
-        if isinstance(result, tuple) and len(result) == 2:
-            return result
-        elif hasattr(result, 'down_block_res_samples') and hasattr(result, 'mid_block_res_sample'):
-            return result.down_block_res_samples, result.mid_block_res_sample
-        else:
-            if isinstance(result, (list, tuple)) and len(result) >= 13:
-                return list(result[:12]), result[12]
-            else:
-                logger.error(f"Unexpected PyTorch ControlNet output format for {self.model_id}: {type(result)}")
-                raise ValueError(f"Unexpected PyTorch ControlNet output format: {type(result)}")
-    
-    @property
-    def is_using_tensorrt(self) -> bool:
-        """Check if currently using TensorRT engine"""
-        return self.trt_engine is not None
-    
-    @property
-    def status(self) -> Dict[str, Any]:
-        """Get current status information"""
-        return {
-            "model_id": self.model_id,
-            "model_type": self.model_type,
-            "using_tensorrt": self.is_using_tensorrt,
-            "engine_path": self.engine_path,
-            "fallback_reason": self.fallback_reason,
-            "has_pytorch_fallback": self.pytorch_model is not None,
-            "enable_pytorch_fallback": self.enable_pytorch_fallback
-        } 
+ 

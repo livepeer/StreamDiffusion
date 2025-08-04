@@ -102,7 +102,16 @@ class DepthAnythingTensorrtPreprocessor(BasePreprocessor):
     
     Uses TensorRT-optimized Depth Anything model for fast depth estimation.
     """
-    
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Depth Estimation (TensorRT)",
+            "description": "Fast TensorRT-optimized depth estimation using Depth Anything model. Significantly faster than standard depth estimation.",
+            "parameters": {
+               
+            },
+            "use_cases": ["High-performance depth estimation", "Real-time applications", "3D-aware generation"]
+        }
     def __init__(self, 
                  engine_path: str = None,
                  detect_resolution: int = 518,

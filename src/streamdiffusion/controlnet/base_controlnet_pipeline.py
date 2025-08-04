@@ -52,6 +52,7 @@ class BaseControlNetPipeline:
         
         self._original_unet_step = None
         self._is_patched = False
+        self._has_feedback_preprocessor_cached = False
         
         # Initialize preprocessing orchestrator
         self._preprocessing_orchestrator = PreprocessingOrchestrator(
@@ -59,9 +60,6 @@ class BaseControlNetPipeline:
             dtype=self.dtype, 
             max_workers=4
         )
-        
-        # Keep legacy cache for compatibility
-        self._active_indices_cache = []
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -92,6 +90,10 @@ class BaseControlNetPipeline:
                 preprocessor.device = self.device
             if hasattr(preprocessor, 'dtype'):
                 preprocessor.dtype = self.dtype
+            
+            # Set pipeline reference for feedback preprocessor
+            if hasattr(preprocessor, 'set_pipeline_ref'):
+                preprocessor.set_pipeline_ref(self.stream)
         
         # Process control image if provided
         processed_image = None
@@ -108,6 +110,9 @@ class BaseControlNetPipeline:
         self.controlnet_scales.append(controlnet_config.get('conditioning_scale', 1.0))
         self.preprocessors.append(preprocessor)
         
+        # Update feedback preprocessor cache
+        self._update_feedback_preprocessor_cache()
+        
         # Patch the StreamDiffusion pipeline if this is the first ControlNet
         if len(self.controlnets) == 1:
             self._patch_stream_diffusion()
@@ -122,6 +127,9 @@ class BaseControlNetPipeline:
             self.controlnet_scales.pop(index)
             self.preprocessors.pop(index)
             
+            # Update feedback preprocessor cache
+            self._update_feedback_preprocessor_cache()
+            
             # Unpatch if no ControlNets remain
             if len(self.controlnets) == 0:
                 self._unpatch_stream_diffusion()
@@ -135,7 +143,21 @@ class BaseControlNetPipeline:
         self.controlnet_scales.clear()
         self.preprocessors.clear()
         
+        # Update feedback preprocessor cache
+        self._update_feedback_preprocessor_cache()
+        
         self._unpatch_stream_diffusion()
+    
+    def _update_feedback_preprocessor_cache(self) -> None:
+        """Update the cached feedback preprocessor detection result"""
+        self._has_feedback_preprocessor_cached = any(
+            preprocessor is not None and hasattr(preprocessor, 'set_pipeline_ref')
+            for preprocessor in self.preprocessors
+        )
+    
+    def _has_feedback_preprocessor(self) -> bool:
+        """Check if any preprocessor is a feedback preprocessor (cached result)"""
+        return self._has_feedback_preprocessor_cached
         
     def cleanup(self) -> None:
         """Cleanup resources including thread pool"""
@@ -166,7 +188,7 @@ class BaseControlNetPipeline:
                 index=index
             )
         # Multi-ControlNet case - use pipelined or sync based on configuration  
-        elif self.use_pipelined_processing:
+        elif self.use_pipelined_processing and not self._has_feedback_preprocessor():
             processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
                 control_image=control_image,
                 preprocessors=self.preprocessors,
@@ -175,6 +197,7 @@ class BaseControlNetPipeline:
                 stream_height=self.stream.height
             )
         else:
+            # Use synchronous processing (required for feedback preprocessors or when pipelining disabled)
             processed_images = self._preprocessing_orchestrator.process_control_images_sync(
                 control_image=control_image,
                 preprocessors=self.preprocessors,
@@ -192,11 +215,6 @@ class BaseControlNetPipeline:
         for i, processed_image in enumerate(processed_images):
             if processed_image is not None:
                 self.controlnet_images[i] = processed_image
-        
-        # Update active indices cache for compatibility
-        self._active_indices_cache = [
-            i for i, scale in enumerate(self.controlnet_scales) if scale > 0
-        ]
     
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """Update the conditioning scale for a specific ControlNet"""
@@ -207,19 +225,21 @@ class BaseControlNetPipeline:
 
     def _load_controlnet_model(self, model_id: str):
         """Load a ControlNet model with TensorRT acceleration support"""
-        # First load the PyTorch model as fallback
-        pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
-        
         # Check if TensorRT engine pool is available
         if hasattr(self.stream, 'controlnet_engine_pool'):
             model_type = self._detected_model_type
             is_sdxl = self._is_sdxl
             
-            logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration support")
+            logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration")
             logger.info(f"  Model type: {model_type}, is_sdxl: {is_sdxl}")
             
-            # Debug: Check what batch size we're getting
+            # Load PyTorch model for engine compilation if needed
+            pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
+            
+            # Get batch size for engine compilation
             detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)
+            
+            # Pool now handles all the complexity (model detection, validation, error handling)
             return self.stream.controlnet_engine_pool.get_or_load_engine(
                 model_id=model_id,
                 pytorch_model=pytorch_controlnet,
@@ -229,13 +249,14 @@ class BaseControlNetPipeline:
         else:
             # Fallback to PyTorch only
             logger.info(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
-            return pytorch_controlnet
+            return self._load_pytorch_controlnet_model(model_id)
     
     def _load_pytorch_controlnet_model(self, model_id: str):
         """Load a ControlNet model from HuggingFace or local path"""
         try:
             # Check if it's a local path
             if Path(model_id).exists():
+                # Local directory
                 controlnet = ControlNetModel.from_pretrained(
                     model_id,
                     torch_dtype=self.dtype,
@@ -346,10 +367,7 @@ class BaseControlNetPipeline:
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
         """Get ControlNet conditioning for the current latent and timestep"""
         if not self.controlnets:
-            logger.debug("ControlNetPipeline: No ControlNets configured, returning None")
             return None, None
-        
-        logger.debug(f"ControlNetPipeline: Processing {len(self.controlnets)} ControlNets")
         
         # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
         active_indices = [
@@ -359,10 +377,7 @@ class BaseControlNetPipeline:
         ]
         
         if not active_indices:
-            logger.debug("ControlNetPipeline: No active ControlNets, returning None")
             return None, None
-        
-        logger.debug(f"ControlNetPipeline: Active ControlNet indices: {active_indices}")
         
         # Prepare base kwargs for ControlNet calls
         main_batch_size = x_t_latent.shape[0]
@@ -382,11 +397,9 @@ class BaseControlNetPipeline:
             control_image = self.controlnet_images[i]
             scale = self.controlnet_scales[i]
             
-            logger.debug(f"ControlNetPipeline: Processing ControlNet {i} with scale {scale}")
-            
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
-            if (hasattr(controlnet, 'trt_engine') and controlnet.trt_engine is not None and
+            if (hasattr(controlnet, 'engine') and controlnet.engine is not None and
                 control_image.shape[0] != main_batch_size):
                 # Only expand if needed for TensorRT and batch sizes don't match
                 if control_image.dim() == 4:
@@ -401,9 +414,7 @@ class BaseControlNetPipeline:
             
             # Forward pass through ControlNet
             try:
-                logger.debug(f"ControlNetPipeline: Calling ControlNet {i} with input shape: {current_control_image.shape}")
                 down_samples, mid_sample = controlnet(**controlnet_kwargs)
-                logger.debug(f"ControlNetPipeline: ControlNet {i} returned - down_blocks: {len(down_samples) if down_samples else 0}, mid_block: {mid_sample is not None}")
                 
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
@@ -455,8 +466,6 @@ class BaseControlNetPipeline:
         """Patch for TensorRT mode with ControlNet support"""
         
         def patched_unet_step_tensorrt(x_t_latent, t_list, idx=None):
-            logger.debug(f"ControlNetPipeline: TensorRT unet_step called with latent shape: {x_t_latent.shape}")
-            
             # Handle CFG expansion (same as original)
             if self.stream.guidance_scale > 1.0 and (self.stream.cfg_type == "initialize"):
                 x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
@@ -472,12 +481,9 @@ class BaseControlNetPipeline:
             conditioning_context = self._get_conditioning_context(x_t_latent_plus_uc, t_list_expanded)
             
             # Get ControlNet conditioning
-            logger.debug(f"ControlNetPipeline: Getting ControlNet conditioning for {len(self.controlnets)} ControlNets")
             down_block_res_samples, mid_block_res_sample = self._get_controlnet_conditioning(
                 x_t_latent_plus_uc, t_list_expanded, self.stream.prompt_embeds[:, :77, :], **conditioning_context
             )
-            
-            logger.debug(f"ControlNetPipeline: ControlNet conditioning result - down_blocks: {len(down_block_res_samples) if down_block_res_samples else 0}, mid_block: {mid_block_res_sample is not None}")
             
             # Call TensorRT engine with ControlNet inputs
             model_pred = self.stream.unet(

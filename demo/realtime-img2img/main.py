@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, HTTPException, WebSocketDisconnect, UploadFile, File, Response
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -81,6 +81,27 @@ class App:
             self._cleanup_pipeline(self.pipeline)
             self.pipeline = None
         logger.info("App cleanup: Completed application cleanup")
+
+
+    
+
+
+    def _get_controlnet_pipeline(self):
+        """Get the ControlNet pipeline from the main pipeline structure"""
+        if not self.pipeline:
+            return None
+            
+        stream = self.pipeline.stream
+        
+        # Check if stream is ControlNet pipeline directly
+        if hasattr(stream, 'preprocessors'):
+            return stream
+            
+        # Check if stream has nested stream (IPAdapter wrapper)
+        if hasattr(stream, 'stream') and hasattr(stream.stream, 'preprocessors'):
+            return stream.stream
+            
+        return None
 
     def init_app(self):
         # Enhanced CORS for API-only development mode
@@ -682,6 +703,26 @@ class App:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to retrieve style image: {str(e)}")
 
+        @self.app.get("/api/default-image")
+        async def get_default_image():
+            """Get the default image (input.png)"""
+            try:
+                import os
+                default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+                
+                if not os.path.exists(default_image_path):
+                    raise HTTPException(status_code=404, detail="Default image not found")
+                
+                # Read and return the default image file
+                with open(default_image_path, "rb") as image_file:
+                    image_content = image_file.read()
+                
+                return Response(content=image_content, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+                
+            except Exception as e:
+                logging.error(f"get_default_image: Failed to retrieve default image: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to retrieve default image: {str(e)}")
+
         @self.app.post("/api/ipadapter/update-scale")
         async def update_ipadapter_scale(request: Request):
             """Update IPAdapter scale/strength in real-time"""
@@ -1053,255 +1094,193 @@ class App:
 
         @self.app.get("/api/preprocessors/info")
         async def get_preprocessors_info():
-            """Get comprehensive preprocessor information and templates"""
-            
-            # Define preprocessor information with parameters, descriptions, and examples
-            preprocessors_info = {
-                "canny": {
-                    "name": "Canny Edge Detection",
-                    "description": "Detects edges in the input image using the Canny edge detection algorithm. Good for line art and architectural images.",
-                    "requirements": ["OpenCV"],
-                    "parameters": {
-                        "low_threshold": {
-                            "type": "int",
-                            "default": 100,
-                            "range": [50, 150],
-                            "description": "Lower threshold for edge detection. Lower values detect more edges."
-                        },
-                        "high_threshold": {
-                            "type": "int", 
-                            "default": 200,
-                            "range": [150, 300],
-                            "description": "Upper threshold for edge detection. Higher values are more selective."
-                        }
-                    },
-                    "example_config": {
-                        "model_id": "lllyasviel/control_v11p_sd15_canny",
-                        "conditioning_scale": 1.0,
-                        "preprocessor": "canny",
-                        "preprocessor_params": {
-                            "low_threshold": 100,
-                            "high_threshold": 200
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["Line art", "Architecture", "Technical drawings", "Clean edge detection"]
-                },
+            """Get preprocessor information using metadata from preprocessor classes"""
+            try:
+                from src.streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor
                 
-                "depth": {
-                    "name": "Depth Estimation",
-                    "description": "Estimates depth from the input image using MiDaS. Good for adding depth-based control to generation.",
-                    "requirements": ["PyTorch", "Transformers"],
-                    "parameters": {
-                        "image_resolution": {
-                            "type": "int",
-                            "default": 512,
-                            "range": [256, 1024],
-                            "description": "Output image resolution"
-                        }
-                    },
-                    "example_config": {
-                        "model_id": "lllyasviel/control_v11f1p_sd15_depth",
-                        "conditioning_scale": 0.8,
-                        "preprocessor": "depth",
-                        "preprocessor_params": {
-                            "image_resolution": 512
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["3D-aware generation", "Depth preservation", "Scene understanding"]
-                },
+                available_preprocessors = list_preprocessors()
+                preprocessors_info = {}
                 
-                "depth_tensorrt": {
-                    "name": "Depth Estimation (TensorRT)",
-                    "description": "Fast TensorRT-optimized depth estimation using Depth Anything model. Significantly faster than standard depth estimation.",
-                    "requirements": ["TensorRT", "Polygraphy", "Pre-built TensorRT engine"],
-                    "parameters": {
-                        "engine_path": {
-                            "type": "string",
-                            "default": "path/to/depth_anything.engine",
-                            "description": "Path to the TensorRT engine file for Depth Anything model"
-                        },
-                        "detect_resolution": {
-                            "type": "int", 
-                            "default": 518,
-                            "range": [256, 1024],
-                            "description": "Resolution for depth detection (should match engine input size)"
-                        },
-                        "image_resolution": {
-                            "type": "int",
-                            "default": 512, 
-                            "range": [256, 1024],
-                            "description": "Final output image resolution"
+                for preprocessor_name in available_preprocessors:
+                    try:
+                        preprocessor_class = get_preprocessor(preprocessor_name).__class__
+                        
+                        # Get comprehensive metadata from class
+                        metadata = preprocessor_class.get_preprocessor_metadata()
+                        
+                        # Use metadata directly, with the preprocessor name as key
+                        preprocessors_info[preprocessor_name] = metadata
+                        
+                    except Exception as e:
+                        logger.warning(f"get_preprocessors_info: Could not extract info for {preprocessor_name}: {e}")
+                        # Fallback to basic info if metadata method fails
+                        preprocessors_info[preprocessor_name] = {
+                            "display_name": preprocessor_name.replace("_", " ").title(),
+                            "description": f"Preprocessor for {preprocessor_name}",
+                            "parameters": {},
+                            "use_cases": []
                         }
-                    },
-                    "example_config": {
-                        "model_id": "lllyasviel/control_v11f1p_sd15_depth",
-                        "conditioning_scale": 0.8,
-                        "preprocessor": "depth_tensorrt",
-                        "preprocessor_params": {
-                            "engine_path": "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\depth-anything\\v2_depth_anything_v2_vits-fp16.engine",
-                            "detect_resolution": 518,
-                            "image_resolution": 512
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["High-performance depth estimation", "Real-time applications", "Production deployments"],
-                    "setup_notes": "Requires building TensorRT engine from Depth Anything ONNX model"
-                },
+                        continue
                 
-                "pose_tensorrt": {
-                    "name": "Pose Detection (TensorRT)",
-                    "description": "Fast TensorRT-optimized pose detection using YOLO-NAS Pose model. Detects human pose keypoints.",
-                    "requirements": ["TensorRT", "Polygraphy", "Pre-built YOLO-NAS Pose TensorRT engine"],
-                    "parameters": {
-                        "engine_path": {
-                            "type": "string",
-                            "default": "path/to/yolo_nas_pose.engine",
-                            "description": "Path to the TensorRT engine file for YOLO-NAS Pose model"
-                        },
-                        "detect_resolution": {
-                            "type": "int",
-                            "default": 640,
-                            "range": [320, 1280], 
-                            "description": "Resolution for pose detection (should match engine input size)"
-                        },
-                        "image_resolution": {
-                            "type": "int",
-                            "default": 512,
-                            "range": [256, 1024],
-                            "description": "Final output image resolution"
-                        }
-                    },
-                    "example_config": {
-                        "model_id": "thibaud/controlnet-sd21-openpose-diffusers",
-                        "conditioning_scale": 0.5,
-                        "preprocessor": "pose_tensorrt", 
-                        "preprocessor_params": {
-                            "engine_path": "C:\\_dev\\comfy\\ComfyUI\\models\\tensorrt\\yolo-nas-pose\\yolo_nas_pose_l_0.8-fp16.engine",
-                            "detect_resolution": 640,
-                            "image_resolution": 512
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["Human pose control", "Character animation", "Pose-guided generation"],
-                    "setup_notes": "Requires building TensorRT engine from YOLO-NAS Pose ONNX model"
-                },
+                return JSONResponse({
+                    "preprocessors": preprocessors_info,
+                    "available": available_preprocessors
+                })
                 
-                "openpose": {
-                    "name": "OpenPose",
-                    "description": "Human pose estimation using OpenPose. Detects body keypoints and skeleton structure.",
-                    "requirements": ["OpenPose library or compatible implementation"],
-                    "parameters": {
-                        "image_resolution": {
-                            "type": "int",
-                            "default": 512,
-                            "range": [256, 1024],
-                            "description": "Output image resolution"
-                        }
-                    },
-                    "example_config": {
-                        "model_id": "lllyasviel/control_v11p_sd15_openpose",
-                        "conditioning_scale": 0.8,
-                        "preprocessor": "openpose",
-                        "preprocessor_params": {
-                            "image_resolution": 512
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["Human pose control", "Dance movements", "Character poses"]
-                },
+            except Exception as e:
+                logger.error(f"get_preprocessors_info: Error loading preprocessor info: {e}")
+                return JSONResponse({
+                    "preprocessors": {},
+                    "available": [],
+                    "error": "Could not load preprocessor information"
+                })
+
+        @self.app.post("/api/preprocessors/switch")
+        async def switch_preprocessor(request: Request):
+            """Switch preprocessor for a specific ControlNet"""
+            try:
+                data = await request.json()
+                controlnet_index = data.get("controlnet_index", 0)
+                new_preprocessor = data.get("preprocessor")
+                preprocessor_params = data.get("preprocessor_params", {})
                 
-                "lineart": {
-                    "name": "Line Art Detection",
-                    "description": "Detects line art and sketches from input images. Good for converting photos to line drawings.",
-                    "requirements": ["PyTorch", "Transformers"],
-                    "parameters": {
-                        "image_resolution": {
-                            "type": "int",
-                            "default": 512,
-                            "range": [256, 1024],
-                            "description": "Output image resolution"
-                        }
-                    },
-                    "example_config": {
-                        "model_id": "lllyasviel/control_v11p_sd15_lineart",
-                        "conditioning_scale": 0.8,
-                        "preprocessor": "lineart",
-                        "preprocessor_params": {
-                            "image_resolution": 512
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["Sketch to image", "Line art generation", "Clean line extraction"]
-                },
+                logger.info(f"switch_preprocessor: Switching ControlNet {controlnet_index} to {new_preprocessor}")
                 
-                "passthrough": {
-                    "name": "Passthrough",
-                    "description": "Passes the input image through with minimal processing. Used for tile ControlNet or when you want to use the input image directly.",
-                    "requirements": ["None"],
-                    "parameters": {
-                        "image_resolution": {
-                            "type": "int",
-                            "default": 512,
-                            "range": [256, 1024],
-                            "description": "Output image resolution (input will be resized to this)"
-                        }
-                    },
-                    "example_config": {
-                        "model_id": "lllyasviel/control_v11f1e_sd15_tile",
-                        "conditioning_scale": 0.2,
-                        "preprocessor": "passthrough",
-                        "preprocessor_params": {
-                            "image_resolution": 512
-                        },
-                        "enabled": True
-                    },
-                    "use_cases": ["Tile ControlNet", "Image-to-image with structure preservation", "Upscaling with control"]
+                if not new_preprocessor:
+                    raise HTTPException(status_code=400, detail="Missing preprocessor parameter")
+                
+                # Get ControlNet pipeline using helper
+                cn_pipeline = self._get_controlnet_pipeline()
+                if not cn_pipeline:
+                    raise HTTPException(status_code=400, detail="ControlNet pipeline not found")
+                
+                if controlnet_index >= len(cn_pipeline.preprocessors):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
+                
+                # Create new preprocessor instance
+                from src.streamdiffusion.preprocessing.processors import get_preprocessor
+                new_preprocessor_instance = get_preprocessor(new_preprocessor)
+                
+                # Set system parameters
+                system_params = {
+                    'device': cn_pipeline.device,
+                    'dtype': cn_pipeline.dtype,
+                    'image_width': cn_pipeline.stream.width,
+                    'image_height': cn_pipeline.stream.height,
                 }
-            }
-            
-            # Template for creating full configuration
-            full_config_template = {
-                "model_id": "C:\\_dev\\comfy\\ComfyUI\\models\\checkpoints\\your-model.safetensors",
-                "t_index_list": [32, 45],
-                "width": 512,
-                "height": 512,
-                "device": "cuda",
-                "dtype": "float16",
-                "prompt": "your prompt here",
-                "negative_prompt": "blurry, low quality",
-                "guidance_scale": 1.1,
-                "num_inference_steps": 50,
-                "use_denoising_batch": True,
-                "delta": 0.7,
-                "frame_buffer_size": 1,
-                "use_lcm_lora": True,
-                "use_tiny_vae": True,
-                "acceleration": "xformers",
-                "cfg_type": "self",
-                "seed": 42,
-                "controlnets": [
-                    "// Add your ControlNet configurations here using the examples above"
-                ]
-            }
-            
-            return JSONResponse({
-                "preprocessors": preprocessors_info,
-                "template": full_config_template,
-                "common_model_ids": {
-                    "canny": ["lllyasviel/control_v11p_sd15_canny", "lllyasviel/control_v11p_sd15_canny"],
-                    "depth": ["lllyasviel/control_v11f1p_sd15_depth", "thibaud/controlnet-sd21-depth-diffusers"],
-                    "openpose": ["lllyasviel/control_v11p_sd15_openpose", "thibaud/controlnet-sd21-openpose-diffusers"],
-                    "lineart": ["lllyasviel/control_v11p_sd15_lineart", "lllyasviel/control_v11p_sd15s2_lineart_anime"],
-                    "tile": ["lllyasviel/control_v11f1e_sd15_tile"]
-                },
-                "setup_guides": {
-                    "tensorrt_engines": "TensorRT engines must be built from ONNX models. Place them in models/tensorrt/ directory.",
-                    "model_downloads": "ControlNet models will be automatically downloaded from HuggingFace on first use.",
-                    "performance_tips": "Use TensorRT preprocessors for real-time performance. Standard preprocessors are fine for non-realtime use."
-                }
-            })
+                system_params.update(preprocessor_params)
+                new_preprocessor_instance.params.update(system_params)
+                
+                # Set pipeline reference for feedback preprocessor
+                if hasattr(new_preprocessor_instance, 'set_pipeline_ref'):
+                    new_preprocessor_instance.set_pipeline_ref(cn_pipeline.stream)
+                
+                # Replace the preprocessor
+                old_preprocessor = cn_pipeline.preprocessors[controlnet_index]
+                cn_pipeline.preprocessors[controlnet_index] = new_preprocessor_instance
+                
+                logger.info(f"switch_preprocessor: Successfully switched ControlNet {controlnet_index} from {type(old_preprocessor).__name__ if old_preprocessor else 'None'} to {type(new_preprocessor_instance).__name__}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully switched to {new_preprocessor} preprocessor",
+                    "controlnet_index": controlnet_index,
+                    "preprocessor": new_preprocessor,
+                    "parameters": preprocessor_params
+                })
+                    
+            except Exception as e:
+                logger.error(f"switch_preprocessor: Failed to switch preprocessor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to switch preprocessor: {str(e)}")
+        
+        @self.app.post("/api/preprocessors/update-params")
+        async def update_preprocessor_params(request: Request):
+            """Update preprocessor parameters for a specific ControlNet"""
+            try:
+                data = await request.json()
+                controlnet_index = data.get("controlnet_index", 0)
+                preprocessor_params = data.get("preprocessor_params", {})
+                
+                logger.info(f"update_preprocessor_params: Updating ControlNet {controlnet_index} params: {preprocessor_params}")
+                
+                if not preprocessor_params:
+                    raise HTTPException(status_code=400, detail="Missing preprocessor_params parameter")
+                
+                # Get ControlNet pipeline using helper
+                cn_pipeline = self._get_controlnet_pipeline()
+                if not cn_pipeline:
+                    raise HTTPException(status_code=400, detail="ControlNet pipeline not found")
+                
+                if controlnet_index >= len(cn_pipeline.preprocessors):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
+                
+                current_preprocessor = cn_pipeline.preprocessors[controlnet_index]
+                if not current_preprocessor:
+                    raise HTTPException(status_code=400, detail=f"No preprocessor found at index {controlnet_index}")
+                
+                # Use all provided parameters
+                user_params = preprocessor_params
+                
+                # Update preprocessor parameters
+                current_preprocessor.params.update(user_params)
+                
+                # Update direct attributes if they exist
+                for param_name, param_value in user_params.items():
+                    if hasattr(current_preprocessor, param_name):
+                        setattr(current_preprocessor, param_name, param_value)
+                
+                logger.info(f"update_preprocessor_params: Successfully updated ControlNet {controlnet_index} with params: {user_params}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": "Successfully updated preprocessor parameters",
+                    "controlnet_index": controlnet_index,
+                    "updated_parameters": user_params
+                })
+                    
+            except Exception as e:
+                logger.error(f"update_preprocessor_params: Failed to update parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update preprocessor parameters: {str(e)}")
+
+        @self.app.get("/api/preprocessors/current-params/{controlnet_index}")
+        async def get_current_preprocessor_params(controlnet_index: int):
+            """Get current parameter values for a specific ControlNet preprocessor"""
+            try:
+                # Get ControlNet pipeline using helper
+                cn_pipeline = self._get_controlnet_pipeline()
+                if not cn_pipeline:
+                    raise HTTPException(status_code=400, detail="ControlNet pipeline not found")
+                
+                if controlnet_index >= len(cn_pipeline.preprocessors):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
+                
+                current_preprocessor = cn_pipeline.preprocessors[controlnet_index]
+                if not current_preprocessor:
+                    return JSONResponse({
+                        "preprocessor": None,
+                        "parameters": {}
+                    })
+                
+                # Get user-configurable parameters metadata
+                metadata = current_preprocessor.__class__.get_preprocessor_metadata()
+                user_param_meta = metadata.get("parameters", {})
+                
+                # Extract current values, using defaults if not set
+                current_values = {}
+                for param_name, param_meta in user_param_meta.items():
+                    if param_name in current_preprocessor.params:
+                        current_values[param_name] = current_preprocessor.params[param_name]
+                    else:
+                        current_values[param_name] = param_meta.get("default")
+                
+                return JSONResponse({
+                    "preprocessor": current_preprocessor.__class__.__name__.replace("Preprocessor", "").lower(),
+                    "parameters": current_values
+                })
+                    
+            except Exception as e:
+                logger.error(f"get_current_preprocessor_params: Failed to get current parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get current preprocessor parameters: {str(e)}")
 
         # Only mount static files if not in API-only mode
         if not self.args.api_only:
@@ -1481,24 +1460,49 @@ class App:
             default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
             new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
         
-        # Apply uploaded style image if available and pipeline has IPAdapter
-        if self.uploaded_style_image and getattr(new_pipeline, 'has_ipadapter', False):
-            print("_create_pipeline_with_config: Applying stored style image to new pipeline")
-            success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
-            if success:
-                print("_create_pipeline_with_config: Style image applied successfully")
-                
-                # Force prompt re-encoding to apply style image embeddings
-                try:
-                    current_prompts = new_pipeline.stream.get_current_prompts()
-                    if current_prompts:
-                        print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
-                        new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
-                        print("_create_pipeline_with_config: Prompt re-encoding completed")
-                except Exception as e:
-                    print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
+        # Apply style image (uploaded or default) if pipeline has IPAdapter
+        has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
+        print(f"_create_pipeline_with_config: Pipeline has_ipadapter: {has_ipadapter}")
+        
+        if has_ipadapter:
+            style_image = None
+            style_source = ""
+            
+            if self.uploaded_style_image:
+                style_image = self.uploaded_style_image
+                style_source = "uploaded"
+                print("_create_pipeline_with_config: Using uploaded style image")
             else:
-                print("_create_pipeline_with_config: Failed to apply style image")
+                # Try to load default style image
+                print("_create_pipeline_with_config: No uploaded style image, trying to load default")
+                style_image = self._load_default_style_image()
+                if style_image:
+                    style_source = "default"
+                    print("_create_pipeline_with_config: Default style image loaded successfully")
+                else:
+                    print("_create_pipeline_with_config: Failed to load default style image")
+            
+            if style_image:
+                print(f"_create_pipeline_with_config: Applying {style_source} style image to new pipeline")
+                success = new_pipeline.update_ipadapter_style_image(style_image)
+                if success:
+                    print(f"_create_pipeline_with_config: {style_source.capitalize()} style image applied successfully")
+                    
+                    # Force prompt re-encoding to apply style image embeddings
+                    try:
+                        current_prompts = new_pipeline.stream.get_current_prompts()
+                        if current_prompts:
+                            print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
+                            new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                            print("_create_pipeline_with_config: Prompt re-encoding completed")
+                    except Exception as e:
+                        print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
+                else:
+                    print(f"_create_pipeline_with_config: Failed to apply {style_source} style image")
+            else:
+                print("_create_pipeline_with_config: No style image available (neither uploaded nor default)")
+        else:
+            print("_create_pipeline_with_config: Pipeline does not have IPAdapter enabled")
         
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
@@ -1544,6 +1548,25 @@ class App:
         
         return controlnet_info
 
+    def _load_default_style_image(self):
+        """Load the default style image for IPAdapter"""
+        try:
+            import os
+            from PIL import Image
+            
+            default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+            
+            if os.path.exists(default_image_path):
+                print(f"_load_default_style_image: Loading default style image (input.png) from {default_image_path}")
+                return Image.open(default_image_path).convert("RGB")
+            else:
+                print(f"_load_default_style_image: Default style image not found at {default_image_path}")
+                return None
+                
+        except Exception as e:
+            print(f"_load_default_style_image: Failed to load default style image: {e}")
+            return None
+
     def _get_ipadapter_info(self):
         """Get IPAdapter information from uploaded config or active pipeline"""
         ipadapter_info = {
@@ -1566,13 +1589,20 @@ class App:
                 ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
-                # Check for style image - prioritize uploaded style image over config style image
+                # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
                 elif 'style_image' in first_ipadapter:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                else:
+                    # Check if default image exists
+                    import os
+                    default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+                    if os.path.exists(default_image_path):
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/default-image"
                     
         # Otherwise check active pipeline
         elif self.pipeline and self.pipeline.use_config and self.pipeline.config and 'ipadapters' in self.pipeline.config:
@@ -1585,13 +1615,20 @@ class App:
                 ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
-                # Check for style image - prioritize uploaded style image over config style image
+                # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
                 elif 'style_image' in first_ipadapter:
                     ipadapter_info["style_image_set"] = True
                     ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                else:
+                    # Check if default image exists
+                    import os
+                    default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+                    if os.path.exists(default_image_path):
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/default-image"
                     
             # Try to get current scale from active pipeline if available
             try:
@@ -1679,24 +1716,49 @@ class App:
             else:
                 new_pipeline = self._create_default_pipeline()
             
-            # Apply uploaded style image if available and pipeline has IPAdapter
-            if self.uploaded_style_image and getattr(new_pipeline, 'has_ipadapter', False):
-                print("_update_resolution: Applying stored style image to new pipeline")
-                success = new_pipeline.update_ipadapter_style_image(self.uploaded_style_image)
-                if success:
-                    print("_update_resolution: Style image applied successfully")
-                    
-                    # Force prompt re-encoding to apply style image embeddings
-                    try:
-                        current_prompts = new_pipeline.stream.get_current_prompts()
-                        if current_prompts:
-                            print("_update_resolution: Forcing prompt re-encoding to apply style image")
-                            new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
-                            print("_update_resolution: Prompt re-encoding completed")
-                    except Exception as e:
-                        print(f"_update_resolution: Failed to force prompt re-encoding: {e}")
+            # Apply style image (uploaded or default) if pipeline has IPAdapter
+            has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
+            print(f"_update_resolution: Pipeline has_ipadapter: {has_ipadapter}")
+            
+            if has_ipadapter:
+                style_image = None
+                style_source = ""
+                
+                if self.uploaded_style_image:
+                    style_image = self.uploaded_style_image
+                    style_source = "uploaded"
+                    print("_update_resolution: Using uploaded style image")
                 else:
-                    print("_update_resolution: Failed to apply style image")
+                    # Try to load default style image
+                    print("_update_resolution: No uploaded style image, trying to load default")
+                    style_image = self._load_default_style_image()
+                    if style_image:
+                        style_source = "default"
+                        print("_update_resolution: Default style image loaded successfully")
+                    else:
+                        print("_update_resolution: Failed to load default style image")
+                
+                if style_image:
+                    print(f"_update_resolution: Applying {style_source} style image to new pipeline")
+                    success = new_pipeline.update_ipadapter_style_image(style_image)
+                    if success:
+                        print(f"_update_resolution: {style_source.capitalize()} style image applied successfully")
+                        
+                        # Force prompt re-encoding to apply style image embeddings
+                        try:
+                            current_prompts = new_pipeline.stream.get_current_prompts()
+                            if current_prompts:
+                                print("_update_resolution: Forcing prompt re-encoding to apply style image")
+                                new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                                print("_update_resolution: Prompt re-encoding completed")
+                        except Exception as e:
+                            print(f"_update_resolution: Failed to force prompt re-encoding: {e}")
+                    else:
+                        print(f"_update_resolution: Failed to apply {style_source} style image")
+                else:
+                    print("_update_resolution: No style image available (neither uploaded nor default)")
+            else:
+                print("_update_resolution: Pipeline does not have IPAdapter enabled")
             
             # Set the new pipeline
             self.pipeline = new_pipeline

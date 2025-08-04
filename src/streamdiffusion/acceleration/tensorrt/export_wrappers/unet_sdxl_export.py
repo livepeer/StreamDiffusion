@@ -80,16 +80,9 @@ class SDXLExportWrapper(torch.nn.Module):
         
     def forward(self, *args, **kwargs):
         """Forward pass that handles SDXL conditioning gracefully"""
-        logger.debug(f"[SDXL_WRAPPER] forward: Called with {len(args)} args and {len(kwargs)} kwargs")
-        logger.debug(f"[SDXL_WRAPPER] forward: Args shapes: {[arg.shape if hasattr(arg, 'shape') else type(arg) for arg in args]}")
-        logger.debug(f"[SDXL_WRAPPER] forward: Kwargs keys: {list(kwargs.keys())}")
-        logger.debug(f"[SDXL_WRAPPER] forward: self.supports_added_cond: {self.supports_added_cond}")
-        logger.debug(f"[SDXL_WRAPPER] forward: Underlying UNet type: {type(self.unet)}")
-        
         try:
             # Ensure added_cond_kwargs is never None to prevent TypeError
             if 'added_cond_kwargs' in kwargs and kwargs['added_cond_kwargs'] is None:
-                logger.debug(f"[SDXL_WRAPPER] forward: Setting added_cond_kwargs from None to empty dict")
                 kwargs['added_cond_kwargs'] = {}
             
             # Auto-generate SDXL conditioning if missing and model needs it
@@ -109,30 +102,12 @@ class SDXLExportWrapper(torch.nn.Module):
                 
             # If model supports added conditioning and we have the kwargs, use them
             if self.supports_added_cond and 'added_cond_kwargs' in kwargs:
-                logger.debug(f"[SDXL_WRAPPER] forward: Using full SDXL call with added_cond_kwargs")
-                logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(*args, **kwargs)")
-                logger.debug(f"[SDXL_WRAPPER] forward: Starting underlying UNet call...")
-                
-                import time
-                start_time = time.time()
                 result = self.unet(*args, **kwargs)
-                elapsed_time = time.time() - start_time
-                
-                logger.debug(f"[SDXL_WRAPPER] forward: Underlying UNet call completed in {elapsed_time:.3f}s")
                 return result
             elif len(args) >= 3:
-                logger.debug(f"[SDXL_WRAPPER] forward: Using basic SDXL call (no added_cond_kwargs)")
-                logger.debug(f"[SDXL_WRAPPER] forward: About to call self.unet(args[0], args[1], args[2])")
-                
-                import time
-                start_time = time.time()
                 result = self.unet(args[0], args[1], args[2])
-                elapsed_time = time.time() - start_time
-                
-                logger.debug(f"[SDXL_WRAPPER] forward: Basic UNet call completed in {elapsed_time:.3f}s")
                 return result
             else:
-                logger.debug(f"[SDXL_WRAPPER] forward: Using fallback call")
                 # Fallback
                 return self.unet(*args, **kwargs)
                 
@@ -153,7 +128,6 @@ class SDXLExportWrapper(torch.nn.Module):
                     }
                     
                     try:
-                        logger.debug(f"[SDXL_WRAPPER] forward: Trying with minimal conditioning...")
                         return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=minimal_conditioning)
                     except Exception as final_e:
                         logger.info(f"Final fallback to basic call: {final_e}")

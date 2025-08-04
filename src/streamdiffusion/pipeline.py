@@ -55,7 +55,6 @@ class StreamDiffusion:
         self.is_sdxl = detection_result['is_sdxl']
         self.is_turbo = detection_result['is_turbo']
         self.detection_confidence = detection_result['confidence']
-        logger.debug(f"Detected model type: {self.model_type} (confidence: {self.detection_confidence:.2f})")
     
         if use_denoising_batch:
             self.batch_size = self.denoising_steps_num * frame_buffer_size
@@ -110,11 +109,6 @@ class StreamDiffusion:
     ) -> None:
         # Check for SDXL compatibility
         if self.is_sdxl:
-            logger.debug(f"WARNING: Skipping LCM LoRA loading for SDXL model. ")
-            logger.debug(f"SDXL models are incompatible with SD1.5 LCM LoRAs due to different architectures:")
-            logger.debug(f"- Context dimensions: SDXL=2048 vs SD1.5=768")
-            logger.debug(f"- Channel configurations: Different U-Net structures")
-            logger.debug(f"Use SDXL-specific LCM LoRAs or SDXL-Turbo models instead.")
             return
             
         self.pipe.load_lora_weights(
@@ -249,9 +243,6 @@ class StreamDiffusion:
                     self.add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
                 else:
                     self.add_time_ids = add_time_ids
-                    
-                logger.debug(f"SDXL conditioning setup: prompt_embeds {self.prompt_embeds.shape}, "
-                      f"add_text_embeds {self.add_text_embeds.shape}, add_time_ids {self.add_time_ids.shape}")
             else:
                 raise ValueError(f"SDXL encode_prompt returned {len(encoder_output)} outputs, expected at least 4")
         else:
@@ -484,22 +475,14 @@ class StreamDiffusion:
         t_list: Union[torch.Tensor, list[int]],
         idx: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        logger.debug(f"[PIPELINE] unet_step: Starting with latent shape: {x_t_latent.shape}, t_list: {t_list}")
-        logger.debug(f"[PIPELINE] unet_step: Input latent range: [{x_t_latent.min().item():.6f}, {x_t_latent.max().item():.6f}]")
-        logger.debug(f"[PIPELINE] unet_step: guidance_scale: {self.guidance_scale}, cfg_type: {self.cfg_type}")
-        logger.debug(f"[PIPELINE] unet_step: is_sdxl: {self.is_sdxl}")
-        
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
             t_list = torch.concat([t_list[0:1], t_list], dim=0)
-            logger.debug(f"[PIPELINE] unet_step: CFG initialize mode - expanded latent shape: {x_t_latent_plus_uc.shape}")
         elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
             x_t_latent_plus_uc = torch.concat([x_t_latent, x_t_latent], dim=0)
             t_list = torch.concat([t_list, t_list], dim=0)
-            logger.debug(f"[PIPELINE] unet_step: CFG full mode - expanded latent shape: {x_t_latent_plus_uc.shape}")
         else:
             x_t_latent_plus_uc = x_t_latent
-            logger.debug(f"[PIPELINE] unet_step: No CFG - using original latent shape: {x_t_latent_plus_uc.shape}")
 
         # Prepare UNet call arguments
         unet_kwargs = {
@@ -509,19 +492,11 @@ class StreamDiffusion:
             'return_dict': False,
         }
         
-        logger.debug(f"[PIPELINE] unet_step: Basic UNet kwargs prepared")
-        logger.debug(f"[PIPELINE] unet_step: prompt_embeds shape: {self.prompt_embeds.shape}, range: [{self.prompt_embeds.min().item():.6f}, {self.prompt_embeds.max().item():.6f}]")
-        
         # Add SDXL-specific conditioning if this is an SDXL model
         if self.is_sdxl and hasattr(self, 'add_text_embeds') and hasattr(self, 'add_time_ids'):
             if self.add_text_embeds is not None and self.add_time_ids is not None:
-                logger.debug(f"[PIPELINE] unet_step: Adding SDXL conditioning")
-                logger.debug(f"[PIPELINE] unet_step: Original add_text_embeds shape: {self.add_text_embeds.shape}")
-                logger.debug(f"[PIPELINE] unet_step: Original add_time_ids shape: {self.add_time_ids.shape}")
-                
                 # Handle batching for CFG - replicate conditioning to match batch size
                 batch_size = x_t_latent_plus_uc.shape[0]
-                logger.debug(f"[PIPELINE] unet_step: Target batch size: {batch_size}")
                 
                 # Replicate add_text_embeds and add_time_ids to match the batch size
                 if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
@@ -534,44 +509,24 @@ class StreamDiffusion:
                         self.add_time_ids[0:1],  # uncond  
                         self.add_time_ids[1:2].repeat(batch_size - 1, 1)  # repeat cond
                     ], dim=0)
-                    logger.debug(f"[PIPELINE] unet_step: CFG initialize - conditioning shapes: text_embeds={add_text_embeds.shape}, time_ids={add_time_ids.shape}")
                 elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
                     # For full mode: repeat both uncond and cond for each latent
                     repeat_factor = batch_size // 2
                     add_text_embeds = self.add_text_embeds.repeat(repeat_factor, 1)
                     add_time_ids = self.add_time_ids.repeat(repeat_factor, 1)
-                    logger.debug(f"[PIPELINE] unet_step: CFG full - conditioning shapes: text_embeds={add_text_embeds.shape}, time_ids={add_time_ids.shape}")
                 else:
                     # No CFG: just repeat the conditioning
                     add_text_embeds = self.add_text_embeds[1:2].repeat(batch_size, 1) if self.add_text_embeds.shape[0] > 1 else self.add_text_embeds.repeat(batch_size, 1)
                     add_time_ids = self.add_time_ids[1:2].repeat(batch_size, 1) if self.add_time_ids.shape[0] > 1 else self.add_time_ids.repeat(batch_size, 1)
-                    logger.debug(f"[PIPELINE] unet_step: No CFG - conditioning shapes: text_embeds={add_text_embeds.shape}, time_ids={add_time_ids.shape}")
                 
                 unet_kwargs['added_cond_kwargs'] = {
                     'text_embeds': add_text_embeds,
                     'time_ids': add_time_ids
                 }
-                logger.debug(f"[PIPELINE] unet_step: SDXL added_cond_kwargs added to UNet call")
-            else:
-                logger.debug(f"[PIPELINE] unet_step: SDXL model but add_text_embeds or add_time_ids is None")
-        else:
-            logger.debug(f"[PIPELINE] unet_step: Not using SDXL conditioning")
-
-        logger.debug(f"[PIPELINE] unet_step: Calling UNet with kwargs keys: {list(unet_kwargs.keys())}")
         
         # Call UNet with appropriate conditioning
         if self.is_sdxl:
-            logger.debug(f"[PIPELINE] unet_step: Using SDXL UNet call")
-            logger.debug(f"[PIPELINE] unet_step: About to call self.unet(**unet_kwargs)")
-            logger.debug(f"[PIPELINE] unet_step: UNet object type: {type(self.unet)}")
-            logger.debug(f"[PIPELINE] unet_step: UNet object class: {self.unet.__class__}")
-            logger.debug(f"[PIPELINE] unet_step: UNet object methods: {[method for method in dir(self.unet) if not method.startswith('_')]}")
-            logger.debug(f"[PIPELINE] unet_step: Has __call__: {hasattr(self.unet, '__call__')}")
-            logger.debug(f"[PIPELINE] unet_step: Has forward: {hasattr(self.unet, 'forward')}")
-            
             try:
-                logger.debug(f"[PIPELINE] unet_step: 🚀 Starting SDXL UNet call...")
-                
                 # Add timing to detect hang
                 import time
                 start_time = time.time()
@@ -583,7 +538,6 @@ class StreamDiffusion:
                 is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
                 
                 if is_tensorrt_engine:
-                    logger.debug(f"[PIPELINE] unet_step: Detected TensorRT engine - using TensorRT calling convention")
                     # TensorRT engine expects positional args + kwargs
                     model_pred = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
@@ -592,7 +546,6 @@ class StreamDiffusion:
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
                     )[0]
                 else:
-                    logger.debug(f"[PIPELINE] unet_step: Detected PyTorch UNet - using diffusers calling convention")
                     # PyTorch UNet expects diffusers-style named arguments
                     model_pred = self.unet(
                         sample=unet_kwargs['sample'],
@@ -602,16 +555,12 @@ class StreamDiffusion:
                         return_dict=False,
                     )[0]
                 
-                elapsed_time = time.time() - start_time
-                logger.debug(f"[PIPELINE] unet_step: ✅ SDXL UNet call completed in {elapsed_time:.3f}s!")
-                
             except Exception as e:
                 logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
                 import traceback
                 traceback.print_exc()
                 raise
         else:
-            logger.debug(f"[PIPELINE] unet_step: Using legacy UNet call")
             # For SD1.5/SD2.1, use the old calling convention for compatibility
             model_pred = self.unet(
                 x_t_latent_plus_uc,
@@ -620,9 +569,6 @@ class StreamDiffusion:
                 return_dict=False,
             )[0]
 
-        logger.debug(f"[PIPELINE] unet_step: UNet inference completed")
-        logger.debug(f"[PIPELINE] unet_step: model_pred shape: {model_pred.shape}, range: [{model_pred.min().item():.6f}, {model_pred.max().item():.6f}]")
-        
         # Check for problematic values in model prediction
         if torch.isnan(model_pred).any():
             nan_count = torch.isnan(model_pred).sum().item()
@@ -635,41 +581,31 @@ class StreamDiffusion:
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             noise_pred_text = model_pred[1:]
-            logger.debug(f"[PIPELINE] unet_step: CFG initialize - noise_pred_text shape: {noise_pred_text.shape}")
             self.stock_noise = torch.concat(
                 [model_pred[0:1], self.stock_noise[1:]], dim=0
             )  # ここコメントアウトでself out cfg
         elif self.guidance_scale > 1.0 and (self.cfg_type == "full"):
             noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
-            logger.debug(f"[PIPELINE] unet_step: CFG full - noise_pred_uncond: {noise_pred_uncond.shape}, noise_pred_text: {noise_pred_text.shape}")
         else:
             noise_pred_text = model_pred
-            logger.debug(f"[PIPELINE] unet_step: No CFG - using model_pred directly: {noise_pred_text.shape}")
             
         if self.guidance_scale > 1.0 and (
             self.cfg_type == "self" or self.cfg_type == "initialize"
         ):
             noise_pred_uncond = self.stock_noise * self.delta
-            logger.debug(f"[PIPELINE] unet_step: Using stock_noise for uncond guidance: {noise_pred_uncond.shape}")
             
         if self.guidance_scale > 1.0 and self.cfg_type != "none":
             model_pred = noise_pred_uncond + self.guidance_scale * (
                 noise_pred_text - noise_pred_uncond
             )
-            logger.debug(f"[PIPELINE] unet_step: Applied CFG with guidance_scale={self.guidance_scale}")
-            logger.debug(f"[PIPELINE] unet_step: Final model_pred range: [{model_pred.min().item():.6f}, {model_pred.max().item():.6f}]")
         else:
             model_pred = noise_pred_text
-            logger.debug(f"[PIPELINE] unet_step: No CFG applied - using noise_pred_text directly")
 
         # compute the previous noisy sample x_t -> x_t-1
         if self.use_denoising_batch:
-            logger.debug(f"[PIPELINE] unet_step: Using denoising batch scheduler step")
             denoised_batch = self.scheduler_step_batch(model_pred, x_t_latent, idx)
-            logger.debug(f"[PIPELINE] unet_step: denoised_batch shape: {denoised_batch.shape}, range: [{denoised_batch.min().item():.6f}, {denoised_batch.max().item():.6f}]")
             
             if self.cfg_type == "self" or self.cfg_type == "initialize":
-                logger.debug(f"[PIPELINE] unet_step: Applying additional self/initialize CFG processing")
                 scaled_noise = self.beta_prod_t_sqrt * self.stock_noise
                 delta_x = self.scheduler_step_batch(model_pred, scaled_noise, idx)
                 alpha_next = torch.concat(
@@ -694,39 +630,26 @@ class StreamDiffusion:
                 self.stock_noise = init_noise + delta_x
 
         else:
-            logger.debug(f"[PIPELINE] unet_step: Using single scheduler step")
             # denoised_batch = self.scheduler.step(model_pred, t_list[0], x_t_latent).denoised
             denoised_batch = self.scheduler_step_batch(model_pred, x_t_latent, idx)
-            logger.debug(f"[PIPELINE] unet_step: denoised_batch shape: {denoised_batch.shape}, range: [{denoised_batch.min().item():.6f}, {denoised_batch.max().item():.6f}]")
 
-        logger.debug(f"[PIPELINE] unet_step: Returning denoised_batch and model_pred")
         return denoised_batch, model_pred
 
     def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
-        logger.debug(f"[PIPELINE] encode_image: Input shape: {image_tensors.shape}, dtype: {image_tensors.dtype}, device: {image_tensors.device}")
-        logger.debug(f"[PIPELINE] encode_image: Input range: [{image_tensors.min().item():.6f}, {image_tensors.max().item():.6f}]")
-        
         image_tensors = image_tensors.to(
             device=self.device,
             dtype=self.vae.dtype,
         )
-        logger.debug(f"[PIPELINE] encode_image: After device/dtype conversion: {image_tensors.shape}, {image_tensors.dtype}")
         
         img_latent = retrieve_latents(self.vae.encode(image_tensors), self.generator)
-        logger.debug(f"[PIPELINE] encode_image: After VAE encode: {img_latent.shape}, range: [{img_latent.min().item():.6f}, {img_latent.max().item():.6f}]")
         
         img_latent = img_latent * self.vae.config.scaling_factor
-        logger.debug(f"[PIPELINE] encode_image: After scaling (factor={self.vae.config.scaling_factor}): range: [{img_latent.min().item():.6f}, {img_latent.max().item():.6f}]")
         
         x_t_latent = self.add_noise(img_latent, self.init_noise[0], 0)
-        logger.debug(f"[PIPELINE] encode_image: After add_noise: {x_t_latent.shape}, range: [{x_t_latent.min().item():.6f}, {x_t_latent.max().item():.6f}]")
         
         return x_t_latent
 
     def decode_image(self, x_0_pred_out: torch.Tensor) -> torch.Tensor:
-        logger.debug(f"[PIPELINE] decode_image: Input shape: {x_0_pred_out.shape}, dtype: {x_0_pred_out.dtype}")
-        logger.debug(f"[PIPELINE] decode_image: Input range: [{x_0_pred_out.min().item():.6f}, {x_0_pred_out.max().item():.6f}]")
-        
         # Check for problematic values
         if torch.isnan(x_0_pred_out).any():
             nan_count = torch.isnan(x_0_pred_out).sum().item()
@@ -738,42 +661,28 @@ class StreamDiffusion:
             logger.error(f"[PIPELINE] decode_image: *** WARNING: All values are zero! ***")
         
         scaled_latent = x_0_pred_out / self.vae.config.scaling_factor
-        logger.debug(f"[PIPELINE] decode_image: After scaling (factor={self.vae.config.scaling_factor}): range: [{scaled_latent.min().item():.6f}, {scaled_latent.max().item():.6f}]")
         
         output_latent = self.vae.decode(scaled_latent, return_dict=False)[0]
-        logger.debug(f"[PIPELINE] decode_image: After VAE decode: {output_latent.shape}, range: [{output_latent.min().item():.6f}, {output_latent.max().item():.6f}]")
         
         return output_latent
 
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
-        logger.debug(f"[PIPELINE] predict_x0_batch: Input shape: {x_t_latent.shape}, dtype: {x_t_latent.dtype}")
-        logger.debug(f"[PIPELINE] predict_x0_batch: Input range: [{x_t_latent.min().item():.6f}, {x_t_latent.max().item():.6f}]")
-        logger.debug(f"[PIPELINE] predict_x0_batch: use_denoising_batch: {self.use_denoising_batch}")
-        logger.debug(f"[PIPELINE] predict_x0_batch: denoising_steps_num: {self.denoising_steps_num}")
-        
         prev_latent_batch = self.x_t_latent_buffer
 
         if self.use_denoising_batch:
             t_list = self.sub_timesteps_tensor
-            logger.debug(f"[PIPELINE] predict_x0_batch: t_list: {t_list}")
             
             if self.denoising_steps_num > 1:
                 x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
-                logger.debug(f"[PIPELINE] predict_x0_batch: After cat with prev_latent_batch: {x_t_latent.shape}")
                 
                 self.stock_noise = torch.cat(
                     (self.init_noise[0:1], self.stock_noise[:-1]), dim=0
                 )
             
-            logger.debug(f"[PIPELINE] predict_x0_batch: Calling unet_step with latent shape: {x_t_latent.shape}")
             x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list)
-            logger.debug(f"[PIPELINE] predict_x0_batch: After unet_step - x_0_pred_batch: {x_0_pred_batch.shape}, model_pred: {model_pred.shape}")
-            logger.debug(f"[PIPELINE] predict_x0_batch: x_0_pred_batch range: [{x_0_pred_batch.min().item():.6f}, {x_0_pred_batch.max().item():.6f}]")
-            logger.debug(f"[PIPELINE] predict_x0_batch: model_pred range: [{model_pred.min().item():.6f}, {model_pred.max().item():.6f}]")
 
             if self.denoising_steps_num > 1:
                 x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
-                logger.debug(f"[PIPELINE] predict_x0_batch: Multi-step - using last batch element: {x_0_pred_out.shape}")
                 
                 if self.do_add_noise:
                     self.x_t_latent_buffer = (
@@ -786,18 +695,13 @@ class StreamDiffusion:
                     )
             else:
                 x_0_pred_out = x_0_pred_batch
-                logger.debug(f"[PIPELINE] predict_x0_batch: Single-step - using full batch: {x_0_pred_out.shape}")
                 self.x_t_latent_buffer = None
         else:
-            logger.debug(f"[PIPELINE] predict_x0_batch: Not using denoising batch - iterative mode")
             self.init_noise = x_t_latent
             for idx, t in enumerate(self.sub_timesteps_tensor):
-                logger.debug(f"[PIPELINE] predict_x0_batch: Step {idx}, timestep: {t}")
                 t = t.view(1,).repeat(self.frame_bff_size,)
                 
-                logger.debug(f"[PIPELINE] predict_x0_batch: Calling unet_step for step {idx}")
                 x_0_pred, model_pred = self.unet_step(x_t_latent, t, idx)
-                logger.debug(f"[PIPELINE] predict_x0_batch: Step {idx} result - x_0_pred: {x_0_pred.shape}, range: [{x_0_pred.min().item():.6f}, {x_0_pred.max().item():.6f}]")
                 
                 if idx < len(self.sub_timesteps_tensor) - 1:
                     if self.do_add_noise:
@@ -810,21 +714,7 @@ class StreamDiffusion:
                         )
                     else:
                         x_t_latent = self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
-                    logger.debug(f"[PIPELINE] predict_x0_batch: Step {idx} - updated x_t_latent for next step: range: [{x_t_latent.min().item():.6f}, {x_t_latent.max().item():.6f}]")
             x_0_pred_out = x_0_pred
-
-        logger.debug(f"[PIPELINE] predict_x0_batch: Final result shape: {x_0_pred_out.shape}")
-        logger.debug(f"[PIPELINE] predict_x0_batch: Final result range: [{x_0_pred_out.min().item():.6f}, {x_0_pred_out.max().item():.6f}]")
-        
-        # Check for problematic values in final result
-        if torch.isnan(x_0_pred_out).any():
-            nan_count = torch.isnan(x_0_pred_out).sum().item()
-            logger.debug(f"[PIPELINE] predict_x0_batch: *** ERROR: {nan_count} NaN values in final result! ***")
-        if torch.isinf(x_0_pred_out).any():
-            inf_count = torch.isinf(x_0_pred_out).sum().item()
-            logger.debug(f"[PIPELINE] predict_x0_batch: *** ERROR: {inf_count} Inf values in final result! ***")
-        if (x_0_pred_out == 0).all():
-            logger.debug(f"[PIPELINE] predict_x0_batch: *** ERROR: All output values are zero! ***")
 
         return x_0_pred_out
 
@@ -832,51 +722,37 @@ class StreamDiffusion:
     def __call__(
         self, x: Union[torch.Tensor, PIL.Image.Image, np.ndarray] = None
     ) -> torch.Tensor:
-        logger.debug(f"[PIPELINE] __call__: Starting inference with input type: {type(x)}")
-        
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
         
         if x is not None:
-            logger.debug(f"[PIPELINE] __call__: Processing input image")
             x = self.image_processor.preprocess(x, self.height, self.width).to(
                 device=self.device, dtype=self.dtype
             )
-            logger.debug(f"[PIPELINE] __call__: After preprocessing: {x.shape}, range: [{x.min().item():.6f}, {x.max().item():.6f}]")
             
             if self.similar_image_filter:
                 x = self.similar_filter(x)
                 if x is None:
-                    logger.debug(f"[PIPELINE] __call__: Similar filter rejected image, returning previous result")
                     time.sleep(self.inference_time_ema)
                     return self.prev_image_result
             
-            logger.debug(f"[PIPELINE] __call__: Calling encode_image...")
             x_t_latent = self.encode_image(x)
-            logger.debug(f"[PIPELINE] __call__: encode_image result: {x_t_latent.shape}, range: [{x_t_latent.min().item():.6f}, {x_t_latent.max().item():.6f}]")
         else:
-            logger.debug(f"[PIPELINE] __call__: Generating random latent")
             # TODO: check the dimension of x_t_latent
             x_t_latent = torch.randn((1, 4, self.latent_height, self.latent_width)).to(
                 device=self.device, dtype=self.dtype
             )
-            logger.debug(f"[PIPELINE] __call__: Random latent: {x_t_latent.shape}, range: [{x_t_latent.min().item():.6f}, {x_t_latent.max().item():.6f}]")
         
-        logger.debug(f"[PIPELINE] __call__: Calling predict_x0_batch...")
         x_0_pred_out = self.predict_x0_batch(x_t_latent)
-        logger.debug(f"[PIPELINE] __call__: predict_x0_batch result: {x_0_pred_out.shape}, range: [{x_0_pred_out.min().item():.6f}, {x_0_pred_out.max().item():.6f}]")
         
-        logger.debug(f"[PIPELINE] __call__: Calling decode_image...")
         x_output = self.decode_image(x_0_pred_out).detach().clone()
-        logger.debug(f"[PIPELINE] __call__: decode_image result: {x_output.shape}, range: [{x_output.min().item():.6f}, {x_output.max().item():.6f}]")
 
         self.prev_image_result = x_output
         end.record()
         torch.cuda.synchronize()
         inference_time = start.elapsed_time(end) / 1000
         self.inference_time_ema = 0.9 * self.inference_time_ema + 0.1 * inference_time
-        logger.debug(f"[PIPELINE] __call__: Inference completed in {inference_time:.3f}s, returning result")
         
         return x_output
 

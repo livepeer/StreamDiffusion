@@ -13,6 +13,28 @@ class CannyPreprocessor(BasePreprocessor):
     Detects edges in the input image using the Canny edge detection algorithm.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Canny Edge Detection",
+            "description": "Detects edges in the input image using the Canny edge detection algorithm. Good for line art and architectural images.",
+            "parameters": {
+                "low_threshold": {
+                    "type": "int",
+                    "default": 100,
+                    "range": [1, 255],
+                    "description": "Lower threshold for edge detection. Lower values detect more edges."
+                },
+                "high_threshold": {
+                    "type": "int", 
+                    "default": 200,
+                    "range": [1, 255],
+                    "description": "Upper threshold for edge detection. Higher values are more selective."
+                }
+            },
+            "use_cases": ["Line art", "Architecture", "Technical drawings", "Clean edge detection"]
+        }
+    
     def __init__(self, low_threshold: int = 100, high_threshold: int = 200, **kwargs):
         """
         Initialize Canny preprocessor
