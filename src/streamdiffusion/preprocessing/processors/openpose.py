@@ -23,6 +23,26 @@ class OpenPosePreprocessor(BasePreprocessor):
     Detects human poses and creates stick figure representations.
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "OpenPose",
+            "description": "Human pose estimation using OpenPose. Detects body keypoints and skeleton structure.",
+            "parameters": {
+                "include_hands": {
+                    "type": "bool",
+                    "default": False,
+                    "description": "Whether to include hand keypoints in detection"
+                },
+                "include_face": {
+                    "type": "bool",
+                    "default": False,
+                    "description": "Whether to include face keypoints in detection"
+                }
+            },
+            "use_cases": ["Human pose control", "Dance movements", "Character poses"]
+        }
+    
     def __init__(self, 
                  detect_resolution: int = 512,
                  image_resolution: int = 512,

@@ -161,6 +161,15 @@ class SoftEdgePreprocessor(BasePreprocessor):
     
     _model_cache = {}
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "Soft Edge Detection",
+            "description": "Real-time soft edge detection optimized for smooth, artistic edge maps using multi-scale Sobel operations.",
+            "parameters": {},
+            "use_cases": ["Artistic edge maps", "Soft stylistic control", "Real-time edge detection"]
+        }
+    
     def __init__(self, **kwargs):
         """
         Initialize soft edge preprocessor

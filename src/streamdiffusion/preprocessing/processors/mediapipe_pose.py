@@ -89,6 +89,82 @@ class MediaPipePosePreprocessor(BasePreprocessor):
     - Improved multi-pose support preparation
     """
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "MediaPipe Pose",
+            "description": "MediaPipe-based pose detection with customizable confidence and smoothing. Outputs OpenPose-compatible skeleton format.",
+            "parameters": {
+                "min_detection_confidence": {
+                    "type": "float",
+                    "default": 0.5,
+                    "range": [0.0, 1.0],
+                    "step": 0.01,
+                    "description": "Minimum confidence for pose detection"
+                },
+                "min_tracking_confidence": {
+                    "type": "float",
+                    "default": 0.5,
+                    "range": [0.0, 1.0],
+                    "step": 0.01,
+                    "description": "Minimum confidence for pose tracking"
+                },
+                "model_complexity": {
+                    "type": "int",
+                    "default": 1,
+                    "range": [0, 2],
+                    "description": "MediaPipe model complexity (0=fastest, 2=most accurate)"
+                },
+                "static_image_mode": {
+                    "type": "bool",
+                    "default": False,
+                    "description": "Use static image mode (slower but more accurate per frame)"
+                },
+                "draw_hands": {
+                    "type": "bool",
+                    "default": True,
+                    "description": "Whether to draw hand poses"
+                },
+                "draw_face": {
+                    "type": "bool",
+                    "default": False,
+                    "description": "Whether to draw face landmarks"
+                },
+                "line_thickness": {
+                    "type": "int",
+                    "default": 2,
+                    "range": [1, 10],
+                    "description": "Thickness of skeleton lines"
+                },
+                "circle_radius": {
+                    "type": "int",
+                    "default": 4,
+                    "range": [1, 10],
+                    "description": "Radius of joint circles"
+                },
+                "confidence_threshold": {
+                    "type": "float",
+                    "default": 0.3,
+                    "range": [0.0, 1.0],
+                    "step": 0.01,
+                    "description": "Minimum confidence for rendering keypoints"
+                },
+                "enable_smoothing": {
+                    "type": "bool",
+                    "default": True,
+                    "description": "Enable temporal smoothing to reduce jitter"
+                },
+                "smoothing_factor": {
+                    "type": "float",
+                    "default": 0.7,
+                    "range": [0.0, 1.0],
+                    "step": 0.01,
+                    "description": "Smoothing strength (higher = more smoothing)"
+                }
+            },
+            "use_cases": ["Detailed pose control", "Hand and face detection", "Real-time pose tracking", "Custom confidence tuning"]
+        }
+    
     def __init__(self,
                  detect_resolution: int = 256,  # OPTIMIZATION: Reduced from 512 for 4x speedup
                  image_resolution: int = 512,

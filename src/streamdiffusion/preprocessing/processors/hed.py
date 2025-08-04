@@ -21,6 +21,21 @@ class HEDPreprocessor(BasePreprocessor):
     
     _model_cache = {}
     
+    @classmethod
+    def get_preprocessor_metadata(cls):
+        return {
+            "display_name": "HED Edge Detection",
+            "description": "Holistically-Nested Edge Detection for clean, structured edge maps.",
+            "parameters": {
+                "safe": {
+                    "type": "bool",
+                    "default": True,
+                    "description": "Whether to use safe mode for edge detection"
+                }
+            },
+            "use_cases": ["Structured edge detection", "Clean architectural edges", "Line art generation"]
+        }
+    
     def __init__(self, safe: bool = True, **kwargs):
         if not CONTROLNET_AUX_AVAILABLE:
             raise ImportError("controlnet_aux is required for HED preprocessor. Install with: pip install controlnet_aux")

@@ -52,6 +52,7 @@ class BaseControlNetPipeline:
         
         self._original_unet_step = None
         self._is_patched = False
+        self._has_feedback_preprocessor_cached = False
         
         # Initialize preprocessing orchestrator
         self._preprocessing_orchestrator = PreprocessingOrchestrator(
@@ -59,9 +60,6 @@ class BaseControlNetPipeline:
             dtype=self.dtype, 
             max_workers=4
         )
-        
-        # Keep legacy cache for compatibility
-        self._active_indices_cache = []
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -92,6 +90,10 @@ class BaseControlNetPipeline:
                 preprocessor.device = self.device
             if hasattr(preprocessor, 'dtype'):
                 preprocessor.dtype = self.dtype
+            
+            # Set pipeline reference for feedback preprocessor
+            if hasattr(preprocessor, 'set_pipeline_ref'):
+                preprocessor.set_pipeline_ref(self.stream)
         
         # Process control image if provided
         processed_image = None
@@ -108,6 +110,9 @@ class BaseControlNetPipeline:
         self.controlnet_scales.append(controlnet_config.get('conditioning_scale', 1.0))
         self.preprocessors.append(preprocessor)
         
+        # Update feedback preprocessor cache
+        self._update_feedback_preprocessor_cache()
+        
         # Patch the StreamDiffusion pipeline if this is the first ControlNet
         if len(self.controlnets) == 1:
             self._patch_stream_diffusion()
@@ -122,6 +127,9 @@ class BaseControlNetPipeline:
             self.controlnet_scales.pop(index)
             self.preprocessors.pop(index)
             
+            # Update feedback preprocessor cache
+            self._update_feedback_preprocessor_cache()
+            
             # Unpatch if no ControlNets remain
             if len(self.controlnets) == 0:
                 self._unpatch_stream_diffusion()
@@ -135,7 +143,21 @@ class BaseControlNetPipeline:
         self.controlnet_scales.clear()
         self.preprocessors.clear()
         
+        # Update feedback preprocessor cache
+        self._update_feedback_preprocessor_cache()
+        
         self._unpatch_stream_diffusion()
+    
+    def _update_feedback_preprocessor_cache(self) -> None:
+        """Update the cached feedback preprocessor detection result"""
+        self._has_feedback_preprocessor_cached = any(
+            preprocessor is not None and hasattr(preprocessor, 'set_pipeline_ref')
+            for preprocessor in self.preprocessors
+        )
+    
+    def _has_feedback_preprocessor(self) -> bool:
+        """Check if any preprocessor is a feedback preprocessor (cached result)"""
+        return self._has_feedback_preprocessor_cached
         
     def cleanup(self) -> None:
         """Cleanup resources including thread pool"""
@@ -166,7 +188,7 @@ class BaseControlNetPipeline:
                 index=index
             )
         # Multi-ControlNet case - use pipelined or sync based on configuration  
-        elif self.use_pipelined_processing:
+        elif self.use_pipelined_processing and not self._has_feedback_preprocessor():
             processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
                 control_image=control_image,
                 preprocessors=self.preprocessors,
@@ -175,6 +197,7 @@ class BaseControlNetPipeline:
                 stream_height=self.stream.height
             )
         else:
+            # Use synchronous processing (required for feedback preprocessors or when pipelining disabled)
             processed_images = self._preprocessing_orchestrator.process_control_images_sync(
                 control_image=control_image,
                 preprocessors=self.preprocessors,
@@ -192,11 +215,6 @@ class BaseControlNetPipeline:
         for i, processed_image in enumerate(processed_images):
             if processed_image is not None:
                 self.controlnet_images[i] = processed_image
-        
-        # Update active indices cache for compatibility
-        self._active_indices_cache = [
-            i for i, scale in enumerate(self.controlnet_scales) if scale > 0
-        ]
     
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         """Update the conditioning scale for a specific ControlNet"""
@@ -238,6 +256,7 @@ class BaseControlNetPipeline:
         try:
             # Check if it's a local path
             if Path(model_id).exists():
+                # Local directory
                 controlnet = ControlNetModel.from_pretrained(
                     model_id,
                     torch_dtype=self.dtype,
