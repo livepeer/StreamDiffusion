@@ -274,10 +274,6 @@ class BaseControlNetPipeline:
         
         logger.info("BaseControlNetPipeline: Background operations worker stopped")
 
-    def process_deferred_operations(self) -> None:
-        """Legacy method - operations now processed in background thread"""
-        # This method is now a no-op since operations are processed in background
-        pass
     
     def get_queued_operations_count(self) -> int:
         """Get the number of queued operations"""
