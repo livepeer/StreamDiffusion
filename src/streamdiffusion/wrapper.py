@@ -258,6 +258,9 @@ class StreamDiffusionWrapper:
             ipadapter_config=ipadapter_config,
         )
 
+        # Set wrapper reference on parameter updater so it can access pipeline structure
+        self.stream._param_updater.wrapper = self
+
         # Store acceleration settings for ControlNet integration
         self._acceleration = acceleration
         self._engine_dir = engine_dir
@@ -327,7 +330,7 @@ class StreamDiffusionWrapper:
 
             # Apply seed blending if provided
             if seed_list is not None:
-                self.stream.update_stream_params(
+                self.update_stream_params(
                     seed_list=seed_list,
                     seed_interpolation_method=seed_interpolation_method,
                 )
@@ -348,7 +351,7 @@ class StreamDiffusionWrapper:
             )
 
             # Then apply prompt blending (and seed blending if provided)
-            self.stream.update_stream_params(
+            self.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
                 prompt_interpolation_method=prompt_interpolation_method,
@@ -416,7 +419,7 @@ class StreamDiffusionWrapper:
                 logger.warning("update_prompt: Switching from single prompt to prompt blending mode.")
 
             # Apply prompt blending
-            self.stream.update_stream_params(
+            self.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
                 prompt_interpolation_method=prompt_interpolation_method,
@@ -441,6 +444,8 @@ class StreamDiffusionWrapper:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        # ControlNet configuration
+        controlnet_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -475,7 +480,13 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
+        controlnet_config : Optional[List[Dict[str, Any]]]
+            Complete ControlNet configuration list defining the desired state.
+            Each dict contains: model_id, preprocessor, conditioning_scale, enabled, 
+            preprocessor_params, etc. System will diff current vs desired state and 
+            perform minimal add/remove/update operations.
         """
+        # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
@@ -489,6 +500,7 @@ class StreamDiffusionWrapper:
             seed_interpolation_method=seed_interpolation_method,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            controlnet_config=controlnet_config,
         )
 
     def get_normalize_prompt_weights(self) -> bool:
@@ -498,6 +510,8 @@ class StreamDiffusionWrapper:
     def get_normalize_seed_weights(self) -> bool:
         """Get the current seed weight normalization setting."""
         return self.stream.get_normalize_seed_weights()
+
+
 
     def __call__(
         self,
@@ -1537,66 +1551,6 @@ class StreamDiffusionWrapper:
 
         return controlnet_pipeline
 
-    # ControlNet convenience methods
-    def add_controlnet(self,
-                       model_id: str,
-                       preprocessor: Optional[str] = None,
-                       conditioning_scale: float = 1.0,
-                       control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
-                       enabled: bool = True,
-                       preprocessor_params: Optional[Dict[str, Any]] = None,
-                       immediate: bool = False) -> Optional[int]:
-        """Add a ControlNet to the pipeline
-        
-        Args:
-            model_id: ControlNet model ID
-            preprocessor: Preprocessor type (optional)
-            conditioning_scale: ControlNet conditioning scale
-            control_image: Control image (optional)
-            enabled: Whether ControlNet is enabled
-            preprocessor_params: Preprocessor parameters
-            immediate: If True, add immediately (blocking). If False, queue for deferred execution.
-        
-        Returns:
-            ControlNet index if immediate=True, None if deferred
-        """
-        if not self.use_controlnet:
-            raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        cn_config = {
-            'model_id': model_id,
-            'preprocessor': preprocessor,
-            'conditioning_scale': conditioning_scale,
-            'enabled': enabled,
-            'preprocessor_params': preprocessor_params or {}
-        }
-        return self.stream.add_controlnet(cn_config, control_image, immediate=immediate)
-
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
-        """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream.update_control_image_efficient(control_image, index=index)
-
-    def update_controlnet_scale(self, index: int, scale: float) -> None:
-        """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_controlnet_scale: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream.update_controlnet_scale(index, scale)
-
-    def remove_controlnet(self, index: int, immediate: bool = False) -> None:
-        """Remove a ControlNet from the pipeline
-        
-        Args:
-            index: Index of ControlNet to remove
-            immediate: If True, remove immediately (blocking). If False, queue for deferred execution.
-        """
-        if not self.use_controlnet:
-            raise RuntimeError("remove_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream.remove_controlnet(index, immediate=immediate)
 
     def get_queued_controlnet_operations_count(self) -> int:
         """Get the number of queued ControlNet operations"""
@@ -1612,13 +1566,15 @@ class StreamDiffusionWrapper:
         
         return self.stream.is_background_worker_alive()
 
+
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("get_last_processed_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
         return self.stream.get_last_processed_image(index)
-
+    
+    
     def cleanup_controlnets(self) -> None:
         """Cleanup ControlNet resources including background threads and VRAM"""
         if not self.use_controlnet:
