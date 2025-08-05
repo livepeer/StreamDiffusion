@@ -29,6 +29,133 @@ mimetypes.add_type("application/javascript", ".js")
 
 THROTTLE = 1.0 / 120
 
+# Predefined ControlNet registry
+AVAILABLE_CONTROLNETS = {
+    "sd15": [
+        {
+            "id": "canny_sd15",
+            "name": "Canny Edge Detection", 
+            "model_id": "lllyasviel/control_v11p_sd15_canny",
+            "default_preprocessor": "canny",
+            "default_scale": 0.8,
+            "description": "Detects edges and outlines in images",
+            "preprocessor_params": {
+                "low_threshold": 100,
+                "high_threshold": 200
+            }
+        },
+        {
+            "id": "depth_sd15",
+            "name": "Depth Detection",
+            "model_id": "lllyasviel/control_v11f1p_sd15_depth", 
+            "default_preprocessor": "depth_tensorrt",
+            "default_scale": 0.8,
+            "description": "Estimates depth information from images",
+            "preprocessor_params": {
+                "detect_resolution": 518,
+                "image_resolution": 512
+            }
+        },
+        {
+            "id": "openpose_sd15",
+            "name": "Pose Detection",
+            "model_id": "lllyasviel/control_v11p_sd15_openpose",
+            "default_preprocessor": "pose_tensorrt", 
+            "default_scale": 0.8,
+            "description": "Detects human poses and body positions",
+            "preprocessor_params": {
+                "detect_resolution": 640,
+                "image_resolution": 512
+            }
+        },
+        {
+            "id": "tile_sd15",
+            "name": "Tile/Feedback",
+            "model_id": "lllyasviel/control_v11f1e_sd15_tile",
+            "default_preprocessor": "feedback",
+            "default_scale": 0.6,
+            "description": "Uses image feedback for enhanced details",
+            "preprocessor_params": {
+                "image_resolution": 512
+            }
+        },
+        {
+            "id": "softedge_sd15", 
+            "name": "Soft Edge Detection",
+            "model_id": "lllyasviel/control_v11p_sd15_softedge",
+            "default_preprocessor": "soft_edge",
+            "default_scale": 0.8,
+            "description": "Detects soft edges and boundaries",
+            "preprocessor_params": {
+                "image_resolution": 512
+            }
+        },
+        {
+            "id": "lineart_sd15",
+            "name": "Line Art Detection", 
+            "model_id": "lllyasviel/control_v11p_sd15_lineart",
+            "default_preprocessor": "standard_lineart",
+            "default_scale": 0.8,
+            "description": "Converts images to line art style",
+            "preprocessor_params": {
+                "detect_resolution": 512,
+                "image_resolution": 512,
+                "gaussian_sigma": 6.0,
+                "intensity_threshold": 8
+            }
+        }
+    ],
+    "sdxl": [
+        {
+            "id": "canny_sdxl",
+            "name": "Canny Edge Detection",
+            "model_id": "xinsir/controlnet-canny-sdxl-1.0", 
+            "default_preprocessor": "canny",
+            "default_scale": 0.8,
+            "description": "Detects edges and outlines in images (SDXL)",
+            "preprocessor_params": {
+                "low_threshold": 100,
+                "high_threshold": 200
+            }
+        },
+        {
+            "id": "depth_sdxl",
+            "name": "Depth Detection",
+            "model_id": "diffusers/controlnet-depth-sdxl-1.0",
+            "default_preprocessor": "depth_tensorrt",
+            "default_scale": 0.8, 
+            "description": "Estimates depth information from images (SDXL)",
+            "preprocessor_params": {
+                "detect_resolution": 518,
+                "image_resolution": 512
+            }
+        },
+        {
+            "id": "openpose_sdxl",
+            "name": "Pose Detection", 
+            "model_id": "xinsir/controlnet-openpose-sdxl-1.0",
+            "default_preprocessor": "pose_tensorrt",
+            "default_scale": 0.8,
+            "description": "Detects human poses and body positions (SDXL)",
+            "preprocessor_params": {
+                "detect_resolution": 640,
+                "image_resolution": 512
+            }
+        },
+        {
+            "id": "tile_sdxl",
+            "name": "Tile/Feedback",
+            "model_id": "xinsir/controlnet-tile-sdxl-1.0",
+            "default_preprocessor": "feedback", 
+            "default_scale": 0.6,
+            "description": "Uses image feedback for enhanced details (SDXL)",
+            "preprocessor_params": {
+                "image_resolution": 512
+            }
+        }
+    ]
+}
+
 # Configure logging
 def setup_logging(log_level: str = "INFO"):
     """Setup logging configuration for the application"""
@@ -66,6 +193,7 @@ class App:
         self.last_fps_update = time.time()
         # Store uploaded ControlNet config separately
         self.uploaded_controlnet_config = None
+        self.runtime_controlnet_config = None  # Active runtime config (starts from YAML)
         self.config_needs_reload = False  # Track when pipeline needs recreation
         # Store current resolution for pipeline recreation
         self.new_width = 512
@@ -102,6 +230,28 @@ class App:
             return stream.stream
             
         return None
+
+    def _get_current_controlnet_config(self):
+        """Get the current ControlNet configuration state from the pipeline"""
+        cn_pipeline = self._get_controlnet_pipeline()
+        if not cn_pipeline or not hasattr(cn_pipeline, 'controlnets'):
+            return []
+        
+        current_config = []
+        for i, controlnet in enumerate(cn_pipeline.controlnets):
+            model_id = getattr(controlnet, 'model_id', f'controlnet_{i}')
+            scale = cn_pipeline.controlnet_scales[i] if hasattr(cn_pipeline, 'controlnet_scales') and i < len(cn_pipeline.controlnet_scales) else 1.0
+            
+            config = {
+                'model_id': model_id,
+                'conditioning_scale': scale,
+                'preprocessor': getattr(cn_pipeline.preprocessors[i], '__class__.__name__', '').replace('Preprocessor', '').lower() if cn_pipeline.preprocessors[i] else None,
+                'enabled': True,
+                'preprocessor_params': getattr(cn_pipeline.preprocessors[i], 'params', {}) if cn_pipeline.preprocessors[i] else {}
+            }
+
+            current_config.append(config)
+        return current_config
 
     def init_app(self):
         # Enhanced CORS for API-only development mode
@@ -415,13 +565,15 @@ class App:
                 except yaml.YAMLError as e:
                     raise HTTPException(status_code=400, detail=f"Invalid YAML format: {str(e)}")
                 
-                # Store config and mark for reload
+                # YAML is source of truth - completely replace any runtime modifications
                 self.uploaded_controlnet_config = config_data
+                self.runtime_controlnet_config = None  # Clear any runtime additions
                 self.config_needs_reload = True  # Mark that pipeline needs recreation
                 
+                logger.info(f"upload_controlnet_config: YAML uploaded - resetting ControlNet configuration to source of truth")
+                
                 # Log IPAdapter configuration for debugging
-                if 'ipadapters' in config_data:
-                    print(f"upload_controlnet_config: Found IPAdapter configuration: {config_data['ipadapters']}")
+    
                 
                 # Get config prompt if available
                 config_prompt = config_data.get('prompt', None)
@@ -481,7 +633,7 @@ class App:
                 
                 # Get updated IPAdapter info for response
                 response_ipadapter_info = self._get_ipadapter_info()
-                print(f"upload_controlnet_config: Returning IPAdapter info to frontend: {response_ipadapter_info}")
+
                 
                 return JSONResponse({
                     "status": "success",
@@ -594,9 +746,21 @@ class App:
                 if not controlnet_enabled:
                     raise HTTPException(status_code=400, detail="ControlNet is not enabled")
                 
-                # Update ControlNet strength in the pipeline
-                if hasattr(self.pipeline.stream, 'update_controlnet_scale'):
-                    self.pipeline.stream.update_controlnet_scale(controlnet_index, float(strength))
+                # Update ControlNet strength using consolidated API
+                current_config = self._get_current_controlnet_config()
+                logger.info(f"update_controlnet_strength: Current config: {current_config}")
+                
+                if controlnet_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
+                
+                # Update only the conditioning_scale for the specified controlnet
+                old_strength = current_config[controlnet_index]['conditioning_scale']
+                current_config[controlnet_index]['conditioning_scale'] = float(strength)
+                logger.info(f"update_controlnet_strength: Updating ControlNet {controlnet_index} strength from {old_strength} to {strength}")
+                logger.info(f"update_controlnet_strength: Sending config: {current_config}")
+                
+                self.pipeline.update_stream_params(controlnet_config=current_config)
+                logger.info(f"update_controlnet_strength: update_stream_params call completed")
                     
                 return JSONResponse({
                     "status": "success",
@@ -606,6 +770,210 @@ class App:
             except Exception as e:
                 logging.error(f"update_controlnet_strength: Failed to update strength: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update strength: {str(e)}")
+
+        @self.app.get("/api/controlnet/available")
+        async def get_available_controlnets():
+            """Get list of available ControlNets that can be added"""
+            try:
+                # Detect current model architecture to filter appropriate ControlNets
+                model_type = "sd15"  # Default fallback
+                
+                if self.pipeline and hasattr(self.pipeline, 'config') and self.pipeline.config:
+                    # Try to determine model type from config
+                    model_id = self.pipeline.config.get('model_id', '')
+                    if 'sdxl' in model_id.lower() or 'xl' in model_id.lower():
+                        model_type = "sdxl"
+                
+                available = AVAILABLE_CONTROLNETS.get(model_type, [])
+                
+                # Filter out already active ControlNets
+                current_controlnets = []
+                # Check runtime config first, then fall back to uploaded config
+                if self.runtime_controlnet_config and 'controlnets' in self.runtime_controlnet_config:
+                    current_controlnets = [cn.get('model_id', '') for cn in self.runtime_controlnet_config['controlnets']]
+                elif self.uploaded_controlnet_config and 'controlnets' in self.uploaded_controlnet_config:
+                    current_controlnets = [cn.get('model_id', '') for cn in self.uploaded_controlnet_config['controlnets']]
+                
+                filtered_available = []
+                for cn in available:
+                    if cn['model_id'] not in current_controlnets:
+                        filtered_available.append(cn)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "available_controlnets": filtered_available,
+                    "model_type": model_type
+                })
+                
+            except Exception as e:
+                logging.error(f"get_available_controlnets: Failed to get available ControlNets: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get available ControlNets: {str(e)}")
+
+        @self.app.post("/api/controlnet/add")
+        async def add_controlnet(request: Request):
+            """Add a ControlNet from the predefined list"""
+            try:
+                data = await request.json()
+                controlnet_id = data.get("controlnet_id")
+                conditioning_scale = data.get("conditioning_scale", None)
+                
+                if not controlnet_id:
+                    raise HTTPException(status_code=400, detail="Missing controlnet_id parameter")
+                
+                # Find the ControlNet definition
+                controlnet_def = None
+                for model_type, controlnets in AVAILABLE_CONTROLNETS.items():
+                    for cn in controlnets:
+                        if cn['id'] == controlnet_id:
+                            controlnet_def = cn
+                            break
+                    if controlnet_def:
+                        break
+                
+                if not controlnet_def:
+                    raise HTTPException(status_code=400, detail=f"ControlNet {controlnet_id} not found in registry")
+                
+                # Use provided scale or default
+                if conditioning_scale is None:
+                    conditioning_scale = controlnet_def['default_scale']
+                
+                # Initialize runtime config from YAML if not already done
+                if self.runtime_controlnet_config is None:
+                    if self.uploaded_controlnet_config:
+                        # Copy from YAML (deep copy to avoid modifying original)
+                        import copy
+                        self.runtime_controlnet_config = copy.deepcopy(self.uploaded_controlnet_config)
+                    else:
+                        # Create minimal config if no YAML exists
+                        self.runtime_controlnet_config = {'controlnets': []}
+                
+                # Ensure controlnets key exists in runtime config
+                if 'controlnets' not in self.runtime_controlnet_config:
+                    self.runtime_controlnet_config['controlnets'] = []
+                
+                # Create new ControlNet entry
+                new_controlnet = {
+                    'model_id': controlnet_def['model_id'],
+                    'conditioning_scale': conditioning_scale,
+                    'preprocessor': controlnet_def['default_preprocessor'],
+                    'preprocessor_params': controlnet_def.get('preprocessor_params', {}),
+                    'enabled': True
+                }
+                
+                # Add to runtime config (not YAML)
+                self.runtime_controlnet_config['controlnets'].append(new_controlnet)
+                
+                # Update pipeline using consolidated API
+                try:
+                    current_config = self._get_current_controlnet_config()
+                    current_config.append(new_controlnet)
+                    self.pipeline.update_stream_params(controlnet_config=current_config)
+                    logger.info(f"add_controlnet: Successfully added ControlNet using consolidated API")
+                except Exception as e:
+                    logger.error(f"add_controlnet: Failed to add ControlNet: {e}")
+                    # Mark for reload as fallback
+                    self.config_needs_reload = True
+                
+                logger.info(f"add_controlnet: Added {controlnet_def['name']} with scale {conditioning_scale}")
+                
+                # Return updated ControlNet info immediately
+                updated_info = self._get_controlnet_info()
+                added_index = len(self.runtime_controlnet_config['controlnets']) - 1
+                
+                return JSONResponse({
+                    "status": "success", 
+                    "message": f"Added {controlnet_def['name']}",
+                    "controlnet_index": added_index,
+                    "controlnet_info": updated_info
+                })
+                
+            except Exception as e:
+                logging.error(f"add_controlnet: Failed to add ControlNet: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add ControlNet: {str(e)}")
+
+        @self.app.get("/api/controlnet/status")
+        async def get_controlnet_status():
+            """Get the status of ControlNet configuration"""
+            try:
+                controlnet_pipeline = self._get_controlnet_pipeline()
+                
+                if not controlnet_pipeline:
+                    return JSONResponse({
+                        "status": "no_pipeline",
+                        "message": "No ControlNet pipeline available",
+                        "controlnet_count": 0
+                    })
+                
+                current_config = self._get_current_controlnet_config()
+                
+                return JSONResponse({
+                    "status": "ready",
+                    "controlnet_count": len(current_config),
+                    "message": f"{len(current_config)} ControlNet(s) configured" if current_config else "No ControlNets configured"
+                })
+                
+            except Exception as e:
+                logger.error(f"get_controlnet_status: Failed to get status: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
+
+        @self.app.post("/api/controlnet/remove")
+        async def remove_controlnet(request: Request):
+            """Remove a ControlNet by index"""
+            try:
+                data = await request.json()
+                index = data.get("index")
+                
+                if index is None:
+                    raise HTTPException(status_code=400, detail="Missing index parameter")
+                
+                # Initialize runtime config from YAML if not already done
+                if self.runtime_controlnet_config is None:
+                    if self.uploaded_controlnet_config:
+                        # Copy from YAML (deep copy to avoid modifying original)
+                        import copy
+                        self.runtime_controlnet_config = copy.deepcopy(self.uploaded_controlnet_config)
+                    else:
+                        raise HTTPException(status_code=400, detail="No ControlNet configuration found")
+                
+                if 'controlnets' not in self.runtime_controlnet_config:
+                    raise HTTPException(status_code=400, detail="No ControlNet configuration found")
+                
+                controlnets = self.runtime_controlnet_config['controlnets']
+                
+                if index < 0 or index >= len(controlnets):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {index} out of range")
+                
+                removed_controlnet = controlnets.pop(index)
+                
+                # Update pipeline using consolidated API
+                try:
+                    current_config = self._get_current_controlnet_config()
+                    if index >= len(current_config):
+                        raise HTTPException(status_code=400, detail=f"ControlNet index {index} out of range")
+                    
+                    # Remove the controlnet at the specified index
+                    current_config.pop(index)
+                    self.pipeline.update_stream_params(controlnet_config=current_config)
+                    logger.info(f"remove_controlnet: Successfully removed ControlNet using consolidated API")
+                except Exception as e:
+                    logger.error(f"remove_controlnet: Failed to remove ControlNet: {e}")
+                    # Mark for reload as fallback
+                    self.config_needs_reload = True
+                
+                logger.info(f"remove_controlnet: Removed ControlNet at index {index}: {removed_controlnet.get('model_id', 'unknown')}")
+                
+                # Return updated ControlNet info immediately
+                updated_info = self._get_controlnet_info()
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Removed ControlNet at index {index}",
+                    "controlnet_info": updated_info
+                })
+                
+            except Exception as e:
+                logging.error(f"remove_controlnet: Failed to remove ControlNet: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove ControlNet: {str(e)}")
 
         @self.app.post("/api/ipadapter/upload-style-image")
         async def upload_style_image(file: UploadFile = File(...)):
@@ -759,327 +1127,169 @@ class App:
                 logging.error(f"update_ipadapter_scale: Failed to update scale: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update scale: {str(e)}")
 
-        @self.app.post("/api/update-t-index-list")
-        async def update_t_index_list(request: Request):
-            """Update t_index_list values in real-time"""
+        @self.app.post("/api/params")
+        async def update_params(request: Request):
+            """Update multiple streaming parameters in a single unified call"""
             try:
                 data = await request.json()
-                t_index_list = data.get("t_index_list")
-                
-                if t_index_list is None:
-                    raise HTTPException(status_code=400, detail="Missing t_index_list parameter")
                 
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Validate that the list contains integers
-                if not all(isinstance(x, int) for x in t_index_list):
-                    raise HTTPException(status_code=400, detail="All t_index values must be integers")
+                # Extract and validate parameters
+                params = {}
+                updated_params = []
                 
-                # Update t_index_list in the pipeline
-                self.pipeline.stream.update_stream_params(t_index_list=t_index_list)
+                # Handle t_index_list
+                if "t_index_list" in data:
+                    t_index_list = data["t_index_list"]
+                    if not isinstance(t_index_list, list) or not all(isinstance(x, int) for x in t_index_list):
+                        raise HTTPException(status_code=400, detail="t_index_list must be a list of integers")
+                    params["t_index_list"] = t_index_list
+                    updated_params.append("t_index_list")
+                
+                # Handle guidance_scale
+                if "guidance_scale" in data:
+                    params["guidance_scale"] = float(data["guidance_scale"])
+                    updated_params.append("guidance_scale")
+                
+                # Handle delta
+                if "delta" in data:
+                    params["delta"] = float(data["delta"])
+                    updated_params.append("delta")
+                
+                # Handle num_inference_steps
+                if "num_inference_steps" in data:
+                    params["num_inference_steps"] = int(data["num_inference_steps"])
+                    updated_params.append("num_inference_steps")
+                
+                # Handle seed
+                if "seed" in data:
+                    params["seed"] = int(data["seed"])
+                    updated_params.append("seed")
+                
+                # Handle resolution (special case - triggers pipeline recreation)
+                if "resolution" in data:
+                    resolution = data["resolution"]
+                    if isinstance(resolution, dict) and "width" in resolution and "height" in resolution:
+                        width, height = int(resolution["width"]), int(resolution["height"])
+                        self._update_resolution(width, height)
+                        updated_params.append("resolution")
+                    elif isinstance(resolution, str):
+                        # Handle string format like "512x768 (2:3)"
+                        resolution_part = resolution.split(' ')[0]  # Get "512x768" part
+                        try:
+                            width, height = map(int, resolution_part.split('x'))
+                            self._update_resolution(width, height)
+                            updated_params.append("resolution")
+                        except ValueError:
+                            raise HTTPException(status_code=400, detail="Invalid resolution format")
+                    else:
+                        raise HTTPException(status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string")
+                
+                # Handle normalization settings
+                if "normalize_prompt_weights" in data:
+                    params["normalize_prompt_weights"] = bool(data["normalize_prompt_weights"])
+                    updated_params.append("normalize_prompt_weights")
+                
+                if "normalize_seed_weights" in data:
+                    params["normalize_seed_weights"] = bool(data["normalize_seed_weights"])
+                    updated_params.append("normalize_seed_weights")
+                
+                if not params and "resolution" not in data:
+                    raise HTTPException(status_code=400, detail="No valid parameters provided")
+                
+                # Update parameters using unified API (excluding resolution which was handled above)
+                if params:
+                    self.pipeline.update_stream_params(**params)
                 
                 return JSONResponse({
                     "status": "success",
-                    "message": f"Updated t_index_list to {t_index_list}"
+                    "message": f"Updated parameters: {', '.join(updated_params)}",
+                    "updated": updated_params
                 })
                 
+            except HTTPException:
+                raise
             except Exception as e:
-                logging.error(f"update_t_index_list: Failed to update t_index_list: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update t_index_list: {str(e)}")
+                logging.error(f"update_params: Failed to update parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update parameters: {str(e)}")
 
-        @self.app.post("/api/update-guidance-scale")
-        async def update_guidance_scale(request: Request):
-            """Update guidance_scale value in real-time"""
+
+
+        @self.app.post("/api/blending")
+        async def update_blending(request: Request):
+            """Update prompt and/or seed blending configuration in real-time"""
             try:
                 data = await request.json()
-                guidance_scale = data.get("guidance_scale")
-                
-                if guidance_scale is None:
-                    raise HTTPException(status_code=400, detail="Missing guidance_scale parameter")
                 
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Update guidance_scale in the pipeline
-                self.pipeline.stream.update_stream_params(guidance_scale=float(guidance_scale))
+                params = {}
+                updated_types = []
                 
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated guidance_scale to {guidance_scale}"
-                })
-                
-            except Exception as e:
-                logging.error(f"update_guidance_scale: Failed to update guidance_scale: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update guidance_scale: {str(e)}")
-
-        @self.app.post("/api/update-delta")
-        async def update_delta(request: Request):
-            """Update delta value in real-time"""
-            try:
-                data = await request.json()
-                delta = data.get("delta")
-                
-                if delta is None:
-                    raise HTTPException(status_code=400, detail="Missing delta parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Update delta in the pipeline
-                self.pipeline.stream.update_stream_params(delta=float(delta))
-                
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated delta to {delta}"
-                })
-                
-            except Exception as e:
-                logging.error(f"update_delta: Failed to update delta: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update delta: {str(e)}")
-
-        @self.app.post("/api/update-num-inference-steps")
-        async def update_num_inference_steps(request: Request):
-            """Update num_inference_steps value in real-time"""
-            try:
-                data = await request.json()
-                num_inference_steps = data.get("num_inference_steps")
-                
-                if num_inference_steps is None:
-                    raise HTTPException(status_code=400, detail="Missing num_inference_steps parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Update num_inference_steps in the pipeline
-                self.pipeline.stream.update_stream_params(num_inference_steps=int(num_inference_steps))
-                
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated num_inference_steps to {num_inference_steps}"
-                })
-                
-            except Exception as e:
-                logging.error(f"update_num_inference_steps: Failed to update num_inference_steps: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update num_inference_steps: {str(e)}")
-
-        @self.app.post("/api/update-seed")
-        async def update_seed(request: Request):
-            """Update seed value in real-time"""
-            try:
-                data = await request.json()
-                seed = data.get("seed")
-                
-                if seed is None:
-                    raise HTTPException(status_code=400, detail="Missing seed parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Update seed in the pipeline
-                self.pipeline.stream.update_stream_params(seed=int(seed))
-                
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated seed to {seed}"
-                })
-                
-            except Exception as e:
-                logging.error(f"update_seed: Failed to update seed: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update seed: {str(e)}")
-
-        @self.app.post("/api/update-resolution")
-        async def update_resolution(request: Request):
-            """Update resolution (width x height) by creating a new pipeline"""
-            try:
-                data = await request.json()
-                resolution_str = data.get('resolution')
-                
-                if not resolution_str:
-                    raise HTTPException(status_code=400, detail="Resolution parameter is required")
-                
-                # Parse resolution string (e.g., "512x768 (2:3)" -> width=512, height=768)
-                resolution_part = resolution_str.split(' ')[0]  # Get "512x768" part
-                try:
-                    width, height = map(int, resolution_part.split('x'))
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid resolution format. Use 'widthxheight' (e.g., '512x768')")
-                
-                # Validate resolution
-                if width % 64 != 0 or height % 64 != 0:
-                    raise HTTPException(status_code=400, detail="Resolution must be multiples of 64")
-                
-                if not (384 <= width <= 1024) or not (384 <= height <= 1024):
-                    raise HTTPException(status_code=400, detail="Resolution must be between 384 and 1024")
-                
-                # Check if resolution actually changed
-                if width == self.new_width and height == self.new_height:
-                    raise HTTPException(status_code=400, detail="Resolution unchanged")
-                
-                logger.info(f"API: Updating resolution from {self.new_width}x{self.new_height} to {width}x{height}")
-                
-                # Create new pipeline with new resolution
-                try:
-                    self._update_resolution(width, height)
+                # Handle prompt blending
+                if "prompt_list" in data:
+                    prompt_list = data["prompt_list"]
+                    interpolation_method = data.get("prompt_interpolation_method", "slerp")
                     
-                    logger.info(f"API: Resolution update successful: {width}x{height}")
-                    return JSONResponse({
-                        "status": "success",
-                        "message": f"Resolution updated to {width}x{height}",
-                    })
+                    if not isinstance(prompt_list, list):
+                        raise HTTPException(status_code=400, detail="prompt_list must be a list")
                     
-                except Exception as update_error:
-                    logger.error(f"API: Resolution update failed: {update_error}")
-                    raise HTTPException(status_code=500, detail=f"Failed to update resolution: {update_error}")
-
-            except Exception as e:
-                logger.error(f"API: Resolution update error: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update resolution: {e}")
-
-        @self.app.post("/api/update-normalize-prompt-weights")
-        async def update_normalize_prompt_weights(request: Request):
-            """Update normalize weights flag for prompt blending in real-time"""
-            try:
-                data = await request.json()
-                normalize = data.get("normalize")
+                    # Validate and convert format
+                    prompt_tuples = []
+                    for item in prompt_list:
+                        if isinstance(item, list) and len(item) == 2:
+                            prompt_tuples.append((str(item[0]), float(item[1])))
+                        elif isinstance(item, dict) and "prompt" in item and "weight" in item:
+                            prompt_tuples.append((str(item["prompt"]), float(item["weight"])))
+                        else:
+                            raise HTTPException(status_code=400, detail="Each prompt item must be [prompt, weight] or {prompt: str, weight: float}")
+                    
+                    params["prompt_list"] = prompt_tuples
+                    params["prompt_interpolation_method"] = interpolation_method
+                    updated_types.append("prompt blending")
                 
-                if normalize is None:
-                    raise HTTPException(status_code=400, detail="Missing normalize parameter")
+                # Handle seed blending
+                if "seed_list" in data:
+                    seed_list = data["seed_list"]
+                    interpolation_method = data.get("seed_interpolation_method", "linear")
+                    
+                    if not isinstance(seed_list, list):
+                        raise HTTPException(status_code=400, detail="seed_list must be a list")
+                    
+                    # Validate and convert format
+                    seed_tuples = []
+                    for item in seed_list:
+                        if isinstance(item, list) and len(item) == 2:
+                            seed_tuples.append((int(item[0]), float(item[1])))
+                        elif isinstance(item, dict) and "seed" in item and "weight" in item:
+                            seed_tuples.append((int(item["seed"]), float(item["weight"])))
+                        else:
+                            raise HTTPException(status_code=400, detail="Each seed item must be [seed, weight] or {seed: int, weight: float}")
+                    
+                    params["seed_list"] = seed_tuples
+                    params["seed_interpolation_method"] = interpolation_method
+                    updated_types.append("seed blending")
                 
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                if not params:
+                    raise HTTPException(status_code=400, detail="No blending parameters provided")
                 
-                # Update normalize weights setting for prompt blending
-                # For now, use the existing single flag (this can be enhanced later with separate flags)
-                self.pipeline.stream.set_normalize_weights(bool(normalize))
-                
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated prompt weight normalization to {normalize}"
-                })
-                
-            except Exception as e:
-                logging.error(f"update_normalize_prompt_weights: Failed to update normalize prompt weights: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update normalize prompt weights: {str(e)}")
-
-        @self.app.post("/api/update-normalize-seed-weights")
-        async def update_normalize_seed_weights(request: Request):
-            """Update normalize weights flag for seed blending in real-time"""
-            try:
-                data = await request.json()
-                normalize = data.get("normalize")
-                
-                if normalize is None:
-                    raise HTTPException(status_code=400, detail="Missing normalize parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Update normalize weights setting for seed blending
-                # For now, use the existing single flag (this can be enhanced later with separate flags)
-                self.pipeline.stream.set_normalize_weights(bool(normalize))
+                # Update blending using unified API
+                self.pipeline.update_stream_params(**params)
                 
                 return JSONResponse({
                     "status": "success",
-                    "message": f"Updated seed weight normalization to {normalize}"
+                    "message": f"Updated {' and '.join(updated_types)}",
+                    "updated": updated_types
                 })
                 
+            except HTTPException:
+                raise
             except Exception as e:
-                logging.error(f"update_normalize_seed_weights: Failed to update normalize seed weights: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update normalize seed weights: {str(e)}")
-
-        @self.app.post("/api/prompt-blending/update")
-        async def update_prompt_blending(request: Request):
-            """Update prompt blending configuration in real-time"""
-            try:
-                data = await request.json()
-                prompt_list = data.get("prompt_list")
-                interpolation_method = data.get("interpolation_method", "slerp")
-                
-                logger.debug(f"update_prompt_blending: Received request with {len(prompt_list) if prompt_list else 0} prompts")
-                logger.debug(f"update_prompt_blending: prompt_list = {prompt_list}")
-                logger.debug(f"update_prompt_blending: interpolation_method = {interpolation_method}")
-                
-                if prompt_list is None:
-                    raise HTTPException(status_code=400, detail="Missing prompt_list parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Validate prompt_list structure
-                if not isinstance(prompt_list, list):
-                    raise HTTPException(status_code=400, detail="prompt_list must be a list")
-                
-                for item in prompt_list:
-                    if not isinstance(item, list) or len(item) != 2:
-                        raise HTTPException(status_code=400, detail="Each prompt_list item must be [prompt, weight]")
-                    if not isinstance(item[0], str) or not isinstance(item[1], (int, float)):
-                        raise HTTPException(status_code=400, detail="Each prompt_list item must be [string, number]")
-                
-                # Convert list format [[prompt, weight], ...] to tuple format [(prompt, weight), ...]
-                prompt_tuples = [(item[0], item[1]) for item in prompt_list]
-                
-                logger.debug(f"update_prompt_blending: Calling pipeline.stream.update_prompt with {len(prompt_tuples)} prompts")
-                
-                # Update prompt blending using the unified public interface
-                self.pipeline.stream.update_prompt(
-                    prompt_tuples,  # Pass as first positional argument
-                    prompt_interpolation_method=interpolation_method
-                )
-                
-                logger.debug(f"update_prompt_blending: Successfully updated prompt blending")
-                
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated prompt blending with {len(prompt_list)} prompts"
-                })
-                
-            except Exception as e:
-                logger.error(f"update_prompt_blending: Error: {e}")
-                logging.error(f"update_prompt_blending: Failed to update prompt blending: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update prompt blending: {str(e)}")
-
-        @self.app.post("/api/seed-blending/update")
-        async def update_seed_blending(request: Request):
-            """Update seed blending configuration in real-time"""
-            try:
-                data = await request.json()
-                seed_list = data.get("seed_list")
-                seed_interpolation_method = data.get("seed_interpolation_method", "linear")
-                
-                if seed_list is None:
-                    raise HTTPException(status_code=400, detail="Missing seed_list parameter")
-                
-                if not self.pipeline:
-                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-                
-                # Validate seed_list structure
-                if not isinstance(seed_list, list):
-                    raise HTTPException(status_code=400, detail="seed_list must be a list")
-                
-                for item in seed_list:
-                    if not isinstance(item, list) or len(item) != 2:
-                        raise HTTPException(status_code=400, detail="Each seed_list item must be [seed, weight]")
-                    if not isinstance(item[0], int) or not isinstance(item[1], (int, float)):
-                        raise HTTPException(status_code=400, detail="Each seed_list item must be [int, number]")
-                
-                # Convert list format [[seed, weight], ...] to tuple format [(seed, weight), ...]
-                seed_tuples = [(item[0], item[1]) for item in seed_list]
-                
-                # Update seed blending using the public interface
-                self.pipeline.stream.update_seed_blending(
-                    seed_list=seed_tuples,
-                    interpolation_method=seed_interpolation_method
-                )
-                
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Updated seed blending with {len(seed_list)} seeds"
-                })
-                
-            except Exception as e:
-                logging.error(f"update_seed_blending: Failed to update seed blending: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to update seed blending: {str(e)}")
+                logging.error(f"update_blending: Failed to update blending: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update blending: {str(e)}")
 
         @self.app.get("/api/fps")
         async def get_fps():
@@ -1206,36 +1416,22 @@ class App:
                 if not preprocessor_params:
                     raise HTTPException(status_code=400, detail="Missing preprocessor_params parameter")
                 
-                # Get ControlNet pipeline using helper
-                cn_pipeline = self._get_controlnet_pipeline()
-                if not cn_pipeline:
-                    raise HTTPException(status_code=400, detail="ControlNet pipeline not found")
-                
-                if controlnet_index >= len(cn_pipeline.preprocessors):
+                # Update preprocessor parameters using consolidated API
+                current_config = self._get_current_controlnet_config()
+                if controlnet_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
-                current_preprocessor = cn_pipeline.preprocessors[controlnet_index]
-                if not current_preprocessor:
-                    raise HTTPException(status_code=400, detail=f"No preprocessor found at index {controlnet_index}")
+                # Update preprocessor_params for the specified controlnet
+                current_config[controlnet_index]['preprocessor_params'].update(preprocessor_params)
+                self.pipeline.update_stream_params(controlnet_config=current_config)
                 
-                # Use all provided parameters
-                user_params = preprocessor_params
-                
-                # Update preprocessor parameters
-                current_preprocessor.params.update(user_params)
-                
-                # Update direct attributes if they exist
-                for param_name, param_value in user_params.items():
-                    if hasattr(current_preprocessor, param_name):
-                        setattr(current_preprocessor, param_name, param_value)
-                
-                logger.info(f"update_preprocessor_params: Successfully updated ControlNet {controlnet_index} with params: {user_params}")
+                logger.info(f"update_preprocessor_params: Successfully updated ControlNet {controlnet_index} with params: {preprocessor_params}")
                 
                 return JSONResponse({
                     "status": "success",
                     "message": "Successfully updated preprocessor parameters",
                     "controlnet_index": controlnet_index,
-                    "updated_parameters": user_params
+                    "updated_parameters": preprocessor_params
                 })
                     
             except Exception as e:
@@ -1428,17 +1624,28 @@ class App:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch_dtype = torch.float16
         
-        # Use uploaded config if available, otherwise use original args
+        # Use runtime config if available (includes YAML + runtime additions), otherwise fallback to uploaded config
         if controlnet_config_path:
             new_args = self.args._replace(controlnet_config=controlnet_config_path)
+        elif self.runtime_controlnet_config:
+            # Use runtime config (includes YAML + runtime additions/removals)
+            temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+            yaml.dump(self.runtime_controlnet_config, temp_config_path, default_flow_style=False)
+            temp_config_path.close()
+            
+            # Merge config values into args, respecting config overrides
+            config_acceleration = self.runtime_controlnet_config.get('acceleration', self.args.acceleration)
+            new_args = self.args._replace(
+                controlnet_config=temp_config_path.name,
+                acceleration=config_acceleration
+            )
         elif self.uploaded_controlnet_config:
-            # Create temporary file from stored config
+            # Fallback to original YAML config if no runtime modifications exist
             temp_config_path = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
             yaml.dump(self.uploaded_controlnet_config, temp_config_path, default_flow_style=False)
             temp_config_path.close()
             
             # Merge YAML config values into args, respecting config overrides
-            # This ensures that acceleration settings from YAML config override command line args
             config_acceleration = self.uploaded_controlnet_config.get('acceleration', self.args.acceleration)
             new_args = self.args._replace(
                 controlnet_config=temp_config_path.name,
@@ -1449,8 +1656,9 @@ class App:
         
         new_pipeline = Pipeline(new_args, device, torch_dtype, width=self.new_width, height=self.new_height)
         
-        # Initialize prompt blending from config
-        normalized_prompt_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+        # Initialize prompt blending from config (use runtime config if available)
+        config_for_prompts = self.runtime_controlnet_config if self.runtime_controlnet_config else self.uploaded_controlnet_config
+        normalized_prompt_config = self._normalize_prompt_config(config_for_prompts)
         if normalized_prompt_config:
             # Convert to tuple format and set up prompt blending
             prompt_tuples = [(item[0], item[1]) for item in normalized_prompt_config]
@@ -1521,8 +1729,20 @@ class App:
             "controlnets": []
         }
         
-        # Check uploaded config first
-        if self.uploaded_controlnet_config:
+        # Check runtime config first (includes YAML + runtime additions/removals)
+        if self.runtime_controlnet_config:
+            controlnet_info["enabled"] = True
+            controlnet_info["config_loaded"] = True
+            if 'controlnets' in self.runtime_controlnet_config:
+                for i, cn_config in enumerate(self.runtime_controlnet_config['controlnets']):
+                    controlnet_info["controlnets"].append({
+                        "index": i,
+                        "name": cn_config['model_id'].split('/')[-1],
+                        "preprocessor": cn_config['preprocessor'],
+                        "strength": cn_config['conditioning_scale']
+                    })
+        # Fall back to uploaded YAML config if no runtime config exists
+        elif self.uploaded_controlnet_config:
             controlnet_info["enabled"] = True
             controlnet_info["config_loaded"] = True
             if 'controlnets' in self.uploaded_controlnet_config:

@@ -177,7 +177,7 @@
 
   async function handleTIndexListUpdate(newTIndexList: number[]) {
     try {
-      const response = await fetch('/api/update-t-index-list', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -649,15 +649,16 @@
         </div>
         
         {#if !rightPanelCollapsed}
-          <ControlNetConfig 
-            {controlnetInfo} 
-            {tIndexList} 
-            {guidanceScale}
-            {delta}
-            {numInferenceSteps}
-            on:controlnetUpdated={handleControlNetUpdate}
-            on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
-          ></ControlNetConfig>
+                  <ControlNetConfig 
+          {controlnetInfo} 
+          {tIndexList} 
+          {guidanceScale}
+          {delta}
+          {numInferenceSteps}
+          on:controlnetUpdated={handleControlNetUpdate}
+          on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
+          on:controlnetConfigChanged={getSettings}
+        ></ControlNetConfig>
           
           <IPAdapterConfig 
             {ipadapterInfo} 
