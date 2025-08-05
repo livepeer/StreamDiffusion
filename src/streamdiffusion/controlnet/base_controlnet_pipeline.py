@@ -275,13 +275,6 @@ class BaseControlNetPipeline:
         logger.info("BaseControlNetPipeline: Background operations worker stopped")
 
     
-    def get_queued_operations_count(self) -> int:
-        """Get the number of queued operations"""
-        return self._operation_queue.qsize()
-    
-    def is_background_worker_alive(self) -> bool:
-        """Check if background operations worker is alive"""
-        return hasattr(self, '_background_thread') and self._background_thread.is_alive()
     
     def clear_controlnets(self) -> None:
         """Remove all ControlNets"""
