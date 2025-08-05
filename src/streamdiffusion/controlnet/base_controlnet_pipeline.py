@@ -310,7 +310,7 @@ class BaseControlNetPipeline:
         """Check if any preprocessor is a feedback preprocessor (cached result)"""
         return self._has_feedback_preprocessor_cached
         
-    def cleanup(self) -> None:
+    def cleanup_controlnets(self) -> None:
         """Cleanup resources including thread pool and background worker"""
         # Stop background operations worker
         if hasattr(self, '_shutdown_event'):
@@ -331,7 +331,7 @@ class BaseControlNetPipeline:
     def __del__(self):
         """Cleanup on object destruction"""
         try:
-            self.cleanup()
+            self.cleanup_controlnets()
         except:
             pass  # Ignore errors during cleanup
     

@@ -1619,6 +1619,13 @@ class StreamDiffusionWrapper:
 
         return self.stream.get_last_processed_image(index)
 
+    def cleanup_controlnets(self) -> None:
+        """Cleanup ControlNet resources including background threads and VRAM"""
+        if not self.use_controlnet:
+            return
+            
+        if hasattr(self, 'stream') and self.stream and hasattr(self.stream, 'cleanup'):
+            self.stream.cleanup_controlnets()
 
     def update_seed_blending(
         self,
