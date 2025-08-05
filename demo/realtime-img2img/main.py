@@ -29,132 +29,46 @@ mimetypes.add_type("application/javascript", ".js")
 
 THROTTLE = 1.0 / 120
 
-# Predefined ControlNet registry
-AVAILABLE_CONTROLNETS = {
-    "sd15": [
-        {
-            "id": "canny_sd15",
-            "name": "Canny Edge Detection", 
-            "model_id": "lllyasviel/control_v11p_sd15_canny",
-            "default_preprocessor": "canny",
-            "default_scale": 0.8,
-            "description": "Detects edges and outlines in images",
-            "preprocessor_params": {
-                "low_threshold": 100,
-                "high_threshold": 200
-            }
-        },
-        {
-            "id": "depth_sd15",
-            "name": "Depth Detection",
-            "model_id": "lllyasviel/control_v11f1p_sd15_depth", 
-            "default_preprocessor": "depth_tensorrt",
-            "default_scale": 0.8,
-            "description": "Estimates depth information from images",
-            "preprocessor_params": {
-                "detect_resolution": 518,
-                "image_resolution": 512
-            }
-        },
-        {
-            "id": "openpose_sd15",
-            "name": "Pose Detection",
-            "model_id": "lllyasviel/control_v11p_sd15_openpose",
-            "default_preprocessor": "pose_tensorrt", 
-            "default_scale": 0.8,
-            "description": "Detects human poses and body positions",
-            "preprocessor_params": {
-                "detect_resolution": 640,
-                "image_resolution": 512
-            }
-        },
-        {
-            "id": "tile_sd15",
-            "name": "Tile/Feedback",
-            "model_id": "lllyasviel/control_v11f1e_sd15_tile",
-            "default_preprocessor": "feedback",
-            "default_scale": 0.6,
-            "description": "Uses image feedback for enhanced details",
-            "preprocessor_params": {
-                "image_resolution": 512
-            }
-        },
-        {
-            "id": "softedge_sd15", 
-            "name": "Soft Edge Detection",
-            "model_id": "lllyasviel/control_v11p_sd15_softedge",
-            "default_preprocessor": "soft_edge",
-            "default_scale": 0.8,
-            "description": "Detects soft edges and boundaries",
-            "preprocessor_params": {
-                "image_resolution": 512
-            }
-        },
-        {
-            "id": "lineart_sd15",
-            "name": "Line Art Detection", 
-            "model_id": "lllyasviel/control_v11p_sd15_lineart",
-            "default_preprocessor": "standard_lineart",
-            "default_scale": 0.8,
-            "description": "Converts images to line art style",
-            "preprocessor_params": {
-                "detect_resolution": 512,
-                "image_resolution": 512,
-                "gaussian_sigma": 6.0,
-                "intensity_threshold": 8
-            }
+def load_controlnet_registry():
+    """Load ControlNet registry from YAML config file"""
+    try:
+        registry_path = Path(__file__).parent / "controlnet_registry.yaml"
+        with open(registry_path, 'r') as f:
+            config_data = yaml.safe_load(f)
+        
+        # Extract the available_controlnets section
+        return config_data.get('available_controlnets', {})
+    except Exception as e:
+        logging.error(f"load_controlnet_registry: Failed to load ControlNet registry: {e}")
+        # Fallback to empty registry
+        return {}
+
+def load_default_settings():
+    """Load default settings from YAML config file"""
+    try:
+        registry_path = Path(__file__).parent / "controlnet_registry.yaml"
+        with open(registry_path, 'r') as f:
+            config_data = yaml.safe_load(f)
+        
+        return config_data.get('defaults', {})
+    except Exception as e:
+        logging.error(f"load_default_settings: Failed to load default settings: {e}")
+        # Fallback to hardcoded defaults
+        return {
+            'guidance_scale': 1.1,
+            'delta': 0.7,
+            'num_inference_steps': 50,
+            'seed': 2,
+            't_index_list': [35, 45],
+            'ipadapter_scale': 1.0,
+            'normalize_prompt_weights': True,
+            'normalize_seed_weights': True,
+            'prompt': "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
         }
-    ],
-    "sdxl": [
-        {
-            "id": "canny_sdxl",
-            "name": "Canny Edge Detection",
-            "model_id": "xinsir/controlnet-canny-sdxl-1.0", 
-            "default_preprocessor": "canny",
-            "default_scale": 0.8,
-            "description": "Detects edges and outlines in images (SDXL)",
-            "preprocessor_params": {
-                "low_threshold": 100,
-                "high_threshold": 200
-            }
-        },
-        {
-            "id": "depth_sdxl",
-            "name": "Depth Detection",
-            "model_id": "diffusers/controlnet-depth-sdxl-1.0",
-            "default_preprocessor": "depth_tensorrt",
-            "default_scale": 0.8, 
-            "description": "Estimates depth information from images (SDXL)",
-            "preprocessor_params": {
-                "detect_resolution": 518,
-                "image_resolution": 512
-            }
-        },
-        {
-            "id": "openpose_sdxl",
-            "name": "Pose Detection", 
-            "model_id": "xinsir/controlnet-openpose-sdxl-1.0",
-            "default_preprocessor": "pose_tensorrt",
-            "default_scale": 0.8,
-            "description": "Detects human poses and body positions (SDXL)",
-            "preprocessor_params": {
-                "detect_resolution": 640,
-                "image_resolution": 512
-            }
-        },
-        {
-            "id": "tile_sdxl",
-            "name": "Tile/Feedback",
-            "model_id": "xinsir/controlnet-tile-sdxl-1.0",
-            "default_preprocessor": "feedback", 
-            "default_scale": 0.6,
-            "description": "Uses image feedback for enhanced details (SDXL)",
-            "preprocessor_params": {
-                "image_resolution": 512
-            }
-        }
-    ]
-}
+
+# Load ControlNet registry from config file
+AVAILABLE_CONTROLNETS = load_controlnet_registry()
+DEFAULT_SETTINGS = load_default_settings()
 
 # Configure logging
 def setup_logging(log_level: str = "INFO"):
@@ -441,10 +355,12 @@ class App:
             # Add IPAdapter information
             ipadapter_info = self._get_ipadapter_info()
             
-            # Include config prompt if available
+            # Include config prompt if available, otherwise use default
             config_prompt = None
             if self.uploaded_controlnet_config and 'prompt' in self.uploaded_controlnet_config:
                 config_prompt = self.uploaded_controlnet_config['prompt']
+            elif not config_prompt:
+                config_prompt = DEFAULT_SETTINGS.get('prompt')
             
             # Get current t_index_list from pipeline or config
             current_t_index_list = None
@@ -454,7 +370,7 @@ class App:
                 current_t_index_list = self.uploaded_controlnet_config['t_index_list']
             else:
                 # Default values
-                current_t_index_list = [35, 45]
+                current_t_index_list = DEFAULT_SETTINGS.get('t_index_list', [35, 45])
             
             # Get current acceleration setting
             current_acceleration = self.args.acceleration
@@ -469,24 +385,24 @@ class App:
                 current_acceleration = self.uploaded_controlnet_config['acceleration']
             
             # Get current streaming parameters (default values or from pipeline if available)
-            current_guidance_scale = 1.1
-            current_delta = 0.7
-            current_num_inference_steps = 50
-            current_seed = 2
+            current_guidance_scale = DEFAULT_SETTINGS.get('guidance_scale', 1.1)
+            current_delta = DEFAULT_SETTINGS.get('delta', 0.7)
+            current_num_inference_steps = DEFAULT_SETTINGS.get('num_inference_steps', 50)
+            current_seed = DEFAULT_SETTINGS.get('seed', 2)
             
             if self.pipeline:
-                current_guidance_scale = getattr(self.pipeline.stream, 'guidance_scale', 1.1)
-                current_delta = getattr(self.pipeline.stream, 'delta', 0.7)
-                current_num_inference_steps = getattr(self.pipeline.stream, 'num_inference_steps', 50)
+                current_guidance_scale = getattr(self.pipeline.stream, 'guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
+                current_delta = getattr(self.pipeline.stream, 'delta', DEFAULT_SETTINGS.get('delta', 0.7))
+                current_num_inference_steps = getattr(self.pipeline.stream, 'num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
                 # Get seed from generator if available
                 if hasattr(self.pipeline.stream, 'generator') and self.pipeline.stream.generator is not None:
                     # We can't directly get seed from generator, but we'll use the configured value
-                    current_seed = getattr(self.pipeline.stream, 'current_seed', 2)
+                    current_seed = getattr(self.pipeline.stream, 'current_seed', DEFAULT_SETTINGS.get('seed', 2))
             elif self.uploaded_controlnet_config:
-                current_guidance_scale = self.uploaded_controlnet_config.get('guidance_scale', 1.1)
-                current_delta = self.uploaded_controlnet_config.get('delta', 0.7)
-                current_num_inference_steps = self.uploaded_controlnet_config.get('num_inference_steps', 50)
-                current_seed = self.uploaded_controlnet_config.get('seed', 2)
+                current_guidance_scale = self.uploaded_controlnet_config.get('guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
+                current_delta = self.uploaded_controlnet_config.get('delta', DEFAULT_SETTINGS.get('delta', 0.7))
+                current_num_inference_steps = self.uploaded_controlnet_config.get('num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
+                current_seed = self.uploaded_controlnet_config.get('seed', DEFAULT_SETTINGS.get('seed', 2))
             
             # Get prompt and seed blending configuration from uploaded config or pipeline
             prompt_blending_config = None
@@ -579,7 +495,7 @@ class App:
                 config_prompt = config_data.get('prompt', None)
                 
                 # Get t_index_list from config if available
-                t_index_list = config_data.get('t_index_list', [35, 45])
+                t_index_list = config_data.get('t_index_list', DEFAULT_SETTINGS.get('t_index_list', [35, 45]))
                 
                 # Get acceleration from config if available
                 config_acceleration = config_data.get('acceleration', self.args.acceleration)
@@ -1806,7 +1722,7 @@ class App:
                 
                 # Get info from first IPAdapter config
                 first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
-                ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
+                ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
                 # Check for style image - prioritize uploaded style image over config style image over default
@@ -1832,7 +1748,7 @@ class App:
                 
                 # Get info from first IPAdapter config
                 first_ipadapter = self.pipeline.config['ipadapters'][0]
-                ipadapter_info["scale"] = first_ipadapter.get('scale', 1.0)
+                ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
                 
                 # Check for style image - prioritize uploaded style image over config style image over default
