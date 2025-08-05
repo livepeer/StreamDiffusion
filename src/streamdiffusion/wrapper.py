@@ -1552,19 +1552,7 @@ class StreamDiffusionWrapper:
         return controlnet_pipeline
 
 
-    def get_queued_controlnet_operations_count(self) -> int:
-        """Get the number of queued ControlNet operations"""
-        if not self.use_controlnet:
-            return 0
-        
-        return self.stream.get_queued_operations_count()
     
-    def is_controlnet_background_worker_alive(self) -> bool:
-        """Check if ControlNet background operations worker is alive"""
-        if not self.use_controlnet:
-            return False
-        
-        return self.stream.is_background_worker_alive()
 
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
