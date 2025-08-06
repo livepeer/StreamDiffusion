@@ -39,14 +39,7 @@ def save_config(config: Dict[str, Any], config_path: Union[str, Path]) -> None:
             raise ValueError(f"save_config: Unsupported configuration file format: {config_path.suffix}")
 
 def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
-    """Create StreamDiffusionWrapper from configuration dictionary
-    
-    Prompt Interface:
-    - Legacy: Use 'prompt' field for single prompt
-    - New: Use 'prompt_blending' with 'prompt_list' for multiple weighted prompts
-    - If both are provided, 'prompt_blending' takes precedence and 'prompt' is ignored
-    - negative_prompt: Currently a single string (not list) for all prompt types
-    """
+    """Create StreamDiffusionWrapper from configuration dictionary"""
     from streamdiffusion import StreamDiffusionWrapper
     import torch
 
@@ -60,29 +53,10 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
     
     prepare_params = _extract_prepare_params(final_config)
 
-    # Handle prompt configuration with clear precedence
-    if 'prompt_blending' in final_config:
-        # Use prompt blending (new interface) - ignore legacy 'prompt' field
-        blend_config = final_config['prompt_blending']
-        
-        # Prepare with prompt blending directly using unified interface
-        prepare_params_with_blending = {k: v for k, v in prepare_params.items() 
-                                       if k not in ['prompt_blending', 'seed_blending']}
-        prepare_params_with_blending['prompt'] = blend_config.get('prompt_list', [])
-        prepare_params_with_blending['prompt_interpolation_method'] = blend_config.get('interpolation_method', 'slerp')
-        
-        # Add seed blending if configured
-        if 'seed_blending' in final_config:
-            seed_blend_config = final_config['seed_blending']
-            prepare_params_with_blending['seed_list'] = seed_blend_config.get('seed_list', [])
-            prepare_params_with_blending['seed_interpolation_method'] = seed_blend_config.get('interpolation_method', 'linear')
-        
-        wrapper.prepare(**prepare_params_with_blending)
-    elif prepare_params.get('prompt'):
-        # Use legacy single prompt interface
-        clean_prepare_params = {k: v for k, v in prepare_params.items() 
-                               if k not in ['prompt_blending', 'seed_blending']}
-        wrapper.prepare(**clean_prepare_params)
+    # Apply standard prepare params only
+    clean_prepare_params = {k: v for k, v in prepare_params.items() 
+                           if k not in ['prompt_blending', 'seed_blending']}
+    wrapper.prepare(**clean_prepare_params)
 
     # Apply seed blending if configured and not already handled in prepare
     if 'seed_blending' in final_config and 'prompt_blending' not in final_config:
@@ -125,8 +99,6 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'seed': config.get('seed', 2),
         'use_safety_checker': config.get('use_safety_checker', False),
         'engine_dir': config.get('engine_dir', 'engines'),
-        'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
-        'normalize_seed_weights': config.get('normalize_seed_weights', True),
         'enable_pytorch_fallback': config.get('enable_pytorch_fallback', False),
     }
     if 'controlnets' in config and config['controlnets']:
@@ -157,23 +129,7 @@ def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'delta': config.get('delta', 1.0),
     }
     
-    # Handle prompt blending configuration
-    if 'prompt_blending' in config:
-        blend_config = config['prompt_blending']
-        prepare_params['prompt_blending'] = {
-            'prompt_list': blend_config.get('prompt_list', []),
-            'interpolation_method': blend_config.get('interpolation_method', 'slerp'),
-            'enable_caching': blend_config.get('enable_caching', True)
-        }
-    
-    # Handle seed blending configuration
-    if 'seed_blending' in config:
-        seed_blend_config = config['seed_blending']
-        prepare_params['seed_blending'] = {
-            'seed_list': seed_blend_config.get('seed_list', []),
-            'interpolation_method': seed_blend_config.get('interpolation_method', 'linear'),
-            'enable_caching': seed_blend_config.get('enable_caching', True)
-        }
+
     
     return prepare_params
 
@@ -306,54 +262,13 @@ def _apply_ipadapter_config(pipeline, ip_config: Dict[str, Any]):
         pipeline.ipadapter.set_scale(scale)
 
 
-def create_prompt_blending_config(
-    base_config: Dict[str, Any],
-    prompt_list: List[Tuple[str, float]],
-    prompt_interpolation_method: str = "slerp",
-    enable_caching: bool = True
-) -> Dict[str, Any]:
-    """Create a configuration with prompt blending settings"""
-    config = base_config.copy()
-    
-    config['prompt_blending'] = {
-        'prompt_list': prompt_list,
-        'interpolation_method': prompt_interpolation_method,
-        'enable_caching': enable_caching
-    }
-    
-    return config
 
 
-def create_seed_blending_config(
-    base_config: Dict[str, Any],
-    seed_list: List[Tuple[int, float]],
-    interpolation_method: str = "linear",
-    enable_caching: bool = True
-) -> Dict[str, Any]:
-    """Create a configuration with seed blending settings"""
-    config = base_config.copy()
-    
-    config['seed_blending'] = {
-        'seed_list': seed_list,
-        'interpolation_method': interpolation_method,
-        'enable_caching': enable_caching
-    }
-    
-    return config
 
 
-def set_normalize_weights_config(
-    base_config: Dict[str, Any],
-    normalize_prompt_weights: bool = True,
-    normalize_seed_weights: bool = True
-) -> Dict[str, Any]:
-    """Create a configuration with separate normalize weight settings"""
-    config = base_config.copy()
-    
-    config['normalize_prompt_weights'] = normalize_prompt_weights
-    config['normalize_seed_weights'] = normalize_seed_weights
-    
-    return config
+
+
+
 
 def _parse_dtype(dtype_str: str) -> Any:
     """Parse dtype string to torch dtype"""
@@ -403,68 +318,9 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if 'image_encoder_path' not in ipadapter:
                 raise ValueError(f"_validate_config: IPAdapter {i} missing required 'image_encoder_path'")
 
-    # Validate prompt blending configuration if present
-    if 'prompt_blending' in config:
-        blend_config = config['prompt_blending']
-        if not isinstance(blend_config, dict):
-            raise ValueError("_validate_config: 'prompt_blending' must be a dictionary")
-        
-        if 'prompt_list' in blend_config:
-            prompt_list = blend_config['prompt_list']
-            if not isinstance(prompt_list, list):
-                raise ValueError("_validate_config: 'prompt_list' must be a list")
-            
-            for i, prompt_item in enumerate(prompt_list):
-                if not isinstance(prompt_item, (list, tuple)) or len(prompt_item) != 2:
-                    raise ValueError(f"_validate_config: Prompt item {i} must be [text, weight] pair")
-                
-                text, weight = prompt_item
-                if not isinstance(text, str):
-                    raise ValueError(f"_validate_config: Prompt text {i} must be a string")
-                
-                if not isinstance(weight, (int, float)) or weight < 0:
-                    raise ValueError(f"_validate_config: Prompt weight {i} must be a non-negative number")
-        
-        interpolation_method = blend_config.get('interpolation_method', 'slerp')
-        if interpolation_method not in ['linear', 'slerp']:
-            raise ValueError("_validate_config: interpolation_method must be 'linear' or 'slerp'")
 
-    # Validate seed blending configuration if present
-    if 'seed_blending' in config:
-        seed_blend_config = config['seed_blending']
-        if not isinstance(seed_blend_config, dict):
-            raise ValueError("_validate_config: 'seed_blending' must be a dictionary")
-        
-        if 'seed_list' in seed_blend_config:
-            seed_list = seed_blend_config['seed_list']
-            if not isinstance(seed_list, list):
-                raise ValueError("_validate_config: 'seed_list' must be a list")
-            
-            for i, seed_item in enumerate(seed_list):
-                if not isinstance(seed_item, (list, tuple)) or len(seed_item) != 2:
-                    raise ValueError(f"_validate_config: Seed item {i} must be [seed, weight] pair")
-                
-                seed_value, weight = seed_item
-                if not isinstance(seed_value, int) or seed_value < 0:
-                    raise ValueError(f"_validate_config: Seed value {i} must be a non-negative integer")
-                
-            if not isinstance(weight, (int, float)) or weight < 0:
-                raise ValueError(f"_validate_config: Seed weight {i} must be a non-negative number")
-        
-        interpolation_method = seed_blend_config.get('interpolation_method', 'linear')
-        if interpolation_method not in ['linear', 'slerp']:
-            raise ValueError("_validate_config: seed blending interpolation_method must be 'linear' or 'slerp'")
 
-    # Validate separate normalize settings if present
-    if 'normalize_prompt_weights' in config:
-        normalize_prompt_weights = config['normalize_prompt_weights']
-        if not isinstance(normalize_prompt_weights, bool):
-            raise ValueError("_validate_config: 'normalize_prompt_weights' must be a boolean value")
-    
-    if 'normalize_seed_weights' in config:
-        normalize_seed_weights = config['normalize_seed_weights']
-        if not isinstance(normalize_seed_weights, bool):
-            raise ValueError("_validate_config: 'normalize_seed_weights' must be a boolean value")
+
     
     if 'enable_pytorch_fallback' in config:
         enable_pytorch_fallback = config['enable_pytorch_fallback']

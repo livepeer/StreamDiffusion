@@ -20,11 +20,11 @@ class CacheStats:
 
 
 class StreamParameterUpdater:
-    def __init__(self, stream_diffusion, wrapper=None, normalize_prompt_weights: bool = True, normalize_seed_weights: bool = True):
+    def __init__(self, stream_diffusion, wrapper=None):
         self.stream = stream_diffusion
         self.wrapper = wrapper  # Reference to wrapper for accessing pipeline structure
-        self.normalize_prompt_weights = normalize_prompt_weights
-        self.normalize_seed_weights = normalize_seed_weights
+        self.normalize_prompt_weights = True  # Default normalization setting
+        self.normalize_seed_weights = True    # Default normalization setting
         # Prompt blending caches
         self._prompt_cache: Dict[int, Dict] = {}
         self._current_prompt_list: List[Tuple[str, float]] = []
@@ -80,13 +80,7 @@ class StreamParameterUpdater:
         self._embedding_cache.clear()
         self._current_style_images.clear()
 
-    def get_normalize_prompt_weights(self) -> bool:
-        """Get the current prompt weight normalization setting."""
-        return self.normalize_prompt_weights
 
-    def get_normalize_seed_weights(self) -> bool:
-        """Get the current seed weight normalization setting."""
-        return self.normalize_seed_weights
     
     def register_embedding_enhancer(self, enhancer_func, name: str = "unknown") -> None:
         """
@@ -270,15 +264,10 @@ class StreamParameterUpdater:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        prompt_list: Optional[List[Tuple[str, float]]] = None,
-        negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        normalize_prompt_weights: Optional[bool] = None,
-        seed_list: Optional[List[Tuple[int, float]]] = None,
-        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
-        normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        prompt_config: Optional[Dict[str, Any]] = None,
+        seed_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -300,29 +289,6 @@ class StreamParameterUpdater:
 
         if seed is not None:
             self._update_seed(seed)
-        
-        if normalize_prompt_weights is not None:
-            self.normalize_prompt_weights = normalize_prompt_weights
-            logger.info(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
-
-        if normalize_seed_weights is not None:
-            self.normalize_seed_weights = normalize_seed_weights
-            logger.info(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
-
-        # Handle prompt blending if prompt_list is provided
-        if prompt_list is not None:
-            self._update_blended_prompts(
-                prompt_list=prompt_list,
-                negative_prompt=negative_prompt or self._current_negative_prompt,
-                prompt_interpolation_method=prompt_interpolation_method
-            )
-
-        # Handle seed blending if seed_list is provided
-        if seed_list is not None:
-            self._update_blended_seeds(
-                seed_list=seed_list,
-                interpolation_method=seed_interpolation_method
-            )
 
         if t_index_list is not None:
             self._recalculate_timestep_dependent_params(t_index_list)
@@ -336,6 +302,15 @@ class StreamParameterUpdater:
         if ipadapter_config is not None:
             logger.info(f"update_stream_params: Updating IPAdapter configuration")
             self._update_ipadapter_config(ipadapter_config)
+        
+        # Handle config-based updates
+        if prompt_config is not None:
+            logger.info(f"update_stream_params: Updating prompt configuration with {len(prompt_config.get('prompts', []))} prompts")
+            self._update_prompt_config(prompt_config)
+        
+        if seed_config is not None:
+            logger.info(f"update_stream_params: Updating seed configuration with {len(seed_config.get('seeds', []))} seeds")
+            self._update_seed_config(seed_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -1166,4 +1141,95 @@ class StreamParameterUpdater:
             config['has_style_image'] = False
             
         return config
+
+    def _update_prompt_config(self, desired_config: Dict[str, Any]) -> None:
+        """
+        Update prompt configuration using simple array format.
+        
+        Args:
+            desired_config: Complete prompt configuration dict defining the desired state.
+                           Contains: prompts (list of [text, weight] arrays), negative_prompt, 
+                           interpolation_method, normalize_weights
+        """
+        if not desired_config or not desired_config.get('prompts'):
+            logger.warning("_update_prompt_config: Empty or invalid prompt config provided")
+            return
+        
+        # Update global settings
+        if 'negative_prompt' in desired_config:
+            self._current_negative_prompt = desired_config['negative_prompt']
+        
+        if 'normalize_weights' in desired_config:
+            self.normalize_prompt_weights = desired_config['normalize_weights']
+        
+        # Convert array format to tuple format and update
+        new_prompt_list = [(prompt[0], prompt[1]) for prompt in desired_config['prompts']]
+        
+        logger.info(f"_update_prompt_config: Updating {len(new_prompt_list)} prompts")
+        self._update_blended_prompts(
+            prompt_list=new_prompt_list,
+            negative_prompt=desired_config.get('negative_prompt', self._current_negative_prompt),
+            prompt_interpolation_method=desired_config.get('interpolation_method', 'slerp')
+        )
+
+    def _get_current_prompt_config(self) -> Dict[str, Any]:
+        """
+        Get current prompt configuration by introspecting the current state.
+        
+        Returns:
+            Current prompt configuration dict
+        """
+        prompts = []
+        for text, weight in self._current_prompt_list:
+            prompts.append([text, weight])
+        
+        return {
+            'prompts': prompts,
+            'negative_prompt': self._current_negative_prompt,
+            'interpolation_method': 'slerp',  # Default value
+            'normalize_weights': self.normalize_prompt_weights
+        }
+
+    def _update_seed_config(self, desired_config: Dict[str, Any]) -> None:
+        """
+        Update seed configuration using simple array format.
+        
+        Args:
+            desired_config: Complete seed configuration dict defining the desired state.
+                           Contains: seeds (list of [value, weight] arrays), interpolation_method,
+                           normalize_weights
+        """
+        if not desired_config or not desired_config.get('seeds'):
+            logger.warning("_update_seed_config: Empty or invalid seed config provided")
+            return
+        
+        # Update global settings
+        if 'normalize_weights' in desired_config:
+            self.normalize_seed_weights = desired_config['normalize_weights']
+        
+        # Convert array format to tuple format and update
+        new_seed_list = [(seed[0], seed[1]) for seed in desired_config['seeds']]
+        
+        logger.info(f"_update_seed_config: Updating {len(new_seed_list)} seeds")
+        self._update_blended_seeds(
+            seed_list=new_seed_list,
+            interpolation_method=desired_config.get('interpolation_method', 'linear')
+        )
+
+    def _get_current_seed_config(self) -> Dict[str, Any]:
+        """
+        Get current seed configuration by introspecting the current state.
+        
+        Returns:
+            Current seed configuration dict
+        """
+        seeds = []
+        for value, weight in self._current_seed_list:
+            seeds.append([value, weight])
+        
+        return {
+            'seeds': seeds,
+            'interpolation_method': 'linear',  # Default value
+            'normalize_weights': self.normalize_seed_weights
+        }
 

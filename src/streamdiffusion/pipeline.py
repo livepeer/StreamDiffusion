@@ -31,8 +31,6 @@ class StreamDiffusion:
         use_denoising_batch: bool = True,
         frame_buffer_size: int = 1,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
-        normalize_prompt_weights: bool = True,
-        normalize_seed_weights: bool = True,
     ) -> None:
         self.device = pipe.device
         self.dtype = torch_dtype
@@ -97,7 +95,7 @@ class StreamDiffusion:
             self.add_time_ids = None
 
         # Initialize parameter updater
-        self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
+        self._param_updater = StreamParameterUpdater(self)
 
     def load_lcm_lora(
         self,
@@ -353,10 +351,13 @@ class StreamDiffusion:
 
     @torch.no_grad()
     def update_prompt(self, prompt: str) -> None:
-        self._param_updater.update_stream_params(
-            prompt_list=[(prompt, 1.0)],
-            prompt_interpolation_method="linear"
-        )
+        prompt_config = {
+            'prompts': [[prompt, 1.0]],
+            'negative_prompt': '',
+            'interpolation_method': 'linear',
+            'normalize_weights': True
+        }
+        self._param_updater.update_stream_params(prompt_config=prompt_config)
 
     @torch.no_grad()
     def update_stream_params(
@@ -366,17 +367,9 @@ class StreamDiffusion:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        # Prompt blending parameters
-        prompt_list: Optional[List[Tuple[str, float]]] = None,
-        negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        normalize_prompt_weights: Optional[bool] = None,
-        # Seed blending parameters
-        seed_list: Optional[List[Tuple[int, float]]] = None,
-        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
-        normalize_seed_weights: Optional[bool] = None,
-        # IPAdapter parameters
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        prompt_config: Optional[Dict[str, Any]] = None,
+        seed_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -393,24 +386,12 @@ class StreamDiffusion:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
-        prompt_list : Optional[List[Tuple[str, float]]]
-            List of prompts with weights for blending.
-        negative_prompt : Optional[str]
-            The negative prompt to apply to all blended prompts.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings.
-        normalize_prompt_weights : Optional[bool]
-            Whether to normalize prompt weights in blending to sum to 1, by default None (no change).
-            When False, weights > 1 will amplify embeddings.
-        seed_list : Optional[List[Tuple[int, float]]]
-            List of seeds with weights for blending.
-        seed_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors.
-        normalize_seed_weights : Optional[bool]
-            Whether to normalize seed weights in blending to sum to 1, by default None (no change).
-            When False, weights > 1 will amplify noise.
         ipadapter_config : Optional[Dict[str, Any]]
             IPAdapter configuration dict containing scale, style_image, etc.
+        prompt_config : Optional[Dict[str, Any]]
+            Complete prompt configuration dict defining the desired state.
+        seed_config : Optional[Dict[str, Any]]
+            Complete seed configuration dict defining the desired state.
         """
         self._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -418,25 +399,14 @@ class StreamDiffusion:
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
-            prompt_list=prompt_list,
-            negative_prompt=negative_prompt,
-            prompt_interpolation_method=prompt_interpolation_method,
-            seed_list=seed_list,
-            seed_interpolation_method=seed_interpolation_method,
-            normalize_prompt_weights=normalize_prompt_weights,
-            normalize_seed_weights=normalize_seed_weights,
             ipadapter_config=ipadapter_config,
+            prompt_config=prompt_config,
+            seed_config=seed_config,
         )
 
 
 
-    def get_normalize_prompt_weights(self) -> bool:
-        """Get the current prompt weight normalization setting."""
-        return self._param_updater.get_normalize_prompt_weights()
 
-    def get_normalize_seed_weights(self) -> bool:
-        """Get the current seed weight normalization setting."""
-        return self._param_updater.get_normalize_seed_weights()
 
 
 

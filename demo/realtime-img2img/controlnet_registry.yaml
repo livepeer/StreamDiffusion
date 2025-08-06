@@ -15,9 +15,7 @@ defaults:
   t_index_list: [35, 45]
   ipadapter_scale: 1.0
   
-  # Default blending settings
-  normalize_prompt_weights: true
-  normalize_seed_weights: true
+
 
 # Available ControlNet models organized by base model type
 available_controlnets:

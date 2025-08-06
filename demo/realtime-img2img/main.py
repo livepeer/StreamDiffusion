@@ -62,8 +62,7 @@ def load_default_settings():
             'seed': 2,
             't_index_list': [35, 45],
             'ipadapter_scale': 1.0,
-            'normalize_prompt_weights': True,
-            'normalize_seed_weights': True,
+
             'prompt': "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
         }
 
@@ -514,16 +513,7 @@ class App:
             if not seed_blending_config:
                 seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
             
-            # Get current normalize weights settings
-            normalize_prompt_weights = True  # default
-            normalize_seed_weights = True    # default
-            
-            if self.pipeline:
-                normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
-            elif self.uploaded_controlnet_config:
-                normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
+
             
             return JSONResponse(
                 {
@@ -543,8 +533,6 @@ class App:
                     "current_resolution": current_resolution,
                     "prompt_blending": prompt_blending_config,
                     "seed_blending": seed_blending_config,
-                    "normalize_prompt_weights": normalize_prompt_weights,
-                    "normalize_seed_weights": normalize_seed_weights,
                 }
             )
 
@@ -650,8 +638,6 @@ class App:
                     "prompt_blending": normalized_prompt_blending,
                     "seed_blending": normalized_seed_blending,
                     "current_resolution": current_resolution,  # Include updated resolution
-                    "normalize_prompt_weights": config_normalize_weights,
-                    "normalize_seed_weights": config_normalize_weights,
                 })
                 
             except Exception as e:
@@ -694,22 +680,9 @@ class App:
                 if not seed_blending_config:
                     seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
                 
-                # Get normalization settings
-                normalize_prompt_weights = True
-                normalize_seed_weights = True
-                
-                if self.pipeline:
-                    normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                    normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
-                elif self.uploaded_controlnet_config:
-                    normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                    normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                
                 return JSONResponse({
                     "prompt_blending": prompt_blending_config,
                     "seed_blending": seed_blending_config,
-                    "normalize_prompt_weights": normalize_prompt_weights,
-                    "normalize_seed_weights": normalize_seed_weights,
                     "has_config": self.uploaded_controlnet_config is not None,
                     "pipeline_active": self.pipeline is not None
                 })
@@ -1006,10 +979,17 @@ class App:
                             
                             # Force prompt re-encoding to apply new style image embeddings
                             try:
-                                current_prompts = self.pipeline.stream.get_current_prompts()
+                                current_prompts = self.pipeline.stream._param_updater.get_current_prompts()
                                 if current_prompts:
                                     print("upload_style_image: Forcing prompt re-encoding to apply new style image")
-                                    self.pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                                    # Convert to config format
+                                    prompt_config = {
+                                        'prompts': [[prompt[0], prompt[1]] for prompt in current_prompts],
+                                        'negative_prompt': '',
+                                        'interpolation_method': 'slerp',
+                                        'normalize_weights': True
+                                    }
+                                    self.pipeline.stream.update_prompt(prompt_config)
                                     print("upload_style_image: Prompt re-encoding completed")
                             except Exception as e:
                                 print(f"upload_style_image: Failed to force prompt re-encoding: {e}")
@@ -1182,14 +1162,36 @@ class App:
                     else:
                         raise HTTPException(status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string")
                 
-                # Handle normalization settings
-                if "normalize_prompt_weights" in data:
-                    params["normalize_prompt_weights"] = bool(data["normalize_prompt_weights"])
-                    updated_params.append("normalize_prompt_weights")
+                # Handle config-based parameters
+                if "prompt_config" in data:
+                    prompt_config = data["prompt_config"]
+                    if not isinstance(prompt_config, dict):
+                        raise HTTPException(status_code=400, detail="prompt_config must be a dictionary")
+                    params["prompt_config"] = prompt_config
+                    updated_params.append("prompt_config")
                 
-                if "normalize_seed_weights" in data:
-                    params["normalize_seed_weights"] = bool(data["normalize_seed_weights"])
-                    updated_params.append("normalize_seed_weights")
+                if "seed_config" in data:
+                    seed_config = data["seed_config"]
+                    if not isinstance(seed_config, dict):
+                        raise HTTPException(status_code=400, detail="seed_config must be a dictionary")
+                    params["seed_config"] = seed_config
+                    updated_params.append("seed_config")
+                
+                # Handle controlnet_config
+                if "controlnet_config" in data:
+                    controlnet_config = data["controlnet_config"]
+                    if not isinstance(controlnet_config, list):
+                        raise HTTPException(status_code=400, detail="controlnet_config must be a list")
+                    params["controlnet_config"] = controlnet_config
+                    updated_params.append("controlnet_config")
+                
+                # Handle ipadapter_config
+                if "ipadapter_config" in data:
+                    ipadapter_config = data["ipadapter_config"]
+                    if not isinstance(ipadapter_config, dict):
+                        raise HTTPException(status_code=400, detail="ipadapter_config must be a dictionary")
+                    params["ipadapter_config"] = ipadapter_config
+                    updated_params.append("ipadapter_config")
                 
                 if not params and "resolution" not in data:
                     raise HTTPException(status_code=400, detail="No valid parameters provided")
@@ -1301,7 +1303,7 @@ class App:
 
         @self.app.post("/api/blending")
         async def update_blending(request: Request):
-            """Update prompt and/or seed blending configuration in real-time"""
+            """Update prompt and/or seed blending configuration using config-based approach only"""
             try:
                 data = await request.json()
                 
@@ -1311,54 +1313,70 @@ class App:
                 params = {}
                 updated_types = []
                 
-                # Handle prompt blending
-                if "prompt_list" in data:
-                    prompt_list = data["prompt_list"]
-                    interpolation_method = data.get("prompt_interpolation_method", "slerp")
+                # Handle prompt blending using config format
+                if "prompt_config" in data:
+                    prompt_config = data["prompt_config"]
                     
-                    if not isinstance(prompt_list, list):
-                        raise HTTPException(status_code=400, detail="prompt_list must be a list")
+                    if not isinstance(prompt_config, dict):
+                        raise HTTPException(status_code=400, detail="prompt_config must be a dictionary")
                     
-                    # Validate and convert format
-                    prompt_tuples = []
-                    for item in prompt_list:
-                        if isinstance(item, list) and len(item) == 2:
-                            prompt_tuples.append((str(item[0]), float(item[1])))
-                        elif isinstance(item, dict) and "prompt" in item and "weight" in item:
-                            prompt_tuples.append((str(item["prompt"]), float(item["weight"])))
-                        else:
-                            raise HTTPException(status_code=400, detail="Each prompt item must be [prompt, weight] or {prompt: str, weight: float}")
+                    # Validate required fields
+                    if "prompts" not in prompt_config:
+                        raise HTTPException(status_code=400, detail="prompt_config must contain 'prompts' field")
                     
-                    params["prompt_list"] = prompt_tuples
-                    params["prompt_interpolation_method"] = interpolation_method
-                    updated_types.append("prompt blending")
+                    if not isinstance(prompt_config["prompts"], list):
+                        raise HTTPException(status_code=400, detail="prompts must be a list")
+                    
+                    # Validate prompt structure
+                    for i, prompt in enumerate(prompt_config["prompts"]):
+                        if not isinstance(prompt, list) or len(prompt) != 2:
+                            raise HTTPException(status_code=400, detail=f"Prompt {i} must be [text, weight] array")
+                        
+                        if not isinstance(prompt[0], str):
+                            raise HTTPException(status_code=400, detail=f"Prompt {i} text must be a string")
+                        
+                        if not isinstance(prompt[1], (int, float)):
+                            raise HTTPException(status_code=400, detail=f"Prompt {i} weight must be a number")
+                    
+                    params["prompt_config"] = prompt_config
+                    updated_types.append("prompt config")
                 
-                # Handle seed blending
-                if "seed_list" in data:
-                    seed_list = data["seed_list"]
-                    interpolation_method = data.get("seed_interpolation_method", "linear")
+
+                
+                # Handle seed blending using config format
+                if "seed_config" in data:
+                    seed_config = data["seed_config"]
                     
-                    if not isinstance(seed_list, list):
-                        raise HTTPException(status_code=400, detail="seed_list must be a list")
+                    if not isinstance(seed_config, dict):
+                        raise HTTPException(status_code=400, detail="seed_config must be a dictionary")
                     
-                    # Validate and convert format
-                    seed_tuples = []
-                    for item in seed_list:
-                        if isinstance(item, list) and len(item) == 2:
-                            seed_tuples.append((int(item[0]), float(item[1])))
-                        elif isinstance(item, dict) and "seed" in item and "weight" in item:
-                            seed_tuples.append((int(item["seed"]), float(item["weight"])))
-                        else:
-                            raise HTTPException(status_code=400, detail="Each seed item must be [seed, weight] or {seed: int, weight: float}")
+                    # Validate required fields
+                    if "seeds" not in seed_config:
+                        raise HTTPException(status_code=400, detail="seed_config must contain 'seeds' field")
                     
-                    params["seed_list"] = seed_tuples
-                    params["seed_interpolation_method"] = interpolation_method
-                    updated_types.append("seed blending")
+                    if not isinstance(seed_config["seeds"], list):
+                        raise HTTPException(status_code=400, detail="seeds must be a list")
+                    
+                    # Validate seed structure
+                    for i, seed in enumerate(seed_config["seeds"]):
+                        if not isinstance(seed, list) or len(seed) != 2:
+                            raise HTTPException(status_code=400, detail=f"Seed {i} must be [value, weight] array")
+                        
+                        if not isinstance(seed[0], int):
+                            raise HTTPException(status_code=400, detail=f"Seed {i} value must be an integer")
+                        
+                        if not isinstance(seed[1], (int, float)):
+                            raise HTTPException(status_code=400, detail=f"Seed {i} weight must be a number")
+                    
+                    params["seed_config"] = seed_config
+                    updated_types.append("seed config")
+                
+
                 
                 if not params:
                     raise HTTPException(status_code=400, detail="No blending parameters provided")
                 
-                # Update blending using unified API
+                # Update blending using config-based API
                 self.pipeline.update_stream_params(**params)
                 
                 return JSONResponse({
@@ -1915,9 +1933,15 @@ class App:
         torch_dtype = torch.float16
         pipeline = Pipeline(self.args, device, torch_dtype, width=self.new_width, height=self.new_height)
         
-        # Initialize with default prompt blending (single prompt with weight 1.0)
+        # Initialize with default prompt using config format
         default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
-        pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
+        prompt_config = {
+            'prompts': [[default_prompt, 1.0]],
+            'negative_prompt': '',
+            'interpolation_method': 'slerp',
+            'normalize_weights': True
+        }
+        pipeline.stream.update_prompt(prompt_config)
         
         return pipeline
 
@@ -1962,13 +1986,24 @@ class App:
         config_for_prompts = self.runtime_controlnet_config if self.runtime_controlnet_config else self.uploaded_controlnet_config
         normalized_prompt_config = self._normalize_prompt_config(config_for_prompts)
         if normalized_prompt_config:
-            # Convert to tuple format and set up prompt blending
-            prompt_tuples = [(item[0], item[1]) for item in normalized_prompt_config]
-            new_pipeline.stream.update_prompt(prompt_tuples, prompt_interpolation_method="slerp")
+            # Convert to config format and set up prompt blending
+            prompt_config = {
+                'prompts': [[item[0], item[1]] for item in normalized_prompt_config],
+                'negative_prompt': '',
+                'interpolation_method': 'slerp',
+                'normalize_weights': True
+            }
+            new_pipeline.stream.update_prompt(prompt_config)
         else:
-            # Fallback to default single prompt
+            # Fallback to default single prompt using config format
             default_prompt = "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
-            new_pipeline.stream.update_prompt([(default_prompt, 1.0)], prompt_interpolation_method="slerp")
+            prompt_config = {
+                'prompts': [[default_prompt, 1.0]],
+                'negative_prompt': '',
+                'interpolation_method': 'slerp',
+                'normalize_weights': True
+            }
+            new_pipeline.stream.update_prompt(prompt_config)
         
         # Apply style image (uploaded or default) if pipeline has IPAdapter
         has_ipadapter = getattr(new_pipeline, 'has_ipadapter', False)
@@ -2000,10 +2035,17 @@ class App:
                     
                     # Force prompt re-encoding to apply style image embeddings
                     try:
-                        current_prompts = new_pipeline.stream.get_current_prompts()
+                        current_prompts = new_pipeline.stream._param_updater.get_current_prompts()
                         if current_prompts:
                             print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
-                            new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                            # Convert to config format
+                            prompt_config = {
+                                'prompts': [[prompt[0], prompt[1]] for prompt in current_prompts],
+                                'negative_prompt': '',
+                                'interpolation_method': 'slerp',
+                                'normalize_weights': True
+                            }
+                            new_pipeline.stream.update_prompt(prompt_config)
                             print("_create_pipeline_with_config: Prompt re-encoding completed")
                     except Exception as e:
                         print(f"_create_pipeline_with_config: Failed to force prompt re-encoding: {e}")
@@ -2268,10 +2310,17 @@ class App:
                         
                         # Force prompt re-encoding to apply style image embeddings
                         try:
-                            current_prompts = new_pipeline.stream.get_current_prompts()
+                            current_prompts = new_pipeline.stream._param_updater.get_current_prompts()
                             if current_prompts:
                                 print("_update_resolution: Forcing prompt re-encoding to apply style image")
-                                new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
+                                # Convert to config format
+                                prompt_config = {
+                                    'prompts': [[prompt[0], prompt[1]] for prompt in current_prompts],
+                                    'negative_prompt': '',
+                                    'interpolation_method': 'slerp',
+                                    'normalize_weights': True
+                                }
+                                new_pipeline.stream.update_prompt(prompt_config)
                                 print("_update_resolution: Prompt re-encoding completed")
                         except Exception as e:
                             print(f"_update_resolution: Failed to force prompt re-encoding: {e}")

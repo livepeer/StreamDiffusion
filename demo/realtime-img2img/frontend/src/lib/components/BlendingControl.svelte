@@ -4,8 +4,7 @@
 
   export let promptBlendingConfig: any = null;
   export let seedBlendingConfig: any = null;
-  export let normalizePromptWeights: boolean = true;
-  export let normalizeSeedWeights: boolean = true;
+
   export let currentPrompt: string = '';
 
   const dispatch = createEventDispatcher();
@@ -13,6 +12,7 @@
   // Prompt blending state
   let promptList: Array<[string, number]> = [];
   let promptInterpolationMethod = 'slerp';
+  let normalizePromptWeights: boolean = true;
   let promptInitialized = false;
   let lastPromptConfigHash = '';
   let hasPendingPromptChanges = false;
@@ -20,6 +20,7 @@
   // Seed blending state
   let seedList: Array<[number, number]> = [];
   let seedInterpolationMethod = 'linear';
+  let normalizeSeedWeights: boolean = true;
   let seedInitialized = false;
   let lastSeedConfigHash = '';
   let hasPendingSeedChanges = false;
@@ -140,34 +141,27 @@
   }
 
   async function updateNormalizePromptWeights(normalize: boolean) {
-    try {
-      const response = await fetch('/api/params', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ normalize_prompt_weights: normalize })
-      });
-
-      if (!response.ok) {
-        const result = await response.json();
-        console.error('updateNormalizePromptWeights: Failed to update normalize prompt weights:', result.detail);
-      } else {
-        normalizePromptWeights = normalize;
-        // Also update the blending to apply the normalization change
-        await updatePromptBlendingWithoutRefresh();
-      }
-    } catch (error) {
-      console.error('updateNormalizePromptWeights: Update failed:', error);
-    }
+    normalizePromptWeights = normalize;
+    // Update the blending config to apply the normalization change
+    await updatePromptBlendingWithoutRefresh();
   }
 
   async function updatePromptBlendingWithoutRefresh() {
     try {
+      // Convert prompt list to config format
+      const prompts = promptList.map((prompt) => [prompt[0], prompt[1]]);
+
+      const prompt_config = {
+        prompts: prompts,
+        interpolation_method: promptInterpolationMethod,
+        normalize_weights: normalizePromptWeights
+      };
+
       const response = await fetch('/api/blending', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt_list: promptList,
-          prompt_interpolation_method: promptInterpolationMethod
+          prompt_config: prompt_config
         })
       });
 
@@ -219,24 +213,9 @@
   }
 
   async function updateNormalizeSeedWeights(normalize: boolean) {
-    try {
-      const response = await fetch('/api/params', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ normalize_seed_weights: normalize })
-      });
-
-      if (!response.ok) {
-        const result = await response.json();
-        console.error('updateNormalizeSeedWeights: Failed to update normalize seed weights:', result.detail);
-      } else {
-        normalizeSeedWeights = normalize;
-        // Also update the blending to apply the normalization change
-        await updateSeedBlendingWithoutRefresh();
-      }
-    } catch (error) {
-      console.error('updateNormalizeSeedWeights: Update failed:', error);
-    }
+    normalizeSeedWeights = normalize;
+    // Update the blending config to apply the normalization change
+    await updateSeedBlendingWithoutRefresh();
   }
 
   function randomizeSeed(index: number) {
@@ -246,12 +225,20 @@
 
   async function updateSeedBlendingWithoutRefresh() {
     try {
+      // Convert seed list to config format
+      const seeds = seedList.map((seed) => [seed[0], seed[1]]);
+
+      const seed_config = {
+        seeds: seeds,
+        interpolation_method: seedInterpolationMethod,
+        normalize_weights: normalizeSeedWeights
+      };
+
       const response = await fetch('/api/blending', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          seed_list: seedList,
-          seed_interpolation_method: seedInterpolationMethod
+          seed_config: seed_config
         })
       });
 
