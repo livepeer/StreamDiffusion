@@ -1100,6 +1100,7 @@ class StreamDiffusionWrapper:
                 # Get IPAdapter information from pipeline if available
                 ipadapter_scale = None
                 ipadapter_tokens = None
+                is_faceid = False
                 if use_ipadapter_trt and ipadapter_pipeline:
                     tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
                     ipadapter_scale = tensorrt_info.get('scale', 1.0)
@@ -1107,6 +1108,8 @@ class StreamDiffusionWrapper:
                     # Read token count from loaded IPAdapter instance
                     if hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
                         ipadapter_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                        # Detect if this is a FaceID model
+                        is_faceid = getattr(ipadapter_pipeline.ipadapter, 'is_faceid', False)
                     else:
                         ipadapter_tokens = 4  # Default fallback
                 # Generate engine paths using EngineManager
@@ -1119,7 +1122,8 @@ class StreamDiffusionWrapper:
                     use_lcm_lora=use_lcm_lora,
                     use_tiny_vae=use_tiny_vae,
                     ipadapter_scale=ipadapter_scale,
-                    ipadapter_tokens=ipadapter_tokens
+                    ipadapter_tokens=ipadapter_tokens,
+                    is_faceid=is_faceid
                 )
                 vae_encoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_ENCODER,
