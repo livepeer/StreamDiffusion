@@ -1191,6 +1191,10 @@ class StreamDiffusionWrapper:
 
                 # Compile UNet engine using EngineManager
                 logger.info(f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}")
+                try:
+                    logger.debug(f"compile_and_load_engine: use_ipadapter_trt={use_ipadapter_trt}, num_ip_layers={num_ip_layers}, tokens={num_tokens}, ipadapter_scale={ipadapter_scale}")
+                except Exception:
+                    pass
                 
                 # NOTE: When IPAdapter is enabled, we must pass num_ip_layers. We cannot know it until after
                 # installing processors in the export wrapper. We construct the wrapper first to discover it,

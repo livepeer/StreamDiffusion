@@ -665,13 +665,26 @@ class BaseControlNetPipeline:
                     base_weight = float(getattr(self.stream, 'ipadapter_scale', 1.0))
                     weight_type = getattr(self.stream, 'ipadapter_weight_type', None)
                     try:
-                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
                         weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
                     except Exception:
                         weights = BaseControlNetPipeline._generate_ipadapter_weights(num_ip_layers, base_weight, weight_type)
                     if weights is None:
                         weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                    # Apply per-step time factor if available
+                    try:
+                        total_steps = getattr(self.stream, 'denoising_steps_num', None) or (len(self.stream.t_list) if hasattr(self.stream, 't_list') else None)
+                        if total_steps is not None and idx is not None:
+                            time_factor = build_time_weight_factor(weight_type, int(idx), int(total_steps))
+                            weights = weights * float(time_factor)
+                    except Exception:
+                        pass
                     trt_kwargs['ipadapter_scale'] = weights
+                    try:
+                        logger.debug(f"ControlNetPipeline: TRT ipadapter_scale shape={tuple(weights.shape)}, min={float(weights.min().item())}, max={float(weights.max().item())}")
+                    except Exception:
+                        pass
+            logger.debug(f"ControlNetPipeline: Calling TRT UNet with keys: {list(trt_kwargs.keys())}")
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
                 t_list_expanded,
@@ -727,6 +740,20 @@ class BaseControlNetPipeline:
             unet_kwargs.update(self._get_additional_unet_kwargs(**conditioning_context))
             
             # Call UNet with ControlNet conditioning
+            # Optionally apply per-step time factor to IPAdapter PyTorch processors
+            try:
+                from diffusers_ipadapter.ip_adapter.attention_processor import build_time_weight_factor
+                total_steps = getattr(self.stream, 'denoising_steps_num', None) or (len(self.stream.t_list) if hasattr(self.stream, 't_list') else None)
+                if total_steps is not None and idx is not None:
+                    time_factor = float(build_time_weight_factor(getattr(self.stream, 'ipadapter_weight_type', None), int(idx), int(total_steps)))
+                    if hasattr(self.stream.unet, 'attn_processors') and time_factor != 1.0:
+                        for p in self.stream.unet.attn_processors.values():
+                            if hasattr(p, 'scale') and hasattr(p, '_ip_layer_index'):
+                                base_val = getattr(p, '_base_scale', p.scale)
+                                p.scale = float(base_val) * time_factor
+            except Exception:
+                pass
+
             model_pred = self.stream.unet(**unet_kwargs)[0]
             
             # Use shared CFG processing

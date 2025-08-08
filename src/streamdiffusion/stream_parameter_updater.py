@@ -1110,17 +1110,30 @@ class StreamParameterUpdater:
             
             if current_scale != desired_scale:
                 logger.info(f"_update_ipadapter_config: Updating scale: {current_scale} → {desired_scale}")
-                ipadapter_pipeline.update_scale(desired_scale)
-                # Mirror onto stream for TRT runtime input vector construction
+                # If a weight_type is active, apply per-layer vector at the new base scale
                 try:
-                    setattr(self.stream, 'ipadapter_scale', float(desired_scale))
+                    weight_type = getattr(self.stream, 'ipadapter_weight_type', None)
+                    if weight_type is not None and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None:
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                        ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
+                        num_layers = len(ip_procs)
+                        weights = build_layer_weights(num_layers, float(desired_scale), weight_type)
+                        if weights is not None:
+                            ipadapter_pipeline.ipadapter.set_scale(weights)
+                        else:
+                            ipadapter_pipeline.ipadapter.set_scale(float(desired_scale))
+                        # Keep pipeline/stream scales in sync
+                        ipadapter_pipeline.scale = float(desired_scale)
+                        try:
+                            setattr(self.stream, 'ipadapter_scale', float(desired_scale))
+                        except Exception:
+                            pass
+                    else:
+                        # No weight_type: uniform scale
+                        ipadapter_pipeline.update_scale(desired_scale)
                 except Exception:
-                    pass
-                # Reflect current scale onto stream for TRT runtime usage
-                try:
-                    setattr(self.stream, 'ipadapter_scale', float(desired_scale))
-                except Exception:
-                    pass
+                    # Do not introduce fallback mechanisms
+                    raise
         
         # Update style image if provided
         if 'style_image' in desired_config:
@@ -1128,6 +1141,33 @@ class StreamParameterUpdater:
             if style_image is not None:
                 logger.info(f"_update_ipadapter_config: Updating style image")
                 ipadapter_pipeline.update_style_image(style_image)
+
+        # Update weight type if provided (affects per-layer distribution and/or per-step factor)
+        if 'weight_type' in desired_config:
+            weight_type = desired_config['weight_type']
+            try:
+                setattr(self.stream, 'ipadapter_weight_type', weight_type)
+            except Exception:
+                pass
+            # For PyTorch UNet, immediately apply a per-layer scale vector so layers reflect selection types
+            try:
+                is_tensorrt_engine = hasattr(self.stream.unet, 'engine') and hasattr(self.stream.unet, 'stream')
+                if not is_tensorrt_engine and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None:
+                    # Compute per-layer vector using Diffusers_IPAdapter helper
+                    from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                    # Count installed IP layers by scanning processors with _ip_layer_index
+                    ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
+                    num_layers = len(ip_procs)
+                    base_weight = float(getattr(self.stream, 'ipadapter_scale', getattr(ipadapter_pipeline, 'scale', 1.0)))
+                    weights = build_layer_weights(num_layers, base_weight, weight_type)
+                    # If None, keep uniform base scale; else set per-layer vector
+                    if weights is not None:
+                        ipadapter_pipeline.ipadapter.set_scale(weights)
+                    else:
+                        ipadapter_pipeline.ipadapter.set_scale(base_weight)
+            except Exception:
+                # Do not add fallback mechanisms
+                raise
 
     def _get_ipadapter_pipeline(self):
         """
