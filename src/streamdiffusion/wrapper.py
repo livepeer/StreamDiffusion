@@ -1192,6 +1192,32 @@ class StreamDiffusionWrapper:
                 # Compile UNet engine using EngineManager
                 logger.info(f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}")
                 
+                # NOTE: When IPAdapter is enabled, we must pass num_ip_layers. We cannot know it until after
+                # installing processors in the export wrapper. We construct the wrapper first to discover it,
+                # then construct UNet model with that value.
+
+                # Build a temporary unified wrapper to install processors and discover num_ip_layers
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
+                temp_wrapped_unet = UnifiedExportWrapper(
+                    stream.unet,
+                    use_controlnet=use_controlnet_trt,
+                    use_ipadapter=use_ipadapter_trt,
+                    control_input_names=None,
+                    num_tokens=num_tokens
+                )
+
+                num_ip_layers = None
+                if use_ipadapter_trt:
+                    # Access underlying IPAdapter wrapper
+                    if hasattr(temp_wrapped_unet, 'ipadapter_wrapper') and temp_wrapped_unet.ipadapter_wrapper:
+                        num_ip_layers = getattr(temp_wrapped_unet.ipadapter_wrapper, 'num_ip_layers', None)
+                        if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
+                            raise RuntimeError("Failed to determine num_ip_layers for IP-Adapter")
+                        try:
+                            logger.info(f"compile_and_load_engine: discovered num_ip_layers={num_ip_layers}")
+                        except Exception:
+                            pass
+
                 unet_model = UNet(
                     fp16=True,
                     device=stream.device,
@@ -1203,17 +1229,19 @@ class StreamDiffusionWrapper:
                     unet_arch=unet_arch if use_controlnet_trt else None,
                     use_ipadapter=use_ipadapter_trt,
                     num_image_tokens=num_tokens,
+                    num_ip_layers=num_ip_layers if use_ipadapter_trt else None,
                     image_height=self.height,
                     image_width=self.width,
                 )
 
                 # Use ControlNet wrapper if ControlNet support is enabled
                 if use_controlnet_trt:
-                    control_input_names = unet_model.get_input_names()
-                
-                # Unified compilation path 
-                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
+                    # Build control_input_names excluding ipadapter_scale so indices align to 3-base offset
+                    all_input_names = unet_model.get_input_names()
+                    control_input_names = [name for name in all_input_names if name != 'ipadapter_scale']
 
+                # Unified compilation path 
+                # Recreate wrapped_unet with control input names if needed (after unet_model is ready)
                 wrapped_unet = UnifiedExportWrapper(
                     stream.unet,
                     use_controlnet=use_controlnet_trt,
@@ -1290,6 +1318,7 @@ class StreamDiffusionWrapper:
                         use_controlnet_trt=use_controlnet_trt,
                         use_ipadapter_trt=use_ipadapter_trt,
                         unet_arch=unet_arch,
+                        num_ip_layers=num_ip_layers if use_ipadapter_trt else None,
                         engine_build_options={
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,

@@ -1111,6 +1111,16 @@ class StreamParameterUpdater:
             if current_scale != desired_scale:
                 logger.info(f"_update_ipadapter_config: Updating scale: {current_scale} → {desired_scale}")
                 ipadapter_pipeline.update_scale(desired_scale)
+                # Mirror onto stream for TRT runtime input vector construction
+                try:
+                    setattr(self.stream, 'ipadapter_scale', float(desired_scale))
+                except Exception:
+                    pass
+                # Reflect current scale onto stream for TRT runtime usage
+                try:
+                    setattr(self.stream, 'ipadapter_scale', float(desired_scale))
+                except Exception:
+                    pass
         
         # Update style image if provided
         if 'style_image' in desired_config:

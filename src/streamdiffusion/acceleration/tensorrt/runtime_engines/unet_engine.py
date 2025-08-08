@@ -63,6 +63,19 @@ class UNet2DConditionModelEngine:
             "encoder_hidden_states": encoder_hidden_states,
         }
 
+        
+        # Handle IP-Adapter runtime scale vector if engine was built with it
+        if getattr(self, 'use_ipadapter', False):
+            if 'ipadapter_scale' not in kwargs:
+                raise RuntimeError("UNet2DConditionModelEngine: ipadapter_scale is required for IP-Adapter engines")
+            ip_scale = kwargs['ipadapter_scale']
+            if not isinstance(ip_scale, torch.Tensor):
+                raise TypeError("ipadapter_scale must be a torch.Tensor")
+            shape_dict["ipadapter_scale"] = ip_scale.shape
+            input_dict["ipadapter_scale"] = ip_scale
+            
+
+
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:
             # Option 1: Direct ControlNet conditioning dict (organized by type)
@@ -113,6 +126,7 @@ class UNet2DConditionModelEngine:
             self.stream,
             use_cuda_graph=self.use_cuda_graph,
         )
+        
         
         if self.debug_vram:
             allocated_final = torch.cuda.memory_allocated() / 1024**3
