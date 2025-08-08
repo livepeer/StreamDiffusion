@@ -385,75 +385,7 @@ class StreamDiffusion:
             prompt_interpolation_method="linear"
         )
 
-    @torch.no_grad()
-    def update_stream_params(
-        self,
-        num_inference_steps: Optional[int] = None,
-        guidance_scale: Optional[float] = None,
-        delta: Optional[float] = None,
-        t_index_list: Optional[List[int]] = None,
-        seed: Optional[int] = None,
-        # Prompt blending parameters
-        prompt_list: Optional[List[Tuple[str, float]]] = None,
-        negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        normalize_prompt_weights: Optional[bool] = None,
-        # Seed blending parameters
-        seed_list: Optional[List[Tuple[int, float]]] = None,
-        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
-        normalize_seed_weights: Optional[bool] = None,
-        # IPAdapter parameters
-        ipadapter_config: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Update streaming parameters efficiently in a single call.
-
-        Parameters
-        ----------
-        num_inference_steps : Optional[int]
-            The number of inference steps to perform.
-        guidance_scale : Optional[float]
-            The guidance scale to use for CFG.
-        delta : Optional[float]
-            The delta multiplier of virtual residual noise.
-        t_index_list : Optional[List[int]]
-            The t_index_list to use for inference.
-        seed : Optional[int]
-            The random seed to use for noise generation.
-        prompt_list : Optional[List[Tuple[str, float]]]
-            List of prompts with weights for blending.
-        negative_prompt : Optional[str]
-            The negative prompt to apply to all blended prompts.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings.
-        normalize_prompt_weights : Optional[bool]
-            Whether to normalize prompt weights in blending to sum to 1, by default None (no change).
-            When False, weights > 1 will amplify embeddings.
-        seed_list : Optional[List[Tuple[int, float]]]
-            List of seeds with weights for blending.
-        seed_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors.
-        normalize_seed_weights : Optional[bool]
-            Whether to normalize seed weights in blending to sum to 1, by default None (no change).
-            When False, weights > 1 will amplify noise.
-        ipadapter_config : Optional[Dict[str, Any]]
-            IPAdapter configuration dict containing scale, style_image, etc.
-        """
-        self._param_updater.update_stream_params(
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            delta=delta,
-            t_index_list=t_index_list,
-            seed=seed,
-            prompt_list=prompt_list,
-            negative_prompt=negative_prompt,
-            prompt_interpolation_method=prompt_interpolation_method,
-            seed_list=seed_list,
-            seed_interpolation_method=seed_interpolation_method,
-            normalize_prompt_weights=normalize_prompt_weights,
-            normalize_seed_weights=normalize_seed_weights,
-            ipadapter_config=ipadapter_config,
-        )
+    
 
 
 
