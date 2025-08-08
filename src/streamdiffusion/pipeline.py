@@ -544,10 +544,22 @@ class StreamDiffusion:
                 
                 if is_tensorrt_engine:
                     # TensorRT engine expects positional args + kwargs
+                    # Provide ipadapter_scale vector if engine was built with IP-Adapter
+                    extra_kwargs = {}
+                    if getattr(self.unet, 'use_ipadapter', False):
+                        num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
+                        if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
+                            raise RuntimeError("unet_step: Invalid num_ip_layers on TRT engine")
+                        # Uniform vector for now (higher-level orchestration can vary per-layer later)
+                        # Always use float32 to match ONNX export dtype
+                        ip_scale_vec = torch.full((num_ip_layers,), float(getattr(self, 'ipadapter_scale', 1.0)), dtype=torch.float32, device=self.device)
+                        extra_kwargs['ipadapter_scale'] = ip_scale_vec
+
                     model_pred = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
                         unet_kwargs['timestep'],                  # timestep (positional)
                         unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
+                        **extra_kwargs,
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
                     )[0]
                 else:
@@ -559,6 +571,7 @@ class StreamDiffusion:
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
                     )[0]
+                    print("unet_step: UNet(PyTorch) call completed, model_pred shape=", tuple(model_pred.shape), "dtype=", model_pred.dtype)
                 
             except Exception as e:
                 logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
@@ -567,11 +580,23 @@ class StreamDiffusion:
                 raise
         else:
             # For SD1.5/SD2.1, use the old calling convention for compatibility
+            # If running with TensorRT and IP-Adapter, provide ipadapter_scale as runtime input
+            ip_scale_kw = {}
+            is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
+            
+            if is_tensorrt_engine and getattr(self.unet, 'use_ipadapter', False):
+                num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
+                if isinstance(num_ip_layers, int) and num_ip_layers > 0:
+                    ip_scale_value = float(getattr(self, 'ipadapter_scale', 1.0))
+                    ip_scale_vec = torch.full((num_ip_layers,), ip_scale_value, dtype=torch.float32, device=self.device)
+                    ip_scale_kw['ipadapter_scale'] = ip_scale_vec
+
             model_pred = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
                 encoder_hidden_states=self.prompt_embeds,
                 return_dict=False,
+                **ip_scale_kw,
             )[0]
 
         # Check for problematic values in model prediction
@@ -583,6 +608,7 @@ class StreamDiffusion:
             logger.error(f"[PIPELINE] unet_step: *** ERROR: {inf_count} Inf values in model_pred! ***")
         if (model_pred == 0).all():
             logger.error(f"[PIPELINE] unet_step: *** ERROR: All model_pred values are zero! ***")
+        
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             noise_pred_text = model_pred[1:]

@@ -649,12 +649,22 @@ class BaseControlNetPipeline:
             )
             
             # Call TensorRT engine with ControlNet inputs
+            trt_kwargs = {
+                'down_block_additional_residuals': down_block_res_samples,
+                'mid_block_additional_residual': mid_block_res_sample,
+            }
+            # Provide IP-Adapter runtime scale vector if engine was built with it
+            if getattr(self.stream.unet, 'use_ipadapter', False):
+                num_ip_layers = getattr(self.stream.unet, 'num_ip_layers', None)
+                if isinstance(num_ip_layers, int) and num_ip_layers > 0:
+                    ip_scale_value = float(getattr(self.stream, 'ipadapter_scale', 1.0))
+                    ip_scale_vec = torch.full((num_ip_layers,), ip_scale_value, dtype=torch.float32, device=self.device)
+                    trt_kwargs['ipadapter_scale'] = ip_scale_vec
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
                 t_list_expanded,
                 self.stream.prompt_embeds,
-                down_block_additional_residuals=down_block_res_samples,
-                mid_block_additional_residual=mid_block_res_sample,
+                **trt_kwargs,
             ).sample
             
             # Use shared CFG processing
