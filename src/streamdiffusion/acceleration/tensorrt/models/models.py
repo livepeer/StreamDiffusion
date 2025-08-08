@@ -395,6 +395,11 @@ class UNet(BaseModel):
         base_names = ["sample", "timestep", "encoder_hidden_states"]
         if self.use_ipadapter:
             base_names.append("ipadapter_scale")
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: get_input_names with ipadapter -> {base_names}")
+            except Exception:
+                pass
         if self.use_control and self.control_inputs:
             control_names = sorted(self.control_inputs.keys())
             return base_names + control_names
@@ -412,6 +417,11 @@ class UNet(BaseModel):
         }
         if self.use_ipadapter:
             base_axes["ipadapter_scale"] = {0: "L_ip"}
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: dynamic axes include ipadapter_scale with L_ip={getattr(self, 'num_ip_layers', None)}")
+            except Exception:
+                pass
         
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
@@ -484,6 +494,11 @@ class UNet(BaseModel):
                 (self.num_ip_layers,),
                 (self.num_ip_layers,),
             ]
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: profile ipadapter_scale min/opt/max={(1,),(self.num_ip_layers,),(self.num_ip_layers,)}")
+            except Exception:
+                pass
         
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
@@ -524,6 +539,11 @@ class UNet(BaseModel):
         }
         if self.use_ipadapter:
             shape_dict["ipadapter_scale"] = (self.num_ip_layers,)
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: shape_dict ipadapter_scale={(self.num_ip_layers,)}")
+            except Exception:
+                pass
         
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input

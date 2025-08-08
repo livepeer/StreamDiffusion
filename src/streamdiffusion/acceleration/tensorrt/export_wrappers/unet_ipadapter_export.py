@@ -172,14 +172,23 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
     def set_ipadapter_scale(self, ipadapter_scale: torch.Tensor) -> None:
         """Assign per-layer scale tensor to installed TRTIPAttn processors."""
         if not isinstance(ipadapter_scale, torch.Tensor):
+            import logging
+            logging.getLogger(__name__).error(f"IPAdapterUNetExportWrapper: ipadapter_scale wrong type: {type(ipadapter_scale)}")
             raise TypeError("ipadapter_scale must be a torch.Tensor")
         if self.num_ip_layers <= 0 or not self._ip_trt_processors:
             raise RuntimeError("No TRTIPAttn processors installed")
         if ipadapter_scale.ndim != 1 or ipadapter_scale.shape[0] != self.num_ip_layers:
+            import logging
+            logging.getLogger(__name__).error(f"IPAdapterUNetExportWrapper: ipadapter_scale has wrong shape {tuple(ipadapter_scale.shape)}, expected=({self.num_ip_layers},)")
             raise ValueError(f"ipadapter_scale must have shape [{self.num_ip_layers}]")
 
         # Ensure float32 for ONNX export stability
         scale_vec = ipadapter_scale.to(dtype=torch.float32)
+        try:
+            import logging
+            logging.getLogger(__name__).debug(f"IPAdapterUNetExportWrapper: scale_vec min={float(scale_vec.min().item())}, max={float(scale_vec.max().item())}")
+        except Exception:
+            pass
         for proc in self._ip_trt_processors:
             proc._scale_tensor = scale_vec[proc._scale_index]
 

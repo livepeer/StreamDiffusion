@@ -40,7 +40,9 @@ install_requires = [
     deps["diffusers"],
     deps["transformers"],
     deps["accelerate"],
-    "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@4a61dbb452c024e2df161128595b8af88c662940",
+    "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@aabdc79e8298e7f66700e6fd15923aa9efc21cb1",
+    # "diffusers-ipadapter @ file:///C:/_dev/projects/StreamDiffusion/Diffusers_IPAdapter",
+
 ]
 
 setup(

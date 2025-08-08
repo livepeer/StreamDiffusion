@@ -39,11 +39,11 @@ class UNet2DConditionModelEngine:
         controlnet_conditioning: Optional[Dict[str, List[torch.Tensor]]] = None,
         **kwargs,
     ) -> Any:
-        
-      
-        
-
-        
+        logger.debug("UNet2DConditionModelEngine.__call__: enter")
+        logger.debug(f"UNet2DConditionModelEngine.__call__: use_ipadapter={getattr(self, 'use_ipadapter', False)}, use_control={self.use_control}")
+        logger.debug(f"UNet2DConditionModelEngine.__call__: latent_model_input shape={tuple(latent_model_input.shape)}, dtype={latent_model_input.dtype}, device={latent_model_input.device}")
+        logger.debug(f"UNet2DConditionModelEngine.__call__: timestep shape={tuple(timestep.shape)}, dtype={timestep.dtype}")
+        logger.debug(f"UNet2DConditionModelEngine.__call__: encoder_hidden_states shape={tuple(encoder_hidden_states.shape)}, dtype={encoder_hidden_states.dtype}")
         
 
         if timestep.dtype != torch.float32:
@@ -67,10 +67,13 @@ class UNet2DConditionModelEngine:
         # Handle IP-Adapter runtime scale vector if engine was built with it
         if getattr(self, 'use_ipadapter', False):
             if 'ipadapter_scale' not in kwargs:
+                logger.error("UNet2DConditionModelEngine: ipadapter_scale missing but required (use_ipadapter=True)")
                 raise RuntimeError("UNet2DConditionModelEngine: ipadapter_scale is required for IP-Adapter engines")
             ip_scale = kwargs['ipadapter_scale']
             if not isinstance(ip_scale, torch.Tensor):
+                logger.error(f"UNet2DConditionModelEngine: ipadapter_scale has wrong type: {type(ip_scale)}")
                 raise TypeError("ipadapter_scale must be a torch.Tensor")
+            logger.debug(f"UNet2DConditionModelEngine.__call__: ipadapter_scale shape={tuple(ip_scale.shape)}, dtype={ip_scale.dtype}, device={ip_scale.device}, min={float(ip_scale.min().item()) if ip_scale.numel()>0 else 'n/a'}, max={float(ip_scale.max().item()) if ip_scale.numel()>0 else 'n/a'}")
             shape_dict["ipadapter_scale"] = ip_scale.shape
             input_dict["ipadapter_scale"] = ip_scale
             
@@ -115,17 +118,23 @@ class UNet2DConditionModelEngine:
             allocated_before = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM before allocation: {allocated_before:.2f}GB")
         
+        logger.debug(f"UNet2DConditionModelEngine.__call__: shape_dict={ {k: tuple(v) if hasattr(v,'__iter__') else v for k,v in shape_dict.items()} }")
         self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
         
         if self.debug_vram:
             allocated_after = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM after allocation: {allocated_after:.2f}GB")
 
-        outputs = self.engine.infer(
-            input_dict,
-            self.stream,
-            use_cuda_graph=self.use_cuda_graph,
-        )
+        logger.debug(f"UNet2DConditionModelEngine.__call__: input_dict keys={list(input_dict.keys())}")
+        try:
+            outputs = self.engine.infer(
+                input_dict,
+                self.stream,
+                use_cuda_graph=self.use_cuda_graph,
+            )
+        except Exception as e:
+            logger.exception(f"UNet2DConditionModelEngine.__call__: Engine.infer failed: {e}")
+            raise
         
         
         if self.debug_vram:
@@ -137,6 +146,9 @@ class UNet2DConditionModelEngine:
             raise ValueError("TensorRT engine did not produce expected 'latent' output")
         
         noise_pred = outputs["latent"]
+        logger.debug(f"UNet2DConditionModelEngine.__call__: output shape={tuple(noise_pred.shape)}, dtype={noise_pred.dtype}, device={noise_pred.device}")
+        if torch.isnan(noise_pred).any() or torch.isinf(noise_pred).any():
+            logger.error("UNet2DConditionModelEngine.__call__: output contains NaN/Inf")
       
         
 
