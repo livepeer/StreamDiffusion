@@ -103,6 +103,9 @@ class StreamDiffusionWrapper:
         build_engines_if_missing: bool = True,
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
+        # Scheduler and sampler options
+        scheduler: Literal["lcm", "dpm++ 2m", "uni_pc", "ddim", "euler"] = "lcm",
+        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
         # ControlNet options
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
@@ -182,6 +185,10 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : bool, optional
             Whether to normalize seed weights in blending to sum to 1,
             by default True. When False, weights > 1 will amplify noise.
+        scheduler : Literal["lcm", "dpm++ 2m", "uni_pc", "ddim", "euler"], optional
+            The scheduler type to use for denoising, by default "lcm".
+        sampler : Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"], optional
+            The sampler type to use for noise scheduling, by default "normal".
         use_controlnet : bool, optional
             Whether to enable ControlNet support, by default False.
         controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
@@ -251,6 +258,8 @@ class StreamDiffusionWrapper:
             build_engines_if_missing=build_engines_if_missing,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            scheduler=scheduler,
+            sampler=sampler,
             use_controlnet=use_controlnet,
             controlnet_config=controlnet_config,
             enable_pytorch_fallback=enable_pytorch_fallback,
@@ -498,6 +507,24 @@ class StreamDiffusionWrapper:
     def get_normalize_seed_weights(self) -> bool:
         """Get the current seed weight normalization setting."""
         return self.stream.get_normalize_seed_weights()
+
+    def set_scheduler(
+        self, 
+        scheduler: Literal["lcm", "dpm++ 2m", "uni_pc", "ddim", "euler"] = None,
+        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = None,
+    ) -> None:
+        """
+        Change the scheduler and/or sampler configuration at runtime.
+        
+        Parameters
+        ----------
+        scheduler : str, optional
+            The scheduler type to use. If None, keeps current scheduler.
+        sampler : str, optional
+            The sampler type to use. If None, keeps current sampler.
+        """
+        logger.info(f"Setting scheduler to {scheduler} and sampler to {sampler}")
+        self.stream.set_scheduler(scheduler=scheduler, sampler=sampler)
 
     def __call__(
         self,
@@ -766,6 +793,8 @@ class StreamDiffusionWrapper:
         build_engines_if_missing: bool = True,
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
+        scheduler: Literal["lcm", "dpm++ 2m", "uni_pc", "ddim", "euler"] = "lcm",
+        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
         use_controlnet: bool = False,
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         enable_pytorch_fallback: bool = False,
@@ -935,6 +964,8 @@ class StreamDiffusionWrapper:
             cfg_type=cfg_type,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            scheduler=scheduler,
+            sampler=sampler,
         )
         if not self.sd_turbo:
             if use_lcm_lora:
@@ -948,6 +979,7 @@ class StreamDiffusionWrapper:
 
             if lora_dict is not None:
                 for lora_name, lora_scale in lora_dict.items():
+                    logger.info(f"_load_model: Loading LoRA '{lora_name}' with scale {lora_scale}")
                     stream.load_lora(lora_name)
                     stream.fuse_lora(lora_scale=lora_scale)
 

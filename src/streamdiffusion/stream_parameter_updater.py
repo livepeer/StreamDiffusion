@@ -276,6 +276,7 @@ class StreamParameterUpdater:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        ipadapter_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -676,7 +677,7 @@ class StreamParameterUpdater:
         c_skip_list = []
         c_out_list = []
         for timestep in self.stream.sub_timesteps:
-            c_skip, c_out = self.stream.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
+            c_skip, c_out = self.stream._get_scheduler_scalings(timestep)
             c_skip_list.append(c_skip)
             c_out_list.append(c_out)
 
