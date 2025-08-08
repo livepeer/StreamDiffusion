@@ -25,6 +25,8 @@ class ControlNetOperation(Enum):
     ADD = "add"
     REMOVE = "remove"
 
+from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+
 class BaseControlNetPipeline:
     """
     ControlNet-enabled StreamDiffusion pipeline with optional inter-frame pipelining.
@@ -80,6 +82,8 @@ class BaseControlNetPipeline:
         self._background_thread = threading.Thread(target=self._process_operations_worker, daemon=True)
         self._background_thread.start()
         logger.info(f"BaseControlNetPipeline: Started background operations thread")
+
+    #TODO: move this utils or Diffusers_IPAdapter repo
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -657,9 +661,17 @@ class BaseControlNetPipeline:
             if getattr(self.stream.unet, 'use_ipadapter', False):
                 num_ip_layers = getattr(self.stream.unet, 'num_ip_layers', None)
                 if isinstance(num_ip_layers, int) and num_ip_layers > 0:
-                    ip_scale_value = float(getattr(self.stream, 'ipadapter_scale', 1.0))
-                    ip_scale_vec = torch.full((num_ip_layers,), ip_scale_value, dtype=torch.float32, device=self.device)
-                    trt_kwargs['ipadapter_scale'] = ip_scale_vec
+                    # Build scale vector from weight_type or uniform
+                    base_weight = float(getattr(self.stream, 'ipadapter_scale', 1.0))
+                    weight_type = getattr(self.stream, 'ipadapter_weight_type', None)
+                    try:
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                        weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
+                    except Exception:
+                        weights = BaseControlNetPipeline._generate_ipadapter_weights(num_ip_layers, base_weight, weight_type)
+                    if weights is None:
+                        weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                    trt_kwargs['ipadapter_scale'] = weights
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
                 t_list_expanded,

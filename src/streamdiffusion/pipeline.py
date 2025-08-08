@@ -98,6 +98,9 @@ class StreamDiffusion:
 
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
+        # Default IP-Adapter runtime weight mode (None = uniform). Can be set to strings like
+        # "ease in", "ease out", "ease in-out", "reverse in-out", "style transfer precise", "composition precise".
+        self.ipadapter_weight_type = None
 
     def load_lcm_lora(
         self,
@@ -550,10 +553,16 @@ class StreamDiffusion:
                         num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
                         if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
                             raise RuntimeError("unet_step: Invalid num_ip_layers on TRT engine")
-                        # Uniform vector for now (higher-level orchestration can vary per-layer later)
-                        # Always use float32 to match ONNX export dtype
-                        ip_scale_vec = torch.full((num_ip_layers,), float(getattr(self, 'ipadapter_scale', 1.0)), dtype=torch.float32, device=self.device)
-                        extra_kwargs['ipadapter_scale'] = ip_scale_vec
+                        base_weight = float(getattr(self, 'ipadapter_scale', 1.0))
+                        weight_type = getattr(self, 'ipadapter_weight_type', None)
+                        try:
+                            from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                            weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
+                        except Exception:
+                            weights = None
+                        if weights is None:
+                            weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                        extra_kwargs['ipadapter_scale'] = weights
 
                     model_pred = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
@@ -571,7 +580,6 @@ class StreamDiffusion:
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
                     )[0]
-                    print("unet_step: UNet(PyTorch) call completed, model_pred shape=", tuple(model_pred.shape), "dtype=", model_pred.dtype)
                 
             except Exception as e:
                 logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
@@ -587,9 +595,16 @@ class StreamDiffusion:
             if is_tensorrt_engine and getattr(self.unet, 'use_ipadapter', False):
                 num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
                 if isinstance(num_ip_layers, int) and num_ip_layers > 0:
-                    ip_scale_value = float(getattr(self, 'ipadapter_scale', 1.0))
-                    ip_scale_vec = torch.full((num_ip_layers,), ip_scale_value, dtype=torch.float32, device=self.device)
-                    ip_scale_kw['ipadapter_scale'] = ip_scale_vec
+                     base_weight = float(getattr(self, 'ipadapter_scale', 1.0))
+                     weight_type = getattr(self, 'ipadapter_weight_type', None)
+                     try:
+                         from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                         weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
+                     except Exception:
+                         weights = None
+                     if weights is None:
+                         weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                     ip_scale_kw['ipadapter_scale'] = weights
 
             model_pred = self.unet(
                 x_t_latent_plus_uc,
