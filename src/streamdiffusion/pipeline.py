@@ -11,6 +11,7 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 )
 
 from streamdiffusion.model_detection import detect_model
+from streamdiffusion.hooks import EmbedsCtx, StepCtx, UnetKwargsDelta, EmbeddingHook, UnetHook
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
@@ -101,6 +102,10 @@ class StreamDiffusion:
         # Default IP-Adapter runtime weight mode (None = uniform). Can be set to strings like
         # "ease in", "ease out", "ease in-out", "reverse in-out", "style transfer precise", "composition precise".
         self.ipadapter_weight_type = None
+
+        # Hook containers (step 1: introduced but initially no-op)
+        self.embedding_hooks: List[EmbeddingHook] = []
+        self.unet_hooks: List[UnetHook] = []
 
     def load_lcm_lora(
         self,
@@ -212,8 +217,8 @@ class StreamDiffusion:
             if len(encoder_output) >= 4:
                 prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = encoder_output[:4]
                 
-                # Set up prompt embeddings for the UNet
-                self.prompt_embeds = prompt_embeds.repeat(self.batch_size, 1, 1)
+                # Set up prompt embeddings for the UNet (base before hooks)
+                base_prompt_embeds = prompt_embeds.repeat(self.batch_size, 1, 1)
                 
                 # Handle CFG for prompt embeddings
                 if self.use_denoising_batch and self.cfg_type == "full":
@@ -224,8 +229,8 @@ class StreamDiffusion:
                 if self.guidance_scale > 1.0 and (
                     self.cfg_type == "initialize" or self.cfg_type == "full"
                 ):
-                    self.prompt_embeds = torch.cat(
-                        [uncond_prompt_embeds, self.prompt_embeds], dim=0
+                    base_prompt_embeds = torch.cat(
+                        [uncond_prompt_embeds, base_prompt_embeds], dim=0
                     )
                 
                 # Set up SDXL-specific conditioning (added_cond_kwargs)
@@ -248,6 +253,15 @@ class StreamDiffusion:
                     self.add_time_ids = add_time_ids
             else:
                 raise ValueError(f"SDXL encode_prompt returned {len(encoder_output)} outputs, expected at least 4")
+            # Run embedding hooks (no-op unless modules register)
+            embeds_ctx = EmbedsCtx(prompt_embeds=base_prompt_embeds, negative_prompt_embeds=None)
+            for hook in self.embedding_hooks:
+                try:
+                    embeds_ctx = hook(embeds_ctx)
+                except Exception as e:
+                    logger.error(f"prepare: embedding hook failed: {e}")
+                    raise
+            self.prompt_embeds = embeds_ctx.prompt_embeds
         else:
             # SD1.5/SD2.1 encode_prompt returns 2 values: (prompt_embeds, negative_prompt_embeds)
             encoder_output = self.pipe.encode_prompt(
@@ -257,7 +271,7 @@ class StreamDiffusion:
                 do_classifier_free_guidance=do_classifier_free_guidance,
                 negative_prompt=negative_prompt,
             )
-            self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+            base_prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
 
             if self.use_denoising_batch and self.cfg_type == "full":
                 uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
@@ -267,9 +281,19 @@ class StreamDiffusion:
             if self.guidance_scale > 1.0 and (
                 self.cfg_type == "initialize" or self.cfg_type == "full"
             ):
-                self.prompt_embeds = torch.cat(
-                    [uncond_prompt_embeds, self.prompt_embeds], dim=0
+                base_prompt_embeds = torch.cat(
+                    [uncond_prompt_embeds, base_prompt_embeds], dim=0
                 )
+
+            # Run embedding hooks (no-op unless modules register)
+            embeds_ctx = EmbedsCtx(prompt_embeds=base_prompt_embeds, negative_prompt_embeds=None)
+            for hook in self.embedding_hooks:
+                try:
+                    embeds_ctx = hook(embeds_ctx)
+                except Exception as e:
+                    logger.error(f"prepare: embedding hook failed: {e}")
+                    raise
+            self.prompt_embeds = embeds_ctx.prompt_embeds
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -532,6 +556,32 @@ class StreamDiffusion:
                     'time_ids': add_time_ids
                 }
         
+        # Allow modules to contribute additional UNet kwargs via hooks
+        try:
+            step_ctx = StepCtx(
+                x_t_latent=x_t_latent_plus_uc,
+                t_list=t_list,
+                step_index=idx if isinstance(idx, int) else (int(idx) if idx is not None else None),
+                guidance_mode=self.cfg_type if self.guidance_scale > 1.0 else "none",
+                sdxl_cond=unet_kwargs.get('added_cond_kwargs', None)
+            )
+            for hook in self.unet_hooks:
+                delta: UnetKwargsDelta = hook(step_ctx)
+                if delta is None:
+                    continue
+                if delta.down_block_additional_residuals is not None:
+                    unet_kwargs['down_block_additional_residuals'] = delta.down_block_additional_residuals
+                if delta.mid_block_additional_residual is not None:
+                    unet_kwargs['mid_block_additional_residual'] = delta.mid_block_additional_residual
+                if delta.added_cond_kwargs is not None:
+                    # Merge SDXL cond if both exist
+                    base_added = unet_kwargs.get('added_cond_kwargs', {})
+                    base_added.update(delta.added_cond_kwargs)
+                    unet_kwargs['added_cond_kwargs'] = base_added
+        except Exception as e:
+            logger.error(f"unet_step: unet hook failed: {e}")
+            raise
+
         # Call UNet with appropriate conditioning
         if self.is_sdxl:
             try:
