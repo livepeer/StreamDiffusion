@@ -83,7 +83,7 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
     # Apply seed blending if configured and not already handled in prepare
     if 'seed_blending' in final_config and 'prompt_blending' not in final_config:
         seed_blend_config = final_config['seed_blending']
-        wrapper.update_seed_blending(
+        wrapper.update_stream_params(
             seed_list=seed_blend_config.get('seed_list', []),
             interpolation_method=seed_blend_config.get('interpolation_method', 'linear')
         )

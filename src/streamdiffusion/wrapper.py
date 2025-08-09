@@ -700,7 +700,6 @@ class StreamDiffusionWrapper:
         else:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
 
-
     def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
         Denormalize image tensor on GPU for efficiency
@@ -714,7 +713,6 @@ class StreamDiffusionWrapper:
             Denormalized tensor on GPU, clamped to [0,1]
         """
         return (image_tensor / 2 + 0.5).clamp(0, 1)
-
 
     def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
         """
@@ -762,8 +760,6 @@ class StreamDiffusionWrapper:
 
 
         return pil_images
-
-
 
     def _load_model(
         self,
@@ -1581,22 +1577,13 @@ class StreamDiffusionWrapper:
 
         return stream
 
-    # Deprecated patch methods are removed in favor of module install with hooks
-
-
-    
-
-
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
         if not self.use_controlnet:
             raise RuntimeError("get_last_processed_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
         return self.stream.get_last_processed_image(index)
-    
-    # Removed legacy shims. Use update_stream_params(controlnet_config=...) instead.
-    
-    
+        
     def cleanup_controlnets(self) -> None:
         """Cleanup ControlNet resources including background threads and VRAM"""
         if not self.use_controlnet:
@@ -1604,61 +1591,6 @@ class StreamDiffusionWrapper:
             
         if hasattr(self, 'stream') and self.stream and hasattr(self.stream, 'cleanup'):
             self.stream.cleanup_controlnets()
-
-    def update_seed_blending(
-        self,
-        seed_list: List[Tuple[int, float]],
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update seed blending with multiple weighted seeds.
-
-        Parameters
-        ----------
-        seed_list : List[Tuple[int, float]]
-            List of seeds with weights. Each tuple contains (seed_value, weight).
-            Example: [(123, 0.6), (456, 0.4)]
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_stream_params(
-            seed_list=seed_list,
-            seed_interpolation_method=interpolation_method
-        )
-
-    def update_prompt_weights(
-        self,
-        prompt_weights: List[float],
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Update weights for current prompt list without re-encoding prompts.
-
-        Parameters
-        ----------
-        prompt_weights : List[float]
-            New weights for the current prompt list.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.update_prompt_weights(prompt_weights, prompt_interpolation_method)
-
-    def update_seed_weights(
-        self,
-        seed_weights: List[float],
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update weights for current seed list without regenerating noise.
-
-        Parameters
-        ----------
-        seed_weights : List[float]
-            New weights for the current seed list.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_seed_weights(seed_weights, interpolation_method)
 
     def get_current_prompts(self) -> List[Tuple[str, float]]:
         """
@@ -1903,119 +1835,3 @@ class StreamDiffusionWrapper:
                 logger.info(f"   Reduced resolution: {old_width}x{old_height} -> {self.width}x{self.height}")
         
         logger.info("   Next model load will rebuild engines with these smaller settings")
-
-    def update_prompt_at_index(
-        self,
-        index: int,
-        new_prompt: str,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Update a specific prompt by index without changing other prompts.
-
-        Parameters
-        ----------
-        index : int
-            Index of the prompt to update.
-        new_prompt : str
-            New prompt text.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.update_prompt_at_index(index, new_prompt, prompt_interpolation_method)
-
-    def add_prompt(
-        self,
-        prompt: str,
-        weight: float = 1.0,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Add a new prompt to the current blending configuration.
-
-        Parameters
-        ----------
-        prompt : str
-            Prompt text to add.
-        weight : float
-            Weight for the new prompt, by default 1.0.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.add_prompt(prompt, weight, prompt_interpolation_method)
-
-    def remove_prompt_at_index(
-        self,
-        index: int,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Remove a prompt from the current blending configuration by index.
-
-        Parameters
-        ----------
-        index : int
-            Index of the prompt to remove.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between remaining prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.remove_prompt_at_index(index, prompt_interpolation_method)
-
-    def update_seed_at_index(
-        self,
-        index: int,
-        new_seed: int,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update a specific seed by index without changing other seeds.
-
-        Parameters
-        ----------
-        index : int
-            Index of the seed to update.
-        new_seed : int
-            New seed value.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_seed_at_index(index, new_seed, interpolation_method)
-
-    def add_seed(
-        self,
-        seed: int,
-        weight: float = 1.0,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Add a new seed to the current blending configuration.
-
-        Parameters
-        ----------
-        seed : int
-            Seed value to add.
-        weight : float
-            Weight for the new seed, by default 1.0.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.add_seed(seed, weight, interpolation_method)
-
-    def remove_seed_at_index(
-        self,
-        index: int,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Remove a seed from the current blending configuration by index.
-
-        Parameters
-        ----------
-        index : int
-            Index of the seed to remove.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between remaining seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.remove_seed_at_index(index, interpolation_method)
-
-    # Deprecated IPAdapter patch method removed
