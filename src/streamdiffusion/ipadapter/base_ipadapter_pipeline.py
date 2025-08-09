@@ -125,6 +125,11 @@ class BaseIPAdapterPipeline:
         # Set scale
         self.scale = scale
         self.ipadapter.set_scale(scale)
+        # Ensure TRT runtime picks up current scale via pipeline
+        try:
+            setattr(self.stream, 'ipadapter_scale', float(scale))
+        except Exception:
+            pass
         
         # Register IPAdapter enhancer with StreamParameterUpdater
         self.stream._param_updater.register_embedding_enhancer(
@@ -186,6 +191,11 @@ class BaseIPAdapterPipeline:
         if self.ipadapter is not None:
             self.scale = scale
             self.ipadapter.set_scale(scale)
+            # Mirror onto stream for TensorRT runtime input vector construction
+            try:
+                setattr(self.stream, 'ipadapter_scale', float(scale))
+            except Exception:
+                pass
     
     def _resolve_model_path(self, model_path: str) -> str:
         """

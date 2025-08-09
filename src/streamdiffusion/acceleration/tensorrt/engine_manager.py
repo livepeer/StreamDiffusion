@@ -238,6 +238,10 @@ class EngineManager:
             
         if kwargs.get('use_ipadapter_trt', False):
             setattr(loaded_engine, 'ipadapter_arch', kwargs.get('unet_arch', {}))
+            # number of IP-attention layers for runtime vector sizing
+            if 'num_ip_layers' in kwargs and kwargs['num_ip_layers'] is not None:
+                setattr(loaded_engine, 'num_ip_layers', kwargs['num_ip_layers'])
+        
     
     def get_or_load_controlnet_engine(self, 
                                     model_id: str,

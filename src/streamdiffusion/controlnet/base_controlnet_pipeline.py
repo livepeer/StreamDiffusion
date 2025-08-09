@@ -25,6 +25,8 @@ class ControlNetOperation(Enum):
     ADD = "add"
     REMOVE = "remove"
 
+from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+
 class BaseControlNetPipeline:
     """
     ControlNet-enabled StreamDiffusion pipeline with optional inter-frame pipelining.
@@ -80,6 +82,8 @@ class BaseControlNetPipeline:
         self._background_thread = threading.Thread(target=self._process_operations_worker, daemon=True)
         self._background_thread.start()
         logger.info(f"BaseControlNetPipeline: Started background operations thread")
+
+    #TODO: move this utils or Diffusers_IPAdapter repo
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
@@ -649,12 +653,43 @@ class BaseControlNetPipeline:
             )
             
             # Call TensorRT engine with ControlNet inputs
+            trt_kwargs = {
+                'down_block_additional_residuals': down_block_res_samples,
+                'mid_block_additional_residual': mid_block_res_sample,
+            }
+            # Provide IP-Adapter runtime scale vector if engine was built with it
+            if getattr(self.stream.unet, 'use_ipadapter', False):
+                num_ip_layers = getattr(self.stream.unet, 'num_ip_layers', None)
+                if isinstance(num_ip_layers, int) and num_ip_layers > 0:
+                    # Build scale vector from weight_type or uniform
+                    base_weight = float(getattr(self.stream, 'ipadapter_scale', 1.0))
+                    weight_type = getattr(self.stream, 'ipadapter_weight_type', None)
+                    try:
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
+                        weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
+                    except Exception:
+                        weights = BaseControlNetPipeline._generate_ipadapter_weights(num_ip_layers, base_weight, weight_type)
+                    if weights is None:
+                        weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                    # Apply per-step time factor if available
+                    try:
+                        total_steps = getattr(self.stream, 'denoising_steps_num', None) or (len(self.stream.t_list) if hasattr(self.stream, 't_list') else None)
+                        if total_steps is not None and idx is not None:
+                            time_factor = build_time_weight_factor(weight_type, int(idx), int(total_steps))
+                            weights = weights * float(time_factor)
+                    except Exception:
+                        pass
+                    trt_kwargs['ipadapter_scale'] = weights
+                    try:
+                        logger.debug(f"ControlNetPipeline: TRT ipadapter_scale shape={tuple(weights.shape)}, min={float(weights.min().item())}, max={float(weights.max().item())}")
+                    except Exception:
+                        pass
+            logger.debug(f"ControlNetPipeline: Calling TRT UNet with keys: {list(trt_kwargs.keys())}")
             model_pred = self.stream.unet(
                 x_t_latent_plus_uc,
                 t_list_expanded,
                 self.stream.prompt_embeds,
-                down_block_additional_residuals=down_block_res_samples,
-                mid_block_additional_residual=mid_block_res_sample,
+                **trt_kwargs,
             ).sample
             
             # Use shared CFG processing
@@ -705,6 +740,20 @@ class BaseControlNetPipeline:
             unet_kwargs.update(self._get_additional_unet_kwargs(**conditioning_context))
             
             # Call UNet with ControlNet conditioning
+            # Optionally apply per-step time factor to IPAdapter PyTorch processors
+            try:
+                from diffusers_ipadapter.ip_adapter.attention_processor import build_time_weight_factor
+                total_steps = getattr(self.stream, 'denoising_steps_num', None) or (len(self.stream.t_list) if hasattr(self.stream, 't_list') else None)
+                if total_steps is not None and idx is not None:
+                    time_factor = float(build_time_weight_factor(getattr(self.stream, 'ipadapter_weight_type', None), int(idx), int(total_steps)))
+                    if hasattr(self.stream.unet, 'attn_processors') and time_factor != 1.0:
+                        for p in self.stream.unet.attn_processors.values():
+                            if hasattr(p, 'scale') and hasattr(p, '_ip_layer_index'):
+                                base_val = getattr(p, '_base_scale', p.scale)
+                                p.scale = float(base_val) * time_factor
+            except Exception:
+                pass
+
             model_pred = self.stream.unet(**unet_kwargs)[0]
             
             # Use shared CFG processing

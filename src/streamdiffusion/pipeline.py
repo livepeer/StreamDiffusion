@@ -98,6 +98,9 @@ class StreamDiffusion:
 
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
+        # Default IP-Adapter runtime weight mode (None = uniform). Can be set to strings like
+        # "ease in", "ease out", "ease in-out", "reverse in-out", "style transfer precise", "composition precise".
+        self.ipadapter_weight_type = None
 
     def load_lcm_lora(
         self,
@@ -544,14 +547,61 @@ class StreamDiffusion:
                 
                 if is_tensorrt_engine:
                     # TensorRT engine expects positional args + kwargs
+                    # Provide ipadapter_scale vector if engine was built with IP-Adapter
+                    extra_kwargs = {}
+                    if getattr(self.unet, 'use_ipadapter', False):
+                        num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
+                        if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
+                            raise RuntimeError("unet_step: Invalid num_ip_layers on TRT engine")
+                        base_weight = float(getattr(self, 'ipadapter_scale', 1.0))
+                        weight_type = getattr(self, 'ipadapter_weight_type', None)
+                        try:
+                            from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
+                            weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
+                        except Exception:
+                            weights = None
+                        if weights is None:
+                            weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                        # Apply per-step time factor if applicable
+                        try:
+                            total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
+                            if total_steps is not None and idx is not None:
+                                time_factor = build_time_weight_factor(weight_type, int(idx), int(total_steps))
+                                weights = weights * float(time_factor)
+                        except Exception:
+                            pass
+                        extra_kwargs['ipadapter_scale'] = weights
+                        try:
+                            logger.debug(f"pipeline.unet_step: TRT SDXL ipadapter_scale shape={tuple(weights.shape)}, min={float(weights.min().item())}, max={float(weights.max().item())}")
+                        except Exception:
+                            pass
+
+                    logger.debug(f"pipeline.unet_step: Calling TRT SDXL UNet with extra_kwargs keys={list(extra_kwargs.keys())}")
                     model_pred = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
                         unet_kwargs['timestep'],                  # timestep (positional)
                         unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
+                        **extra_kwargs,
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
                     )[0]
                 else:
                     # PyTorch UNet expects diffusers-style named arguments
+                    # For PyTorch, optionally apply per-step time scheduling by temporarily scaling processors
+                    time_factor = 1.0
+                    try:
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
+                        total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
+                        if total_steps is not None and idx is not None:
+                            time_factor = float(build_time_weight_factor(getattr(self, 'ipadapter_weight_type', None), int(idx), int(total_steps)))
+                        # Modulate by time factor using stored _base_scale so user-selected strength is respected
+                        if hasattr(self.pipe.unet, 'attn_processors') and time_factor != 1.0:
+                            for p in self.pipe.unet.attn_processors.values():
+                                if hasattr(p, 'scale') and hasattr(p, '_ip_layer_index'):
+                                    base_val = getattr(p, '_base_scale', p.scale)
+                                    p.scale = float(base_val) * time_factor
+                    except Exception:
+                        pass
+
                     model_pred = self.unet(
                         sample=unet_kwargs['sample'],
                         timestep=unet_kwargs['timestep'],
@@ -559,6 +609,7 @@ class StreamDiffusion:
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
                     )[0]
+                    # No restoration for per-layer scale; next step will set again via updater/time factor
                 
             except Exception as e:
                 logger.error(f"[PIPELINE] unet_step: *** ERROR: SDXL UNet call failed: {e} ***")
@@ -567,11 +618,58 @@ class StreamDiffusion:
                 raise
         else:
             # For SD1.5/SD2.1, use the old calling convention for compatibility
+            # If running with TensorRT and IP-Adapter, provide ipadapter_scale as runtime input
+            ip_scale_kw = {}
+            is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
+            
+            if is_tensorrt_engine and getattr(self.unet, 'use_ipadapter', False):
+                num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
+                if isinstance(num_ip_layers, int) and num_ip_layers > 0:
+                    base_weight = float(getattr(self, 'ipadapter_scale', 1.0))
+                    weight_type = getattr(self, 'ipadapter_weight_type', None)
+                    try:
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
+                        weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
+                    except Exception:
+                        weights = None
+                    if weights is None:
+                        weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
+                    # Apply per-step time factor if applicable
+                    try:
+                        total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
+                        if total_steps is not None and idx is not None:
+                            time_factor = build_time_weight_factor(weight_type, int(idx), int(total_steps))
+                            weights = weights * float(time_factor)
+                    except Exception:
+                        pass
+                    ip_scale_kw['ipadapter_scale'] = weights
+                    try:
+                        logger.debug(f"pipeline.unet_step: TRT SD1.5 ipadapter_scale shape={tuple(weights.shape)}, min={float(weights.min().item())}, max={float(weights.max().item())}")
+                    except Exception:
+                        pass
+
+            # For PyTorch branch (no TRT), optionally apply per-step time factor
+            time_factor = 1.0
+            try:
+                from diffusers_ipadapter.ip_adapter.attention_processor import build_time_weight_factor
+                total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
+                if total_steps is not None and idx is not None:
+                    time_factor = float(build_time_weight_factor(getattr(self, 'ipadapter_weight_type', None), int(idx), int(total_steps)))
+                if hasattr(self.unet, 'attn_processors') and time_factor != 1.0:
+                    for p in self.unet.attn_processors.values():
+                        if hasattr(p, 'scale') and hasattr(p, '_ip_layer_index'):
+                            base_val = getattr(p, '_base_scale', p.scale)
+                            p.scale = float(base_val) * time_factor
+            except Exception:
+                pass
+
+            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with ip_scale={ 'ipadapter_scale' in ip_scale_kw }")
             model_pred = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
                 encoder_hidden_states=self.prompt_embeds,
                 return_dict=False,
+                **ip_scale_kw,
             )[0]
 
         # Check for problematic values in model prediction
@@ -583,6 +681,7 @@ class StreamDiffusion:
             logger.error(f"[PIPELINE] unet_step: *** ERROR: {inf_count} Inf values in model_pred! ***")
         if (model_pred == 0).all():
             logger.error(f"[PIPELINE] unet_step: *** ERROR: All model_pred values are zero! ***")
+        
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             noise_pred_text = model_pred[1:]
