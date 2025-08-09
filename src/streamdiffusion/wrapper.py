@@ -1092,11 +1092,12 @@ class StreamDiffusionWrapper:
                 engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
                 
                 # Resolve IP-Adapter runtime params from config
+                # Strength is now a runtime input, so we do NOT bake scale into engine identity
                 ipadapter_scale = None
                 ipadapter_tokens = None
                 if use_ipadapter_trt and has_ipadapter and ipadapter_config:
                     cfg0 = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
-                    ipadapter_scale = cfg0.get('scale', 1.0)
+                    # scale omitted from engine naming; runtime will pass ipadapter_scale vector
                     ipadapter_tokens = cfg0.get('num_image_tokens', 4)
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
@@ -1175,10 +1176,35 @@ class StreamDiffusionWrapper:
                 # Compile UNet engine using EngineManager
                 logger.info(f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}")
                 try:
-                    logger.debug(f"compile_and_load_engine: use_ipadapter_trt={use_ipadapter_trt}, num_ip_layers={num_ip_layers}, tokens={num_tokens}, ipadapter_scale={ipadapter_scale}")
+                    logger.debug(f"compile_and_load_engine: use_ipadapter_trt={use_ipadapter_trt}, num_ip_layers={num_ip_layers}, tokens={num_tokens}")
                 except Exception:
                     pass
                 
+                # If using TensorRT with IP-Adapter, ensure processors and weights are installed BEFORE export
+                if use_ipadapter_trt and has_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
+                    try:
+                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                        cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                        ip_cfg = IPAdapterConfig(
+                            style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                            num_image_tokens=cfg.get('num_image_tokens', 4),
+                            ipadapter_model_path=cfg['ipadapter_model_path'],
+                            image_encoder_path=cfg['image_encoder_path'],
+                            style_image=cfg.get('style_image'),
+                            scale=cfg.get('scale', 1.0),
+                        )
+                        ip_module_for_export = IPAdapterModule(ip_cfg)
+                        ip_module_for_export.install(stream)
+                        setattr(stream, '_ipadapter_module', ip_module_for_export)
+                        try:
+                            logger.info("Installed IP-Adapter processors prior to TensorRT export")
+                        except Exception:
+                            pass
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        logger.error("Failed to pre-install IP-Adapter prior to TensorRT export")
+
                 # NOTE: When IPAdapter is enabled, we must pass num_ip_layers. We cannot know it until after
                 # installing processors in the export wrapper. We construct the wrapper first to discover it,
                 # then construct UNet model with that value.
@@ -1489,7 +1515,7 @@ class StreamDiffusionWrapper:
                 logger.error("Failed to install ControlNetModule")
                 raise
 
-        if use_ipadapter and ipadapter_config:
+        if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
             try:
                 from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
                 # Use first config if list provided
