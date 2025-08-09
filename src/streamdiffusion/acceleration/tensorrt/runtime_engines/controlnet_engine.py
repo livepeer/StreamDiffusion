@@ -5,6 +5,7 @@ import tensorrt as trt
 import traceback
 import logging
 from typing import List, Optional, Tuple, Dict, Any
+import threading
 from polygraphy import cuda
 
 from ..utilities import Engine
@@ -22,6 +23,8 @@ class ControlNetModelEngine:
         self.stream = stream
         self.use_cuda_graph = use_cuda_graph
         self.model_type = model_type.lower()
+        # Serialize infer calls per engine/context for safety
+        self._infer_lock = threading.RLock()
         
         self.engine.load()
         self.engine.activate()
@@ -108,15 +111,16 @@ class ControlNetModelEngine:
         output_shapes = self._resolve_output_shapes(batch_size, latent_height, latent_width)
         shape_dict.update(output_shapes)
         
-        self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
-        
-        outputs = self.engine.infer(
-            input_dict,
-            self.stream,
-            use_cuda_graph=self.use_cuda_graph,
-        )
-        
-        self.stream.synchronize()
+        with self._infer_lock:
+            self.engine.allocate_buffers(shape_dict=shape_dict, device=sample.device)
+            outputs = self.engine.infer(
+                input_dict,
+                self.stream,
+                use_cuda_graph=self.use_cuda_graph,
+            )
+            # Synchronize to ensure outputs are ready before consumption by other streams
+            # This preserves correctness when UNet runs on a different CUDA stream.
+            self.stream.synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
         return down_blocks, mid_block
