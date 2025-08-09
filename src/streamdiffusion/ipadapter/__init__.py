@@ -1,9 +1,2 @@
-try:
-    from .base_ipadapter_pipeline import BaseIPAdapterPipeline
-except Exception as e:
-    print(f"ipadapter.__init__: Failed to import BaseIPAdapterPipeline: {e}")
-    raise
-
-__all__ = [
-    "BaseIPAdapterPipeline",
-] 
+# Deprecated during refactor: legacy IPAdapter pipeline is no longer used
+__all__ = []

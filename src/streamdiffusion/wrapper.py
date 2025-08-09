@@ -1016,20 +1016,9 @@ class StreamDiffusionWrapper:
                 # Use the explicit use_ipadapter parameter
                 has_ipadapter = use_ipadapter
                 
-                # Create IPAdapter pipeline and pre-load models for TensorRT if needed
-                ipadapter_pipeline = None
-                if has_ipadapter:
-                    try:
-                        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
-                        ipadapter_pipeline = BaseIPAdapterPipeline(
-                            stream_diffusion=stream,
-                            device=self.device,
-                            dtype=self.dtype
-                        )
-                        ipadapter_pipeline.preload_models_for_tensorrt(ipadapter_config)
-                    except Exception as e:
-                        print(f"_load_model: Error creating IPAdapter pipeline: {e}")
-                        has_ipadapter = False
+                # Determine IP-Adapter presence and token count directly from config (no legacy pipeline)
+                if has_ipadapter and not ipadapter_config:
+                    has_ipadapter = False
                 
                 try:
                     # Use model detection results already computed during model loading
@@ -1102,18 +1091,13 @@ class StreamDiffusionWrapper:
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
                 
-                # Get IPAdapter information from pipeline if available
+                # Resolve IP-Adapter runtime params from config
                 ipadapter_scale = None
                 ipadapter_tokens = None
-                if use_ipadapter_trt and ipadapter_pipeline:
-                    tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
-                    ipadapter_scale = tensorrt_info.get('scale', 1.0)
-                    
-                    # Read token count from loaded IPAdapter instance
-                    if hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
-                        ipadapter_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
-                    else:
-                        ipadapter_tokens = 4  # Default fallback
+                if use_ipadapter_trt and has_ipadapter and ipadapter_config:
+                    cfg0 = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                    ipadapter_scale = cfg0.get('scale', 1.0)
+                    ipadapter_tokens = cfg0.get('num_image_tokens', 4)
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
                     EngineType.UNET,
@@ -1185,9 +1169,8 @@ class StreamDiffusionWrapper:
                 num_tokens = 4  # Default for non-IPAdapter mode
                 
                 if use_ipadapter_trt:
-                    if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
-                        raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
-                    num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                    # Use token count resolved from configuration (default to 4)
+                    num_tokens = ipadapter_tokens if isinstance(ipadapter_tokens, int) else 4
 
                 # Compile UNet engine using EngineManager
                 logger.info(f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}")
