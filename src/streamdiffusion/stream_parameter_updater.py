@@ -486,7 +486,7 @@ class StreamParameterUpdater:
             final_prompt_embeds = combined_embeds.repeat(self.stream.batch_size, 1, 1)
             final_negative_embeds = None  # Will be set by enhancers if needed
         
-        # Apply embedding enhancers (e.g., IPAdapter)
+        # Legacy embedding enhancers (kept for compatibility)
         if self._embedding_enhancers:
             for enhancer_func, enhancer_name in self._embedding_enhancers:
                 try:
@@ -500,6 +500,22 @@ class StreamParameterUpdater:
                     print(f"_apply_prompt_blending: Error in enhancer '{enhancer_name}': {e}")
                     import traceback
                     traceback.print_exc()
+
+        # Run embedding hooks to compose final embeddings (e.g., append IP-Adapter tokens)
+        try:
+            if hasattr(self.stream, 'embedding_hooks') and self.stream.embedding_hooks:
+                from .hooks import EmbedsCtx  # local import to avoid cycles
+                embeds_ctx = EmbedsCtx(
+                    prompt_embeds=final_prompt_embeds,
+                    negative_prompt_embeds=final_negative_embeds,
+                )
+                for hook in self.stream.embedding_hooks:
+                    embeds_ctx = hook(embeds_ctx)
+                final_prompt_embeds = embeds_ctx.prompt_embeds
+                final_negative_embeds = embeds_ctx.negative_prompt_embeds
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"_apply_prompt_blending: embedding hook failed: {e}")
         
         # Set final embeddings on stream
         self.stream.prompt_embeds = final_prompt_embeds
@@ -994,7 +1010,7 @@ class StreamParameterUpdater:
             desired_config: Complete ControlNet configuration list defining the desired state.
                            Each dict contains: model_id, preprocessor, conditioning_scale, enabled, etc.
         """
-        # Find the ControlNet pipeline (might be nested in IPAdapter)
+        # Find the ControlNet pipeline/module (module-aware)
         controlnet_pipeline = self._get_controlnet_pipeline()
         if not controlnet_pipeline:
             logger.warning(f"_update_controlnet_config: No ControlNet pipeline found")
@@ -1011,7 +1027,10 @@ class StreamParameterUpdater:
             model_id = current_models.get(i, f'controlnet_{i}')
             if model_id not in desired_models:
                 logger.info(f"_update_controlnet_config: Removing ControlNet {model_id}")
-                controlnet_pipeline.remove_controlnet(i, immediate=False)
+                try:
+                    controlnet_pipeline.remove_controlnet(i)
+                except Exception:
+                    pass
         
         # Add new controlnets and update existing ones
         for desired_cfg in desired_config:
@@ -1021,7 +1040,23 @@ class StreamParameterUpdater:
             if existing_index is None:
                 # Add new controlnet
                 logger.info(f"_update_controlnet_config: Adding ControlNet {model_id}")
-                controlnet_pipeline.add_controlnet(desired_cfg, desired_cfg.get('control_image'), immediate=False)
+                try:
+                    # Prefer module path: construct ControlNetConfig
+                    try:
+                        from .modules.controlnet_module import ControlNetConfig  # type: ignore
+                        cn_cfg = ControlNetConfig(
+                            model_id=desired_cfg.get('model_id'),
+                            preprocessor=desired_cfg.get('preprocessor'),
+                            conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
+                            enabled=desired_cfg.get('enabled', True),
+                            preprocessor_params=desired_cfg.get('preprocessor_params'),
+                        )
+                        controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
+                    except Exception:
+                        # Fallback to legacy shim signature (dict)
+                        controlnet_pipeline.add_controlnet(desired_cfg, desired_cfg.get('control_image'))
+                except Exception as e:
+                    logger.error(f"_update_controlnet_config: add_controlnet failed for {model_id}: {e}")
             else:
                 # Update existing controlnet
                 if 'conditioning_scale' in desired_cfg:
@@ -1041,26 +1076,23 @@ class StreamParameterUpdater:
 
     def _get_controlnet_pipeline(self):
         """
-        Get the ControlNet pipeline from the pipeline structure (handles IPAdapter wrapping).
-        
-        Returns:
-            ControlNet pipeline object or None if not found
+        Get the ControlNet module or legacy pipeline from the structure (module-aware).
         """
-        # Check if stream is ControlNet pipeline directly
+        # Module-installed path
+        if hasattr(self.stream, '_controlnet_module'):
+            return self.stream._controlnet_module
+        # Legacy paths
         if hasattr(self.stream, 'controlnets'):
             return self.stream
-            
-        # Check if stream has nested stream (IPAdapter wrapper)
         if hasattr(self.stream, 'stream') and hasattr(self.stream.stream, 'controlnets'):
             return self.stream.stream
-        
-        # Check if we have a wrapper reference and can access through it
         if self.wrapper and hasattr(self.wrapper, 'stream'):
+            if hasattr(self.wrapper.stream, '_controlnet_module'):
+                return self.wrapper.stream._controlnet_module
             if hasattr(self.wrapper.stream, 'controlnets'):
                 return self.wrapper.stream
-            elif hasattr(self.wrapper.stream, 'stream') and hasattr(self.wrapper.stream.stream, 'controlnets'):
+            if hasattr(self.wrapper.stream, 'stream') and hasattr(self.wrapper.stream.stream, 'controlnets'):
                 return self.wrapper.stream.stream
-        
         return None
 
     def _get_current_controlnet_config(self) -> List[Dict[str, Any]]:

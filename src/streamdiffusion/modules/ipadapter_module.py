@@ -5,6 +5,7 @@ from typing import Optional, Tuple, Any
 import torch
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook
+import os
 
 
 @dataclass
@@ -31,6 +32,7 @@ class IPAdapterModule:
 
     def __init__(self, config: IPAdapterConfig) -> None:
         self.config = config
+        self.ipadapter: Optional[Any] = None
 
     def build_embedding_hook(self, stream) -> EmbeddingHook:
         style_key = self.config.style_image_key or "default"
@@ -102,14 +104,19 @@ class IPAdapterModule:
             logger.error(f"IPAdapterModule.install: Failed to import IPAdapterEmbeddingPreprocessor: {e}")
             raise
 
+        # Resolve model paths (HF repo file or local path)
+        resolved_ip_path = self._resolve_model_path(self.config.ipadapter_model_path)
+        resolved_encoder_path = self._resolve_model_path(self.config.image_encoder_path)
+
         # Create IP-Adapter and install processors into UNet
         ipadapter = IPAdapter(
             pipe=stream.pipe,
-            ipadapter_ckpt_path=self.config.ipadapter_model_path,
-            image_encoder_path=self.config.image_encoder_path,
+            ipadapter_ckpt_path=resolved_ip_path,
+            image_encoder_path=resolved_encoder_path,
             device=stream.device,
             dtype=stream.dtype,
         )
+        self.ipadapter = ipadapter
 
         # Register embedding preprocessor for this style key
         embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
@@ -134,6 +141,65 @@ class IPAdapterModule:
         except Exception:
             pass
 
+        # Compatibility: expose expected attributes/methods used by StreamParameterUpdater
+        try:
+            setattr(stream, 'ipadapter', ipadapter)
+            setattr(stream, 'scale', float(self.config.scale))
+            def _update_scale(new_scale: float) -> None:
+                ipadapter.set_scale(float(new_scale))
+                setattr(stream, 'ipadapter_scale', float(new_scale))
+                try:
+                    setattr(stream, 'scale', float(new_scale))
+                except Exception:
+                    pass
+            def _update_style_image(style_image) -> None:
+                stream._param_updater.update_style_image(style_key, style_image, is_stream=False)
+            setattr(stream, 'update_scale', _update_scale)
+            setattr(stream, 'update_style_image', _update_style_image)
+        except Exception:
+            pass
+
         # Register embedding hook for concatenation of image tokens
         stream.embedding_hooks.append(self.build_embedding_hook(stream))
+
+    def _resolve_model_path(self, model_path: Optional[str]) -> str:
+        """Resolve a model path.
+
+        Accepts either a local filesystem path or a Hugging Face repo/file spec like
+        "h94/IP-Adapter/models/ip-adapter-plus_sd15.safetensors" or a directory path
+        such as "h94/IP-Adapter/models/image_encoder".
+        """
+        if not model_path:
+            raise ValueError("IPAdapterModule._resolve_model_path: model_path is required")
+
+        if os.path.exists(model_path):
+            return model_path
+
+        # Treat as HF repo path
+        try:
+            from huggingface_hub import hf_hub_download, snapshot_download
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"IPAdapterModule: huggingface_hub required to resolve '{model_path}': {e}")
+            raise
+
+        parts = model_path.split("/")
+        if len(parts) < 3:
+            raise ValueError(f"IPAdapterModule._resolve_model_path: Invalid Hugging Face spec: '{model_path}'")
+
+        repo_id = "/".join(parts[:2])
+        subpath = "/".join(parts[2:])
+
+        # File if last component has an extension; otherwise treat as directory
+        if "." in parts[-1]:
+            # File download
+            local_path = hf_hub_download(repo_id=repo_id, filename=subpath)
+            return local_path
+        else:
+            # Directory download
+            repo_root = snapshot_download(repo_id=repo_id, allow_patterns=[f"{subpath}/*"]) 
+            full_path = os.path.join(repo_root, subpath)
+            if not os.path.exists(full_path):
+                raise FileNotFoundError(f"IPAdapterModule._resolve_model_path: Downloaded path not found: {full_path}")
+            return full_path
 

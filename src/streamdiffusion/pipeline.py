@@ -514,6 +514,10 @@ class StreamDiffusion:
             logger.error(f"unet_step: unet hook failed: {e}")
             raise
 
+        # Extract potential ControlNet residual kwargs
+        hook_down_res = unet_kwargs.get('down_block_additional_residuals', None)
+        hook_mid_res = unet_kwargs.get('mid_block_additional_residual', None)
+
         # Call UNet with appropriate conditioning
         if self.is_sdxl:
             try:
@@ -558,12 +562,19 @@ class StreamDiffusion:
                         except Exception:
                             pass
 
+                    # Include ControlNet residuals if provided by hooks
+                    if hook_down_res is not None:
+                        extra_kwargs['down_block_additional_residuals'] = hook_down_res
+                    if hook_mid_res is not None:
+                        extra_kwargs['mid_block_additional_residual'] = hook_mid_res
+
                     logger.debug(f"pipeline.unet_step: Calling TRT SDXL UNet with extra_kwargs keys={list(extra_kwargs.keys())}")
                     model_pred = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
                         unet_kwargs['timestep'],                  # timestep (positional)
                         unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
                         **extra_kwargs,
+                        # For TRT engines, ensure SDXL cond shapes match engine builds; if engine expects 81 tokens (77+4), append dummy image tokens when none
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
                     )[0]
                 else:
@@ -584,13 +595,19 @@ class StreamDiffusion:
                     except Exception:
                         pass
 
-                    model_pred = self.unet(
+                    call_kwargs = dict(
                         sample=unet_kwargs['sample'],
                         timestep=unet_kwargs['timestep'],
                         encoder_hidden_states=unet_kwargs['encoder_hidden_states'],
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
-                    )[0]
+                    )
+                    # Include ControlNet residuals if present
+                    if hook_down_res is not None:
+                        call_kwargs['down_block_additional_residuals'] = hook_down_res
+                    if hook_mid_res is not None:
+                        call_kwargs['mid_block_additional_residual'] = hook_mid_res
+                    model_pred = self.unet(**call_kwargs)[0]
                     # No restoration for per-layer scale; next step will set again via updater/time factor
                 
             except Exception as e:
@@ -645,7 +662,13 @@ class StreamDiffusion:
             except Exception:
                 pass
 
-            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with ip_scale={ 'ipadapter_scale' in ip_scale_kw }")
+            # Include ControlNet residuals if present
+            if hook_down_res is not None:
+                ip_scale_kw['down_block_additional_residuals'] = hook_down_res
+            if hook_mid_res is not None:
+                ip_scale_kw['mid_block_additional_residual'] = hook_mid_res
+
+            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with keys={list(ip_scale_kw.keys())}")
             model_pred = self.unet(
                 x_t_latent_plus_uc,
                 t_list,

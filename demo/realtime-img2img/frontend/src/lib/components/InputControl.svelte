@@ -159,6 +159,14 @@
         max: 2.0,
         category: 'ipadapter'
       });
+      
+      parameters.push({
+        value: 'ipadapter_weight_type',
+        label: 'IPAdapter Weight Type',
+        min: 0,
+        max: 14, // 15 weight types (0-14)
+        category: 'ipadapter'
+      });
     }
 
     // ControlNet strength parameters
@@ -435,6 +443,23 @@
           await updatePromptWeightParameter(control, scaledValue);
         } else if (control.parameter_name.startsWith('seed_weight_')) {
           await updateSeedWeightParameter(control, scaledValue);
+        } else if (control.parameter_name === 'ipadapter_weight_type') {
+          // Convert numeric value to weight type string
+          const weightTypes = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                             "weak input", "weak output", "weak middle", "strong middle", 
+                             "style transfer", "composition", "strong style transfer", 
+                             "style and composition", "style transfer precise", "composition precise"];
+          const index = Math.round(scaledValue) % weightTypes.length;
+          const weightType = weightTypes[index];
+          
+          const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+          if (endpoint) {
+            await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ weight_type: weightType })
+            });
+          }
         } else {
           const endpoint = getParameterUpdateEndpoint(control.parameter_name);
           if (endpoint) {
@@ -574,7 +599,8 @@
       'delta': '/api/update-delta', 
       'num_inference_steps': '/api/update-num-inference-steps',
       'seed': '/api/update-seed',
-      'ipadapter_scale': '/api/ipadapter/update-scale'
+      'ipadapter_scale': '/api/ipadapter/update-scale',
+      'ipadapter_weight_type': '/api/ipadapter/update-weight-type'
     };
     return endpoints[parameterName] || null;
   }
@@ -603,7 +629,8 @@
       'delta': 'delta',
       'num_inference_steps': 'num_inference_steps', 
       'seed': 'seed',
-      'ipadapter_scale': 'scale'
+      'ipadapter_scale': 'scale',
+      'ipadapter_weight_type': 'weight_type'
     };
     return keys[parameterName] || parameterName;
   }
@@ -702,6 +729,23 @@
             await updatePromptWeightParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('seed_weight_')) {
             await updateSeedWeightParameter(control, control.pendingValue);
+          } else if (control.parameter_name === 'ipadapter_weight_type') {
+            // Convert numeric value to weight type string
+            const weightTypes = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                               "weak input", "weak output", "weak middle", "strong middle", 
+                               "style transfer", "composition", "strong style transfer", 
+                               "style and composition", "style transfer precise", "composition precise"];
+            const index = Math.round(control.pendingValue) % weightTypes.length;
+            const weightType = weightTypes[index];
+            
+            const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+            if (endpoint) {
+              await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ weight_type: weightType })
+              });
+            }
           } else {
             const endpoint = getParameterUpdateEndpoint(control.parameter_name);
             if (endpoint) {
@@ -744,6 +788,23 @@
             await updatePromptWeightParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('seed_weight_')) {
             await updateSeedWeightParameter(control, control.pendingValue);
+          } else if (control.parameter_name === 'ipadapter_weight_type') {
+            // Convert numeric value to weight type string
+            const weightTypes = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                               "weak input", "weak output", "weak middle", "strong middle", 
+                               "style transfer", "composition", "strong style transfer", 
+                               "style and composition", "style transfer precise", "composition precise"];
+            const index = Math.round(control.pendingValue) % weightTypes.length;
+            const weightType = weightTypes[index];
+            
+            const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+            if (endpoint) {
+              await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ weight_type: weightType })
+              });
+            }
           } else {
             const endpoint = getParameterUpdateEndpoint(control.parameter_name);
             if (endpoint) {

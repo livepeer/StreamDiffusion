@@ -1479,142 +1479,59 @@ class StreamDiffusionWrapper:
             # Use stream's current resolution for fallback image
             self.nsfw_fallback_img = Image.new("RGB", (stream.height, stream.width), (0, 0, 0))
 
-        # Apply ControlNet patch if needed
+        # Install modules via hooks instead of patching (wrapper keeps forwarding updates only)
         if use_controlnet and controlnet_config:
-            # Pass engine_manager and cuda_stream if TensorRT is being used
-            if acceleration == "tensorrt":
-                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl, engine_manager, cuda_stream)
-            else:
-                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
+            try:
+                from streamdiffusion.modules.controlnet_module import ControlNetModule, ControlNetConfig
+                cn_module = ControlNetModule(device=self.device, dtype=self.dtype)
+                cn_module.install(stream)
+                # Normalize to list of configs
+                configs = controlnet_config if isinstance(controlnet_config, list) else [controlnet_config]
+                for cfg in configs:
+                    if not cfg.get('model_id'):
+                        continue
+                    cn_cfg = ControlNetConfig(
+                        model_id=cfg['model_id'],
+                        preprocessor=cfg.get('preprocessor'),
+                        conditioning_scale=cfg.get('conditioning_scale', 1.0),
+                        enabled=cfg.get('enabled', True),
+                        preprocessor_params=cfg.get('preprocessor_params'),
+                    )
+                    cn_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
+                # Expose for later updates if needed by caller code
+                stream._controlnet_module = cn_module
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                logger.error("Failed to install ControlNetModule")
+                raise
 
-        # Apply IPAdapter patch if needed (after ControlNet)
         if use_ipadapter and ipadapter_config:
-            self._apply_ipadapter_patch(stream, ipadapter_config)
+            try:
+                from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                # Use first config if list provided
+                cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                ip_cfg = IPAdapterConfig(
+                    style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                    num_image_tokens=cfg.get('num_image_tokens', 4),
+                    ipadapter_model_path=cfg['ipadapter_model_path'],
+                    image_encoder_path=cfg['image_encoder_path'],
+                    style_image=cfg.get('style_image'),
+                    scale=cfg.get('scale', 1.0),
+                )
+                ip_module = IPAdapterModule(ip_cfg)
+                ip_module.install(stream)
+                # Expose for later updates
+                stream._ipadapter_module = ip_module
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                logger.error("Failed to install IPAdapterModule")
+                raise
 
         return stream
 
-    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False, engine_manager = None, cuda_stream = None) -> Any:
-        """
-        Apply ControlNet patch to StreamDiffusion using detected model type
-
-        Args:
-            stream: Base StreamDiffusion instance
-            controlnet_config: ControlNet configuration(s)
-            model_type: Detected model type from original UNet
-
-        Returns:
-            ControlNet-enabled pipeline (ControlNetPipeline or SDXLTurboControlNetPipeline)
-        """
-        # Use provided model type (detected before TensorRT conversion)
-        if is_sdxl:
-            from streamdiffusion.controlnet.controlnet_sdxlturbo_pipeline import SDXLTurboControlNetPipeline
-            controlnet_pipeline = SDXLTurboControlNetPipeline(stream, self.device, self.dtype)
-        else:  # SD15, SD21, etc. all use same ControlNet pipeline
-            from streamdiffusion.controlnet.controlnet_pipeline import ControlNetPipeline
-            controlnet_pipeline = ControlNetPipeline(stream, self.device, self.dtype)
-
-        # Check if we should use TensorRT ControlNet acceleration
-        use_controlnet_tensorrt = (acceleration == "tensorrt")
-
-        # Set the detected model type to avoid re-detection from TensorRT engine
-        controlnet_pipeline._detected_model_type = model_type
-        controlnet_pipeline._is_sdxl = is_sdxl
-
-        # Initialize ControlNet engine management if using TensorRT acceleration
-        if use_controlnet_tensorrt and engine_manager is not None:
-            from streamdiffusion.acceleration.tensorrt.engine_manager import EngineType
-            # Use the same unified EngineManager for ControlNet engines
-            # Create a ControlNet-specific subdirectory for organization
-            controlnet_engine_dir = os.path.join(engine_dir, "controlnet")
-            
-            # Store unified engine manager on the pipeline for later use
-            controlnet_pipeline._engine_manager = engine_manager
-            controlnet_pipeline._controlnet_engine_dir = controlnet_engine_dir
-            controlnet_pipeline._use_tensorrt = True
-            
-            # Also set engine manager on stream where ControlNet pipeline expects to find it
-            # Create a wrapper that provides the old interface but uses EngineManager internally
-            class ControlNetEnginePoolWrapper:
-                def __init__(self, engine_manager, controlnet_engine_dir, cuda_stream):
-                    self.engine_manager = engine_manager
-                    self.engine_dir = controlnet_engine_dir
-                    self.cuda_stream = cuda_stream
-
-                def load_engine(self, model_id, model_type="sd15", batch_size=1):
-                    engine_path = self.engine_manager.get_engine_path(
-                        EngineType.CONTROLNET,
-                        model_id_or_path="",  # Not used for ControlNet
-                        max_batch=batch_size,
-                        min_batch_size=1,
-                        mode="",  # Not used for ControlNet
-                        use_lcm_lora=False,  # Not used for ControlNet
-                        use_tiny_vae=False,  # Not used for ControlNet
-                        controlnet_model_id=model_id
-                    )
-                    if not os.path.exists(engine_path):
-                        raise FileNotFoundError(f"ControlNet engine not found at {engine_path}")
-                    return self.engine_manager.load_engine(
-                        EngineType.CONTROLNET,
-                        engine_path,
-                        model_type=model_type,
-                        batch_size=batch_size,
-                        cuda_stream=self.cuda_stream,
-                        use_cuda_graph=True
-                    )
-                
-                def get_or_load_engine(self, model_id, pytorch_model, model_type="sd15", batch_size=1):
-                    """get_or_load_engine: Compatibility wrapper for ControlNet pipeline"""
-                    return self.engine_manager.get_or_load_controlnet_engine(
-                        model_id=model_id,
-                        pytorch_model=pytorch_model,
-                        model_type=model_type,
-                        batch_size=batch_size,
-                        cuda_stream=self.cuda_stream,
-                        use_cuda_graph=True
-                    )
-            
-            stream.controlnet_engine_pool = ControlNetEnginePoolWrapper(engine_manager, controlnet_engine_dir, cuda_stream)
-            logger.info("get_or_load_controlnet_engine: Initialized ControlNet TensorRT engine management with unified EngineManager")
-        else:
-            controlnet_pipeline._use_tensorrt = False
-            logger.info("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
-
-
-        # Setup ControlNets from config
-        if not isinstance(controlnet_config, list):
-            controlnet_config = [controlnet_config]
-
-
-        for config in controlnet_config:
-            model_id = config.get('model_id')
-            if not model_id:
-                continue
-
-            preprocessor = config.get('preprocessor', None)
-            conditioning_scale = config.get('conditioning_scale', 1.0)
-            enabled = config.get('enabled', True)
-            preprocessor_params = config.get('preprocessor_params', None)
-            control_image = config.get('control_image', None)  # Extract control image from config
-
-            try:
-                # Pass config dictionary directly
-                cn_config = {
-                    'model_id': model_id,
-                    'preprocessor': preprocessor,
-                    'conditioning_scale': conditioning_scale,
-                    'enabled': enabled,
-                    'preprocessor_params': preprocessor_params or {}
-                }
-
-                # Add ControlNet with control image if provided (immediate during initialization)
-                controlnet_pipeline.add_controlnet(cn_config, control_image, immediate=True)
-                logger.info(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
-            except Exception as e:
-                logger.error(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
-                import traceback
-                traceback.print_exc()
-
-        return controlnet_pipeline
+    # Deprecated patch methods are removed in favor of module install with hooks
 
 
     
@@ -2056,47 +1973,4 @@ class StreamDiffusionWrapper:
         """
         self.stream._param_updater.remove_seed_at_index(index, interpolation_method)
 
-    def _apply_ipadapter_patch(self, stream, ipadapter_config: Union[Dict[str, Any], List[Dict[str, Any]]]):
-        """
-        Apply IPAdapter functionality to existing stream (add attributes instead of wrapping)
-        
-        Args:
-            stream: Existing StreamDiffusion or ControlNet pipeline
-            ipadapter_config: IPAdapter configuration
-        """
-        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
-        
-        # Get the underlying StreamDiffusion object
-        underlying_stream = stream.stream if hasattr(stream, 'stream') else stream
-        
-        # Create IPAdapter pipeline for the functionality
-        ipadapter_pipeline = BaseIPAdapterPipeline(
-            stream_diffusion=underlying_stream,
-            device=self.device,
-            dtype=self.dtype
-        )
-        
-        # Add IPAdapter functionality to the existing stream by setting attributes
-        stream.ipadapter = None  # Will be set when configured
-        stream.update_scale = ipadapter_pipeline.update_scale
-        stream.update_style_image = ipadapter_pipeline.update_style_image
-        
-        # Configure the IPAdapter if config provided
-        if ipadapter_config:
-            if isinstance(ipadapter_config, list):
-                # Use first config if multiple provided
-                config = ipadapter_config[0]
-            else:
-                config = ipadapter_config
-                
-            if config.get('enabled', True):
-                ipadapter_pipeline.set_ipadapter(
-                    ipadapter_model_path=config['ipadapter_model_path'],
-                    image_encoder_path=config['image_encoder_path'],
-                    style_image=config.get('style_image'),
-                    scale=config.get('scale', 1.0)
-                )
-                # Copy the configured IPAdapter to the stream
-                stream.ipadapter = ipadapter_pipeline.ipadapter
-                stream.scale = ipadapter_pipeline.scale
-                stream.style_image = ipadapter_pipeline.style_image
+    # Deprecated IPAdapter patch method removed

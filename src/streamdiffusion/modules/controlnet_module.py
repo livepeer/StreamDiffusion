@@ -57,6 +57,31 @@ class ControlNetModule:
             )
         # Register UNet hook
         stream.unet_hooks.append(self.build_unet_hook())
+        # Attach facade methods expected by existing wrapper/demo code
+        setattr(stream, 'update_control_image_efficient', self.update_control_image_efficient)
+        setattr(stream, 'update_controlnet_scale', self.update_controlnet_scale)
+        setattr(stream, 'remove_controlnet', self.remove_controlnet)
+        setattr(stream, 'get_current_controlnet_config', self.get_current_config)
+        # Expose controlnet collections so existing updater can find them
+        setattr(stream, 'controlnets', self.controlnets)
+        setattr(stream, 'controlnet_scales', self.controlnet_scales)
+        setattr(stream, 'preprocessors', self.preprocessors)
+        # Add shim for add_controlnet with legacy signature
+        def _add_controlnet_legacy(cfg_dict: Dict[str, Any], control_image: Optional[Any] = None, immediate: bool = False) -> None:
+            try:
+                cfg = ControlNetConfig(
+                    model_id=cfg_dict.get('model_id'),
+                    preprocessor=cfg_dict.get('preprocessor'),
+                    conditioning_scale=cfg_dict.get('conditioning_scale', 1.0),
+                    enabled=cfg_dict.get('enabled', True),
+                    preprocessor_params=cfg_dict.get('preprocessor_params'),
+                )
+                self.add_controlnet(cfg, control_image=control_image)
+            except Exception:
+                import logging, traceback
+                logging.getLogger(__name__).error("ControlNetModule: add_controlnet legacy shim failed")
+                logging.getLogger(__name__).error(traceback.format_exc())
+        setattr(stream, 'add_controlnet', _add_controlnet_legacy)
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         model = self._load_pytorch_controlnet_model(cfg.model_id)
@@ -65,7 +90,20 @@ class ControlNetModule:
         preproc = None
         if cfg.preprocessor:
             from streamdiffusion.preprocessing.processors import get_preprocessor
-            preproc = get_preprocessor(cfg.preprocessor, params=cfg.preprocessor_params or {})
+            preproc = get_preprocessor(cfg.preprocessor)
+            # Apply provided parameters to the preprocessor instance
+            if cfg.preprocessor_params:
+                params = cfg.preprocessor_params or {}
+                # If the preprocessor exposes a 'params' dict, update it
+                if hasattr(preproc, 'params') and isinstance(getattr(preproc, 'params'), dict):
+                    preproc.params.update(params)
+                # Also set attributes directly when they exist
+                for name, value in params.items():
+                    try:
+                        if hasattr(preproc, name):
+                            setattr(preproc, name, value)
+                    except Exception:
+                        pass
 
         image_tensor: Optional[torch.Tensor] = None
         if control_image is not None and self._preprocessing_orchestrator is not None:
@@ -101,6 +139,31 @@ class ControlNetModule:
             if 0 <= index < len(self.controlnet_scales):
                 self.controlnet_scales[index] = float(scale)
 
+    def remove_controlnet(self, index: int) -> None:
+        with self._collections_lock:
+            if 0 <= index < len(self.controlnets):
+                del self.controlnets[index]
+                if index < len(self.controlnet_images):
+                    del self.controlnet_images[index]
+                if index < len(self.controlnet_scales):
+                    del self.controlnet_scales[index]
+                if index < len(self.preprocessors):
+                    del self.preprocessors[index]
+
+    def get_current_config(self) -> List[Dict[str, Any]]:
+        cfg: List[Dict[str, Any]] = []
+        with self._collections_lock:
+            for i, cn in enumerate(self.controlnets):
+                model_id = getattr(cn, 'model_id', f'controlnet_{i}')
+                scale = self.controlnet_scales[i] if i < len(self.controlnet_scales) else 1.0
+                preproc_params = getattr(self.preprocessors[i], 'params', {}) if i < len(self.preprocessors) and self.preprocessors[i] else {}
+                cfg.append({
+                    'model_id': model_id,
+                    'conditioning_scale': scale,
+                    'preprocessor_params': preproc_params,
+                })
+        return cfg
+
     # ---------- Internal helpers ----------
     def build_unet_hook(self) -> UnetHook:
         def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
@@ -127,8 +190,17 @@ class ControlNetModule:
                 active_images = [self.controlnet_images[i] for i in active_indices]
                 active_scales = [self.controlnet_scales[i] for i in active_indices]
 
-            # Use first 77 tokens to avoid concatenated IP-Adapter tokens in ControlNet
-            encoder_hidden_states = self._stream.prompt_embeds[:, :77, :]
+            # Use original text token window only for ControlNet encoding
+            # Detect expected text length from UNet config if available; fallback to 77
+            expected_text_len = 77
+            try:
+                if hasattr(self._stream.unet, 'config') and hasattr(self._stream.unet.config, 'cross_attention_dim'):
+                    # For SDXL TRT with IPAdapter baked, engine may expect 77+num_image_tokens for encoder_hidden_states
+                    # However, ControlNet expects just the text portion. Slice accordingly.
+                    expected_text_len = 77
+            except Exception:
+                pass
+            encoder_hidden_states = self._stream.prompt_embeds[:, :expected_text_len, :]
 
             base_kwargs: Dict[str, Any] = {
                 'sample': x_t,
@@ -214,7 +286,13 @@ class ControlNetModule:
                     controlnet = ControlNetModel.from_pretrained(
                         model_id, torch_dtype=self.dtype
                     )
-            return controlnet.to(device=self.device, dtype=self.dtype)
+            controlnet = controlnet.to(device=self.device, dtype=self.dtype)
+            # Track model_id for updater diffing
+            try:
+                setattr(controlnet, 'model_id', model_id)
+            except Exception:
+                pass
+            return controlnet
         except Exception as e:
             import logging, traceback
             logger = logging.getLogger(__name__)

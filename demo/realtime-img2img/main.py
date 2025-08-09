@@ -144,7 +144,15 @@ class App:
             elif parameter_name == 'seed':
                 self.pipeline.stream.update_stream_params(seed=int(value))
             elif parameter_name == 'ipadapter_scale':
-                self.pipeline.stream.update_stream_params(ipadapter_scale=value)
+                self.pipeline.stream.update_stream_params(ipadapter_config={'scale': value})
+            elif parameter_name == 'ipadapter_weight_type':
+                # For weight type, we need to convert the numeric value to a string
+                weight_types = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                               "weak input", "weak output", "weak middle", "strong middle", 
+                               "style transfer", "composition", "strong style transfer", 
+                               "style and composition", "style transfer precise", "composition precise"]
+                index = int(value) % len(weight_types)
+                self.pipeline.update_ipadapter_weight_type(weight_types[index])
             elif parameter_name.startswith('controlnet_') and parameter_name.endswith('_strength'):
                 # Handle ControlNet strength parameters
                 import re
@@ -215,7 +223,7 @@ class App:
             
         stream = self.pipeline.stream
         
-        # Check if stream is ControlNet pipeline directly
+        # Module-aware: module installs expose preprocessors on stream
         if hasattr(stream, 'preprocessors'):
             return stream
             
@@ -223,6 +231,9 @@ class App:
         if hasattr(stream, 'stream') and hasattr(stream.stream, 'preprocessors'):
             return stream.stream
             
+        # New module path on stream
+        if hasattr(stream, '_controlnet_module'):
+            return stream._controlnet_module
         return None
 
     def _get_current_controlnet_config(self):
@@ -358,6 +369,27 @@ class App:
                         logger.info("stream: Creating default pipeline...")
                         self.pipeline = self._create_default_pipeline()
                     logger.info("stream: Pipeline created successfully")
+                    try:
+                        acc = getattr(self.args, 'acceleration', None)
+                        logger.debug(f"stream: acceleration={acc}, use_config={getattr(self.pipeline, 'use_config', False)}")
+                        stream_obj = getattr(self.pipeline, 'stream', None)
+                        unet_obj = getattr(stream_obj, 'unet', None)
+                        is_trt = unet_obj is not None and hasattr(unet_obj, 'engine') and hasattr(unet_obj, 'stream')
+                        logger.debug(f"stream: unet_is_trt={is_trt}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
+                        if is_trt:
+                            logger.debug(f"stream: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
+                        if hasattr(stream_obj, 'ipadapter_scale'):
+                            try:
+                                scale_val = getattr(stream_obj, 'ipadapter_scale')
+                                if hasattr(scale_val, 'shape'):
+                                    logger.debug(f"stream: ipadapter_scale tensor shape={tuple(scale_val.shape)}")
+                                else:
+                                    logger.debug(f"stream: ipadapter_scale scalar={scale_val}")
+                            except Exception:
+                                pass
+                        logger.debug(f"stream: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                    except Exception:
+                        logger.exception("stream: failed to log pipeline state after creation")
                 
                 # Recreate pipeline if config changed (but not resolution - that's handled separately)
                 elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)) or (self.uploaded_controlnet_config and not self.pipeline.use_config):
@@ -394,8 +426,34 @@ class App:
                             continue
                         
                         try:
+                            try:
+                                stream_obj = getattr(self.pipeline, 'stream', None)
+                                unet_obj = getattr(stream_obj, 'unet', None)
+                                is_trt = unet_obj is not None and hasattr(unet_obj, 'engine') and hasattr(unet_obj, 'stream')
+                                logger.debug(f"generate: calling predict; acceleration={getattr(self.args, 'acceleration', None)}, is_trt={is_trt}, mode={getattr(self.pipeline, 'pipeline_mode', None)}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}, has_controlnet={(self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config) if getattr(self.pipeline, 'use_config', False) else False}")
+                                img = getattr(params, 'image', None)
+                                if isinstance(img, torch.Tensor):
+                                    logger.debug(f"generate: params.image tensor shape={tuple(img.shape)}, dtype={img.dtype}")
+                                else:
+                                    logger.debug(f"generate: params.image type={type(img).__name__}")
+                                if is_trt:
+                                    logger.debug(f"generate: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
+                                    try:
+                                        base_scale = getattr(stream_obj, 'ipadapter_scale', None)
+                                        if base_scale is not None:
+                                            if hasattr(base_scale, 'shape'):
+                                                logger.debug(f"generate: base ipadapter_scale shape={tuple(base_scale.shape)}")
+                                            else:
+                                                logger.debug(f"generate: base ipadapter_scale scalar={base_scale}")
+                                        logger.debug(f"generate: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                logger.exception("generate: pre-predict logging failed")
+
                             image = self.pipeline.predict(params)
                             if image is None:
+                                logger.error("generate: predict returned None image; skipping frame")
                                 continue
                             
                             # Use appropriate frame conversion based on output type
@@ -404,6 +462,7 @@ class App:
                             else:
                                 frame = pil_to_frame(image)
                         except Exception as e:
+                            logger.exception(f"generate: predict failed with exception: {e}")
                             continue
                         
                         # Update FPS counter
@@ -1129,6 +1188,42 @@ class App:
                 logging.error(f"update_ipadapter_scale: Failed to update scale: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update scale: {str(e)}")
 
+        @self.app.post("/api/ipadapter/update-weight-type")
+        async def update_ipadapter_weight_type(request: Request):
+            """Update IPAdapter weight type in real-time"""
+            try:
+                data = await request.json()
+                weight_type = data.get("weight_type")
+                
+                if weight_type is None:
+                    raise HTTPException(status_code=400, detail="Missing weight_type parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if we're using config mode and have ipadapters configured
+                ipadapter_enabled = (self.pipeline.use_config and 
+                                    self.pipeline.config and 
+                                    'ipadapters' in self.pipeline.config)
+                
+                if not ipadapter_enabled:
+                    raise HTTPException(status_code=400, detail="IPAdapter is not enabled")
+                
+                # Update IPAdapter weight type in the pipeline
+                success = self.pipeline.update_ipadapter_weight_type(weight_type)
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Updated IPAdapter weight type to {weight_type}"
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to update weight type in pipeline")
+                
+            except Exception as e:
+                logging.error(f"update_ipadapter_weight_type: Failed to update weight type: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update weight type: {str(e)}")
+
         @self.app.post("/api/params")
         async def update_params(request: Request):
             """Update multiple streaming parameters in a single unified call"""
@@ -1651,10 +1746,14 @@ class App:
                 if not cn_pipeline:
                     raise HTTPException(status_code=400, detail="ControlNet pipeline not found")
                 
-                if controlnet_index >= len(cn_pipeline.preprocessors):
+                # Module-aware: allow accessing module's preprocessors list
+                preprocessors = getattr(cn_pipeline, 'preprocessors', None)
+                if preprocessors is None:
+                    raise HTTPException(status_code=400, detail="ControlNet preprocessors not available")
+                if controlnet_index >= len(preprocessors):
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
-                current_preprocessor = cn_pipeline.preprocessors[controlnet_index]
+                current_preprocessor = preprocessors[controlnet_index]
                 if not current_preprocessor:
                     return JSONResponse({
                         "preprocessor": None,
@@ -1668,7 +1767,7 @@ class App:
                 # Extract current values, using defaults if not set
                 current_values = {}
                 for param_name, param_meta in user_param_meta.items():
-                    if param_name in current_preprocessor.params:
+                    if hasattr(current_preprocessor, 'params') and param_name in current_preprocessor.params:
                         current_values[param_name] = current_preprocessor.params[param_name]
                     else:
                         current_values[param_name] = param_meta.get("default")

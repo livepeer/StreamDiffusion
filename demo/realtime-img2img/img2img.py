@@ -272,7 +272,7 @@ class Pipeline:
                 ipadapter_config['style_image'] = style_image
                 
             # Use unified update_stream_params approach
-            self.stream.update_stream_params(ipadapter_config=ipadapter_config)
+            self.stream._param_updater.update_stream_params(ipadapter_config=ipadapter_config)
             return True
         except Exception as e:
             return False
@@ -285,6 +285,24 @@ class Pipeline:
         """Legacy method - use update_ipadapter_config instead"""
         return self.update_ipadapter_config(style_image=style_image)
 
+    def update_ipadapter_weight_type(self, weight_type: str) -> bool:
+        """Update IPAdapter weight type in real-time"""
+        if not self.has_ipadapter:
+            return False
+            
+        try:
+            # Prefer consolidated updater so PyTorch per-layer vector is applied immediately
+            if hasattr(self.stream, '_param_updater'):
+                self.stream._param_updater.update_stream_params(ipadapter_config={ 'weight_type': weight_type })
+                return True
+            # Fallback to direct attribute set if updater not present
+            if hasattr(self.stream, 'ipadapter_weight_type'):
+                self.stream.ipadapter_weight_type = weight_type
+                return True
+            return False
+        except Exception as e:
+            return False
+
     def get_ipadapter_info(self) -> dict:
         """
         Get current IPAdapter information
@@ -295,6 +313,7 @@ class Pipeline:
         info = {
             "enabled": self.has_ipadapter,
             "scale": 1.0,
+            "weight_type": "linear",
             "model_path": None,
             "style_image_set": False
         }
@@ -304,14 +323,18 @@ class Pipeline:
             if len(self.config['ipadapters']) > 0:
                 ipadapter_config = self.config['ipadapters'][0]
                 info["scale"] = ipadapter_config.get('scale', 1.0)
+                info["weight_type"] = ipadapter_config.get('weight_type', 'linear')
                 info["model_path"] = ipadapter_config.get('ipadapter_model_path')
                 info["style_image_set"] = 'style_image' in ipadapter_config
                 
-        # Try to get current scale from stream if available
+        # Try to get current scale and weight type from stream if available
         if hasattr(self.stream, 'scale'):
             info["scale"] = self.stream.scale
         elif hasattr(self.stream, 'ipadapter') and hasattr(self.stream.ipadapter, 'scale'):
             info["scale"] = self.stream.ipadapter.scale
+            
+        if hasattr(self.stream, 'ipadapter_weight_type'):
+            info["weight_type"] = self.stream.ipadapter_weight_type
             
         return info
 
@@ -323,4 +346,4 @@ class Pipeline:
             **kwargs: All parameters supported by StreamDiffusionWrapper.update_stream_params()
                      including controlnet_config, guidance_scale, delta, etc.
         """
-        return self.stream.update_stream_params(**kwargs)
+        return self.stream._param_updater.update_stream_params(**kwargs)

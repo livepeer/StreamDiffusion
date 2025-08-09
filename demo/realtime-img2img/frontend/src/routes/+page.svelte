@@ -24,6 +24,7 @@
   let controlnetInfo: any = null;
   let ipadapterInfo: any = null;
   let ipadapterScale: number = 1.0;
+  let ipadapterWeightType: string = "linear";
   let tIndexList: number[] = [35, 45];
   let guidanceScale: number = 1.1;
   let delta: number = 0.7;
@@ -107,6 +108,7 @@
       controlnetInfo = settings.controlnet || null;
       ipadapterInfo = settings.ipadapter || null;
       ipadapterScale = settings.ipadapter?.scale || 1.0;
+      ipadapterWeightType = settings.ipadapter?.weight_type || "linear";
       tIndexList = settings.t_index_list || [35, 45];
       guidanceScale = settings.guidance_scale || 1.1;
       delta = settings.delta || 0.7;
@@ -669,6 +671,7 @@
           <IPAdapterConfig 
             {ipadapterInfo} 
             currentScale={ipadapterScale}
+            currentWeightType={ipadapterWeightType}
           ></IPAdapterConfig>
         {/if}
       </div>
