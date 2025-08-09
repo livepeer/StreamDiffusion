@@ -375,6 +375,8 @@ class StreamDiffusionWrapper:
 
         Supports both single prompts and prompt blending based on the prompt parameter type.
 
+        This is for legacy compatibility, use update_stream_params instead
+
         Parameters
         ----------
         prompt : Union[str, List[Tuple[str, float]]]
@@ -507,16 +509,6 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
         )
-
-    def get_normalize_prompt_weights(self) -> bool:
-        """Get the current prompt weight normalization setting."""
-        return self.stream.get_normalize_prompt_weights()
-
-    def get_normalize_seed_weights(self) -> bool:
-        """Get the current seed weight normalization setting."""
-        return self.stream.get_normalize_seed_weights()
-
-
 
     def __call__(
         self,
@@ -1592,42 +1584,99 @@ class StreamDiffusionWrapper:
         if hasattr(self, 'stream') and self.stream and hasattr(self.stream, 'cleanup'):
             self.stream.cleanup_controlnets()
 
-    def get_current_prompts(self) -> List[Tuple[str, float]]:
-        """
-        Get the current prompt list with weights.
-
-        Returns
-        -------
-        List[Tuple[str, float]]
-            Current prompt list with weights.
-        """
-        return self.stream._param_updater.get_current_prompts()
-
-    def get_current_seeds(self) -> List[Tuple[int, float]]:
-        """
-        Get the current seed list with weights.
-
-        Returns
-        -------
-        List[Tuple[int, float]]
-            Current seed list with weights.
-        """
-        return self.stream._param_updater.get_current_seeds()
-
-    def get_cache_info(self) -> Dict:
-        """
-        Get cache statistics for prompt and seed blending.
-
-        Returns
-        -------
-        Dict
-            Cache information including hits, misses, and cache sizes.
-        """
-        return self.stream._param_updater.get_cache_info()
-
     def clear_caches(self) -> None:
         """Clear all cached prompt embeddings and seed noise tensors."""
         self.stream._param_updater.clear_caches()
+
+    def get_stream_state(self, include_caches: bool = False) -> Dict[str, Any]:
+        """Get a unified snapshot of the current stream state.
+
+        Args:
+            include_caches: When True, include cache statistics in the response
+
+        Returns:
+            Dict[str, Any]: Consolidated state including prompts/seeds, runtime settings,
+                            module configs, and basic pipeline info.
+        """
+        stream = self.stream
+        updater = stream._param_updater
+
+        # Prompts / Seeds
+        prompts = updater.get_current_prompts()
+        seeds = updater.get_current_seeds()
+
+        # Normalization flags
+        normalize_prompt_weights = updater.get_normalize_prompt_weights()
+        normalize_seed_weights = updater.get_normalize_seed_weights()
+
+        # Core runtime params
+        guidance_scale = getattr(stream, 'guidance_scale', None)
+        delta = getattr(stream, 'delta', None)
+        t_index_list = list(getattr(stream, 't_list', []))
+        current_seed = getattr(stream, 'current_seed', None)
+        num_inference_steps = None
+        try:
+            if hasattr(stream, 'timesteps') and stream.timesteps is not None:
+                num_inference_steps = int(len(stream.timesteps))
+        except Exception:
+            pass
+
+        # Resolution and model/pipeline info
+        state: Dict[str, Any] = {
+            'width': getattr(stream, 'width', None),
+            'height': getattr(stream, 'height', None),
+            'latent_width': getattr(stream, 'latent_width', None),
+            'latent_height': getattr(stream, 'latent_height', None),
+            'device': getattr(stream, 'device', None).type if hasattr(getattr(stream, 'device', None), 'type') else getattr(stream, 'device', None),
+            'dtype': str(getattr(stream, 'dtype', None)),
+            'model_type': getattr(stream, 'model_type', None),
+            'is_sdxl': getattr(stream, 'is_sdxl', None),
+            'is_turbo': getattr(stream, 'is_turbo', None),
+            'cfg_type': getattr(stream, 'cfg_type', None),
+            'use_denoising_batch': getattr(stream, 'use_denoising_batch', None),
+            'batch_size': getattr(stream, 'batch_size', None),
+        }
+
+        # Blending state
+        state.update({
+            'prompt_list': prompts,
+            'seed_list': seeds,
+            'normalize_prompt_weights': normalize_prompt_weights,
+            'normalize_seed_weights': normalize_seed_weights,
+            'negative_prompt': getattr(updater, '_current_negative_prompt', ""),
+        })
+
+        # Core runtime knobs
+        state.update({
+            'guidance_scale': guidance_scale,
+            'delta': delta,
+            't_index_list': t_index_list,
+            'current_seed': current_seed,
+            'num_inference_steps': num_inference_steps,
+        })
+
+        # Module configs (ControlNet, IP-Adapter)
+        try:
+            controlnet_config = updater._get_current_controlnet_config()
+        except Exception:
+            controlnet_config = []
+        try:
+            ipadapter_config = updater._get_current_ipadapter_config()
+        except Exception:
+            ipadapter_config = None
+        state.update({
+            'controlnet_config': controlnet_config,
+            'ipadapter_config': ipadapter_config,
+        })
+
+        # Optional caches
+        if include_caches:
+            try:
+                state['caches'] = updater.get_cache_info()
+            except Exception:
+                state['caches'] = None
+
+        return state
     
     def cleanup_gpu_memory(self) -> None:
         """Comprehensive GPU memory cleanup for model switching."""

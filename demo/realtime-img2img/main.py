@@ -184,27 +184,25 @@ class App:
                 match = re.match(r'prompt_weight_(\d+)', parameter_name)
                 if match:
                     index = int(match.group(1))
-                    # Get current prompt list and update specific weight
-                    current_prompts = self.pipeline.get_current_prompts()
+                    # Get current prompt list from unified state and update specific weight
+                    state = self.pipeline.stream.get_stream_state()
+                    current_prompts = state.get('prompt_list', [])
                     if current_prompts and index < len(current_prompts):
-                        # Create updated prompt list with new weight
-                        updated_prompts = current_prompts.copy()
-                        updated_prompts[index] = (updated_prompts[index][0], value)
-                        # Update prompt list with new weights
-                        self.pipeline.update_prompt_weights([weight for _, weight in updated_prompts])
+                        updated_prompts = list(current_prompts)
+                        updated_prompts[index] = (updated_prompts[index][0], float(value))
+                        self.pipeline.update_stream_params(prompt_list=updated_prompts)
             elif parameter_name.startswith('seed_weight_'):
                 # Handle seed blending weights  
                 match = re.match(r'seed_weight_(\d+)', parameter_name)
                 if match:
                     index = int(match.group(1))
-                    # Get current seed list and update specific weight
-                    current_seeds = self.pipeline.get_current_seeds()
+                    # Get current seed list from unified state and update specific weight
+                    state = self.pipeline.stream.get_stream_state()
+                    current_seeds = state.get('seed_list', [])
                     if current_seeds and index < len(current_seeds):
-                        # Create updated seed list with new weight
-                        updated_seeds = current_seeds.copy()
-                        updated_seeds[index] = (updated_seeds[index][0], value)
-                        # Update seed list with new weights
-                        self.pipeline.update_seed_weights([weight for _, weight in updated_seeds])
+                        updated_seeds = list(current_seeds)
+                        updated_seeds[index] = (updated_seeds[index][0], float(value))
+                        self.pipeline.update_stream_params(seed_list=updated_seeds)
             else:
                 logger.warning(f"_handle_input_parameter_update: Unknown parameter {parameter_name}")
 
@@ -539,14 +537,12 @@ class App:
             current_num_inference_steps = DEFAULT_SETTINGS.get('num_inference_steps', 50)
             current_seed = DEFAULT_SETTINGS.get('seed', 2)
             
-            if self.pipeline:
-                current_guidance_scale = getattr(self.pipeline.stream, 'guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
-                current_delta = getattr(self.pipeline.stream, 'delta', DEFAULT_SETTINGS.get('delta', 0.7))
-                current_num_inference_steps = getattr(self.pipeline.stream, 'num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
-                # Get seed from generator if available
-                if hasattr(self.pipeline.stream, 'generator') and self.pipeline.stream.generator is not None:
-                    # We can't directly get seed from generator, but we'll use the configured value
-                    current_seed = getattr(self.pipeline.stream, 'current_seed', DEFAULT_SETTINGS.get('seed', 2))
+            if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+                state = self.pipeline.stream.get_stream_state()
+                current_guidance_scale = state.get('guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
+                current_delta = state.get('delta', DEFAULT_SETTINGS.get('delta', 0.7))
+                current_num_inference_steps = state.get('num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
+                current_seed = state.get('current_seed', DEFAULT_SETTINGS.get('seed', 2))
             elif self.uploaded_controlnet_config:
                 current_guidance_scale = self.uploaded_controlnet_config.get('guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
                 current_delta = self.uploaded_controlnet_config.get('delta', DEFAULT_SETTINGS.get('delta', 0.7))
@@ -558,20 +554,14 @@ class App:
             seed_blending_config = None
             
             # First try to get from current pipeline if available
-            if self.pipeline:
-                try:
-                    current_prompts = self.pipeline.stream.get_current_prompts()
-                    if current_prompts and len(current_prompts) > 0:
-                        prompt_blending_config = current_prompts
-                except:
-                    pass
-                    
-                try:
-                    current_seeds = self.pipeline.stream.get_current_seeds()
-                    if current_seeds and len(current_seeds) > 0:
-                        seed_blending_config = current_seeds
-                except:
-                    pass
+            if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+                state = self.pipeline.stream.get_stream_state()
+                current_prompts = state.get('prompt_list', [])
+                current_seeds = state.get('seed_list', [])
+                if current_prompts:
+                    prompt_blending_config = current_prompts
+                if current_seeds:
+                    seed_blending_config = current_seeds
             
             # If not available from pipeline, get from uploaded config and normalize
             if not prompt_blending_config:
@@ -584,9 +574,10 @@ class App:
             normalize_prompt_weights = True  # default
             normalize_seed_weights = True    # default
             
-            if self.pipeline:
-                normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
+            if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+                state = self.pipeline.stream.get_stream_state()
+                normalize_prompt_weights = state.get('normalize_prompt_weights', True)
+                normalize_seed_weights = state.get('normalize_seed_weights', True)
             elif self.uploaded_controlnet_config:
                 normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
                 normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
@@ -733,51 +724,28 @@ class App:
         async def get_current_blending_config():
             """Get current prompt and seed blending configurations"""
             try:
-                # Get normalized configurations (same logic as settings endpoint)
-                prompt_blending_config = None
-                seed_blending_config = None
-                
-                # First try to get from current pipeline if available
-                if self.pipeline:
-                    try:
-                        current_prompts = self.pipeline.stream.get_current_prompts()
-                        if current_prompts and len(current_prompts) > 0:
-                            prompt_blending_config = current_prompts
-                    except Exception:
-                        pass
-                        
-                    try:
-                        current_seeds = self.pipeline.stream.get_current_seeds()
-                        if current_seeds and len(current_seeds) > 0:
-                            seed_blending_config = current_seeds
-                    except:
-                        pass
-                
-                # If not available from pipeline, get from uploaded config and normalize
-                if not prompt_blending_config:
-                    prompt_blending_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
-                
-                if not seed_blending_config:
-                    seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
-                
-                # Get normalization settings
-                normalize_prompt_weights = True
-                normalize_seed_weights = True
-                
-                if self.pipeline:
-                    normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                    normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
-                elif self.uploaded_controlnet_config:
-                    normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                    normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                
+                if self.pipeline and hasattr(self.pipeline, 'stream') and hasattr(self.pipeline.stream, 'get_stream_state'):
+                    state = self.pipeline.stream.get_stream_state(include_caches=False)
+                    return JSONResponse({
+                        "prompt_blending": state.get("prompt_list", []),
+                        "seed_blending": state.get("seed_list", []),
+                        "normalize_prompt_weights": state.get("normalize_prompt_weights", True),
+                        "normalize_seed_weights": state.get("normalize_seed_weights", True),
+                        "has_config": self.uploaded_controlnet_config is not None,
+                        "pipeline_active": True
+                    })
+
+                # Fallback to uploaded config normalization when pipeline not initialized
+                prompt_blending_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+                seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
+                normalize_weights = self.uploaded_controlnet_config.get('normalize_weights', True) if self.uploaded_controlnet_config else True
                 return JSONResponse({
                     "prompt_blending": prompt_blending_config,
                     "seed_blending": seed_blending_config,
-                    "normalize_prompt_weights": normalize_prompt_weights,
-                    "normalize_seed_weights": normalize_seed_weights,
+                    "normalize_prompt_weights": normalize_weights,
+                    "normalize_seed_weights": normalize_weights,
                     "has_config": self.uploaded_controlnet_config is not None,
-                    "pipeline_active": self.pipeline is not None
+                    "pipeline_active": False
                 })
                 
             except Exception as e:
@@ -1047,20 +1015,20 @@ class App:
                 # Read file content
                 content = await file.read()
                 
-                # Save temporarily and load as PIL Image
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-                    tmp.write(content)
-                    tmp_path = tmp.name
-                
+                tmp_path = None
                 try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                        tmp.write(content)
+                        tmp_path = tmp.name
+
                     # Load and validate image
                     from PIL import Image
                     style_image = Image.open(tmp_path).convert("RGB")
-                    
+
                     # Store the uploaded style image persistently FIRST
                     self.uploaded_style_image = style_image
                     print(f"upload_style_image: Stored style image with size: {style_image.size}")
-                    
+
                     # If pipeline exists and has IPAdapter, update it immediately
                     pipeline_updated = False
                     if self.pipeline and getattr(self.pipeline, 'has_ipadapter', False):
@@ -1069,10 +1037,11 @@ class App:
                         if success:
                             pipeline_updated = True
                             print("upload_style_image: Successfully applied to existing pipeline")
-                            
+
                             # Force prompt re-encoding to apply new style image embeddings
                             try:
-                                current_prompts = self.pipeline.stream.get_current_prompts()
+                                state = self.pipeline.stream.get_stream_state()
+                                current_prompts = state.get('prompt_list', [])
                                 if current_prompts:
                                     print("upload_style_image: Forcing prompt re-encoding to apply new style image")
                                     self.pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
@@ -1085,7 +1054,7 @@ class App:
                         print(f"upload_style_image: Pipeline exists but has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
                     else:
                         print("upload_style_image: No pipeline exists yet")
-                    
+
                     # Return success
                     message = "Style image uploaded successfully"
                     if pipeline_updated:
@@ -1097,13 +1066,12 @@ class App:
                         "status": "success",
                         "message": message
                     })
-                    
                 finally:
-                    # Clean up temp file
-                    try:
-                        os.unlink(tmp_path)
-                    except:
-                        pass
+                    if tmp_path:
+                        try:
+                            os.unlink(tmp_path)
+                        except:
+                            pass
                 
             except HTTPException:
                 raise
@@ -1661,16 +1629,9 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Get current prompt blending configuration using the same logic as the blending/current endpoint
-                current_prompts = None
-                try:
-                    current_prompts = self.pipeline.stream.get_current_prompts()
-                except Exception:
-                    pass
-                
-                # If not available from pipeline, get from uploaded config and normalize
-                if not current_prompts:
-                    current_prompts = self._normalize_prompt_config(self.uploaded_controlnet_config)
+                # Get current prompt blending configuration via unified getter, fallback to uploaded config
+                state = self.pipeline.stream.get_stream_state()
+                current_prompts = state.get('prompt_list') or self._normalize_prompt_config(self.uploaded_controlnet_config)
                     
                 if current_prompts and index < len(current_prompts):
                     # Create updated prompt list with new weight
@@ -1714,16 +1675,9 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Get current seed blending configuration using the same logic as the blending/current endpoint
-                current_seeds = None
-                try:
-                    current_seeds = self.pipeline.stream.get_current_seeds()
-                except Exception:
-                    pass
-                
-                # If not available from pipeline, get from uploaded config and normalize
-                if not current_seeds:
-                    current_seeds = self._normalize_seed_config(self.uploaded_controlnet_config)
+                # Get current seed blending configuration via unified getter, fallback to uploaded config
+                state = self.pipeline.stream.get_stream_state()
+                current_seeds = state.get('seed_list') or self._normalize_seed_config(self.uploaded_controlnet_config)
                     
                 if current_seeds and index < len(current_seeds):
                     # Create updated seed list with new weight
@@ -2122,7 +2076,8 @@ class App:
                     
                     # Force prompt re-encoding to apply style image embeddings
                     try:
-                        current_prompts = new_pipeline.stream.get_current_prompts()
+                        state = new_pipeline.stream.get_stream_state()
+                        current_prompts = state.get('prompt_list', [])
                         if current_prompts:
                             print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
                             new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
@@ -2390,7 +2345,8 @@ class App:
                         
                         # Force prompt re-encoding to apply style image embeddings
                         try:
-                            current_prompts = new_pipeline.stream.get_current_prompts()
+                            state = new_pipeline.stream.get_stream_state()
+                            current_prompts = state.get('prompt_list', [])
                             if current_prompts:
                                 print("_update_resolution: Forcing prompt re-encoding to apply style image")
                                 new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
