@@ -252,6 +252,17 @@ class ControlNetModule:
                 active_images = [self.controlnet_images[i] for i in active_indices]
                 active_scales = [self.controlnet_scales[i] for i in active_indices]
 
+            # Prefer TRT engines when available by model_id
+            engines_by_id: Dict[str, Any] = {}
+            try:
+                if hasattr(self._stream, 'controlnet_engines') and isinstance(self._stream.controlnet_engines, list):
+                    for eng in self._stream.controlnet_engines:
+                        mid = getattr(eng, 'model_id', None)
+                        if mid:
+                            engines_by_id[mid] = eng
+            except Exception:
+                pass
+
             # Use original text token window only for ControlNet encoding
             # Detect expected text length from UNet config if available; fallback to 77
             expected_text_len = 77
@@ -275,9 +286,30 @@ class ControlNetModule:
             mid_samples_list: List[torch.Tensor] = []
 
             for cn, img, scale in zip(active_controlnets, active_images, active_scales):
+                # Swap to TRT engine if compiled and available for this model_id
+                try:
+                    model_id = getattr(cn, 'model_id', None)
+                    if model_id and model_id in engines_by_id:
+                        cn = engines_by_id[model_id]
+                        # Swapped to TRT engine
+                except Exception:
+                    pass
                 current_img = img
                 if current_img is None:
                     continue
+                # Ensure control image batch matches latent batch for TRT engines
+                try:
+                    main_batch = x_t.shape[0]
+                    if current_img.dim() == 4 and current_img.shape[0] != main_batch:
+                        if current_img.shape[0] == 1:
+                            current_img = current_img.repeat(main_batch, 1, 1, 1)
+                        else:
+                            repeat_factor = max(1, main_batch // current_img.shape[0])
+                            current_img = current_img.repeat(repeat_factor, 1, 1, 1)
+                    # Align device/dtype with latent for engine inputs
+                    current_img = current_img.to(device=x_t.device, dtype=x_t.dtype)
+                except Exception:
+                    pass
                 kwargs = base_kwargs.copy()
                 kwargs['controlnet_cond'] = current_img
                 kwargs['conditioning_scale'] = float(scale)
@@ -287,21 +319,27 @@ class ControlNetModule:
                         kwargs['added_cond_kwargs'] = ctx.sdxl_cond
                 except Exception:
                     pass
-                # For SDXL, log whether added_cond kwargs are available on stream (not passed here yet)
+                # For SDXL, preparing CN forward
+                # Route to TensorRT engine if this ControlNet is an engine wrapper
                 try:
-                    is_sdxl = getattr(self._stream, 'is_sdxl', False)
-                    has_add = hasattr(self._stream, 'add_text_embeds') and hasattr(self._stream, 'add_time_ids')
-                    logger.debug("ControlNetModule._unet_hook: preparing CN forward (is_sdxl=%s, has_additional_cond=%s, keys=%s)",
-                                 is_sdxl, has_add, list(kwargs.keys()))
-                except Exception:
-                    pass
-                try:
-                    down_samples, mid_sample = cn(**kwargs)
+                    if hasattr(cn, 'engine') and hasattr(cn, 'stream'):
+                        # Using TRT ControlNet engine
+                        # Engine expects positional args and scalar conditioning_scale
+                        down_samples, mid_sample = cn(
+                            sample=kwargs['sample'],
+                            timestep=kwargs['timestep'],
+                            encoder_hidden_states=kwargs['encoder_hidden_states'],
+                            controlnet_cond=kwargs['controlnet_cond'],
+                            conditioning_scale=float(scale),
+                            **({} if 'added_cond_kwargs' not in kwargs else kwargs['added_cond_kwargs'])
+                        )
+                    else:
+                        down_samples, mid_sample = cn(**kwargs)
                 except Exception as e:
                     import traceback
-                    logger.error("ControlNetModule: controlnet forward failed: %s", e)
+                    __import__('logging').getLogger(__name__).error("ControlNetModule: controlnet forward failed: %s", e)
                     try:
-                        logger.error("ControlNetModule: kwargs_summary: keys=%s, cond_shape=%s, img_shape=%s, scale=%s, is_sdxl=%s",
+                        __import__('logging').getLogger(__name__).error("ControlNetModule: kwargs_summary: keys=%s, cond_shape=%s, img_shape=%s, scale=%s, is_sdxl=%s",
                                      list(kwargs.keys()),
                                      (tuple(kwargs.get('encoder_hidden_states').shape) if isinstance(kwargs.get('encoder_hidden_states'), torch.Tensor) else None),
                                      (tuple(current_img.shape) if isinstance(current_img, torch.Tensor) else None),
@@ -309,7 +347,7 @@ class ControlNetModule:
                                      getattr(self._stream, 'is_sdxl', False))
                     except Exception:
                         pass
-                    logger.error(traceback.format_exc())
+                    __import__('logging').getLogger(__name__).error(traceback.format_exc())
                     continue
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)

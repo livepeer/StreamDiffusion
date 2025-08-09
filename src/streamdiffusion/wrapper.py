@@ -1509,6 +1509,47 @@ class StreamDiffusionWrapper:
                     cn_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
                 # Expose for later updates if needed by caller code
                 stream._controlnet_module = cn_module
+
+                # If TensorRT UNet is active, proactively compile/load ControlNet TRT engines for each model
+                #TODO: make unet cnet trt acceleration independent and configurable
+                try:
+                    use_trt_unet = hasattr(stream, 'unet') and hasattr(stream.unet, 'engine')
+                except Exception:
+                    use_trt_unet = False
+                if use_trt_unet:
+                    try:
+                        compiled_cn_engines = []
+                        for cfg, cn_model in zip(configs, cn_module.controlnets):
+                            if not cfg or not cfg.get('model_id') or cn_model is None:
+                                continue
+                            try:
+                                engine = engine_manager.get_or_load_controlnet_engine(
+                                    model_id=cfg['model_id'],
+                                    pytorch_model=cn_model,
+                                    model_type=model_type,
+                                    batch_size=stream.trt_unet_batch_size,
+                                    cuda_stream=cuda_stream,
+                                    use_cuda_graph=False,
+                                    unet=None,
+                                    model_path=cfg['model_id']
+                                )
+                                try:
+                                    setattr(engine, 'model_id', cfg['model_id'])
+                                except Exception:
+                                    pass
+                                compiled_cn_engines.append(engine)
+                            except Exception as e:
+                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}")
+                        if compiled_cn_engines:
+                            setattr(stream, 'controlnet_engines', compiled_cn_engines)
+                            try:
+                                logger.info(f"Compiled/loaded {len(compiled_cn_engines)} ControlNet TensorRT engine(s)")
+                            except Exception:
+                                pass
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        logger.warning("ControlNet TensorRT engine build step encountered an issue; continuing with PyTorch ControlNet")
             except Exception:
                 import traceback
                 traceback.print_exc()
