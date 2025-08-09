@@ -90,15 +90,15 @@ class PreprocessingOrchestrator:
         Returns:
             List of processed tensors for each ControlNet
         """
-        # Wait for previous frame preprocessing
+        # Wait for previous frame preprocessing; non-blocking with short timeout
         self._wait_for_previous_preprocessing()
         
-        # Start next frame preprocessing in background
+        # Start next frame preprocessing in background using intraframe parallelism
         self._start_next_frame_preprocessing(
             control_image, preprocessors, scales, stream_width, stream_height
         )
         
-        # Apply current frame preprocessing results
+        # Apply current frame preprocessing results if available; otherwise signal no update
         return self._apply_current_frame_preprocessing(preprocessors, scales)
     
     def prepare_control_image(self,
@@ -743,10 +743,10 @@ class PreprocessingOrchestrator:
         """Wait for previous frame preprocessing with optimized timeout"""
         if hasattr(self, '_next_frame_future') and self._next_frame_future is not None:
             try:
-                # Reduced timeout: 50ms for real-time performance
-                self._next_frame_result = self._next_frame_future.result(timeout=0.05)
+                # Reduced timeout: 10ms for lower latency in real-time
+                self._next_frame_result = self._next_frame_future.result(timeout=0.01)
             except concurrent.futures.TimeoutError:
-                logger.warning("PreprocessingOrchestrator: Preprocessing timeout - using previous results")
+                # Non-blocking: skip applying results this frame
                 self._next_frame_result = None
             except Exception as e:
                 logger.error(f"PreprocessingOrchestrator: Preprocessing error: {e}")

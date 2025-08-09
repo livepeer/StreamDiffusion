@@ -110,18 +110,74 @@ class ControlNetModule:
         with self._collections_lock:
             if not self.controlnets:
                 return
-            if index is not None:
-                indices = [index]
-            else:
-                indices = list(range(len(self.controlnets)))
+            total = len(self.controlnets)
+            # Build active scales, respecting enabled_list if present
+            scales = [
+                (self.controlnet_scales[i] if i < len(self.controlnet_scales) else 1.0)
+                for i in range(total)
+            ]
+            if hasattr(self, 'enabled_list') and self.enabled_list and len(self.enabled_list) == total:
+                scales = [sc if bool(self.enabled_list[i]) else 0.0 for i, sc in enumerate(scales)]
+            preprocessors = [self.preprocessors[i] if i < len(self.preprocessors) else None for i in range(total)]
 
-        # Process per-index to preserve individual preprocessors / scales
-        for i in indices:
-            preproc = self.preprocessors[i] if i < len(self.preprocessors) else None
-            processed = self._prepare_control_image(control_image, preproc)
+        # Single-index fast path
+        if index is not None:
+            results = self._preprocessing_orchestrator.process_control_images_sync(
+                control_image=control_image,
+                preprocessors=preprocessors,
+                scales=scales,
+                stream_width=self._stream.width,
+                stream_height=self._stream.height,
+                index=index,
+            )
+            processed = results[index] if results and len(results) > index else None
             with self._collections_lock:
-                if i < len(self.controlnet_images):
-                    self.controlnet_images[i] = processed
+                if processed is not None and index < len(self.controlnet_images):
+                    self.controlnet_images[index] = processed
+            return
+
+        # Decide whether to enable inter-frame pipelining (disabled if Feedback preprocessor is active)
+        allow_pipelining = True
+        try:
+            from streamdiffusion.preprocessing.processors.feedback import FeedbackPreprocessor  # type: ignore
+            for prep in preprocessors:
+                if isinstance(prep, FeedbackPreprocessor):
+                    allow_pipelining = False
+                    break
+        except Exception:
+            # Fallback on class name check without importing
+            for prep in preprocessors:
+                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
+                    allow_pipelining = False
+                    break
+
+        # Run processing with intraframe parallelism always; use interframe pipelining when allowed
+        if allow_pipelining:
+            processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
+                control_image=control_image,
+                preprocessors=preprocessors,
+                scales=scales,
+                stream_width=self._stream.width,
+                stream_height=self._stream.height,
+            )
+        else:
+            processed_images = self._preprocessing_orchestrator.process_control_images_sync(
+                control_image=control_image,
+                preprocessors=preprocessors,
+                scales=scales,
+                stream_width=self._stream.width,
+                stream_height=self._stream.height,
+            )
+
+        # If orchestrator returns empty list, it indicates no update needed for this frame
+        if processed_images is None or (isinstance(processed_images, list) and len(processed_images) == 0):
+            return
+
+        # Assign results
+        with self._collections_lock:
+            for i, img in enumerate(processed_images):
+                if img is not None and i < len(self.controlnet_images):
+                    self.controlnet_images[i] = img
 
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         with self._collections_lock:
