@@ -136,15 +136,15 @@ class App:
 
             # Map parameter names to pipeline update methods
             if parameter_name == 'guidance_scale':
-                self.pipeline.stream.update_stream_params(guidance_scale=value)
+                self.pipeline.update_stream_params(guidance_scale=value)
             elif parameter_name == 'delta':
-                self.pipeline.stream.update_stream_params(delta=value)
+                self.pipeline.update_stream_params(delta=value)
             elif parameter_name == 'num_inference_steps':
-                self.pipeline.stream.update_stream_params(num_inference_steps=int(value))
+                self.pipeline.update_stream_params(num_inference_steps=int(value))
             elif parameter_name == 'seed':
-                self.pipeline.stream.update_stream_params(seed=int(value))
+                self.pipeline.update_stream_params(seed=int(value))
             elif parameter_name == 'ipadapter_scale':
-                self.pipeline.stream.update_stream_params(ipadapter_config={'scale': value})
+                self.pipeline.update_stream_params(ipadapter_config={'scale': value})
             elif parameter_name == 'ipadapter_weight_type':
                 # For weight type, we need to convert the numeric value to a string
                 weight_types = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
@@ -1323,7 +1323,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(guidance_scale=guidance_scale)
+                self.pipeline.update_stream_params(guidance_scale=guidance_scale)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1345,7 +1345,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(delta=delta)
+                self.pipeline.update_stream_params(delta=delta)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1367,7 +1367,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(num_inference_steps=num_inference_steps)
+                self.pipeline.update_stream_params(num_inference_steps=num_inference_steps)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1389,7 +1389,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(seed=seed)
+                self.pipeline.update_stream_params(seed=seed)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1554,24 +1554,37 @@ class App:
                 # Create new preprocessor instance
                 from src.streamdiffusion.preprocessing.processors import get_preprocessor
                 new_preprocessor_instance = get_preprocessor(new_preprocessor)
-                
+
+                # Resolve stream object and preprocessor list regardless of module or stream facade
+                stream_obj = getattr(cn_pipeline, '_stream', None)
+                if stream_obj is None:
+                    stream_obj = getattr(self.pipeline, 'stream', None)
+                if stream_obj is None:
+                    raise HTTPException(status_code=500, detail="Pipeline stream not available")
+
+                preproc_list = getattr(cn_pipeline, 'preprocessors', None)
+                if preproc_list is None:
+                    preproc_list = getattr(stream_obj, 'preprocessors', None)
+                if preproc_list is None:
+                    raise HTTPException(status_code=500, detail="ControlNet preprocessors not available")
+
                 # Set system parameters
                 system_params = {
-                    'device': cn_pipeline.device,
-                    'dtype': cn_pipeline.dtype,
-                    'image_width': cn_pipeline.stream.width,
-                    'image_height': cn_pipeline.stream.height,
+                    'device': stream_obj.device,
+                    'dtype': stream_obj.dtype,
+                    'image_width': stream_obj.width,
+                    'image_height': stream_obj.height,
                 }
                 system_params.update(preprocessor_params)
                 new_preprocessor_instance.params.update(system_params)
-                
+
                 # Set pipeline reference for feedback preprocessor
                 if hasattr(new_preprocessor_instance, 'set_pipeline_ref'):
-                    new_preprocessor_instance.set_pipeline_ref(cn_pipeline.stream)
-                
+                    new_preprocessor_instance.set_pipeline_ref(stream_obj)
+
                 # Replace the preprocessor
-                old_preprocessor = cn_pipeline.preprocessors[controlnet_index]
-                cn_pipeline.preprocessors[controlnet_index] = new_preprocessor_instance
+                old_preprocessor = preproc_list[controlnet_index]
+                preproc_list[controlnet_index] = new_preprocessor_instance
                 
                 logger.info(f"switch_preprocessor: Successfully switched ControlNet {controlnet_index} from {type(old_preprocessor).__name__ if old_preprocessor else 'None'} to {type(new_preprocessor_instance).__name__}")
                 
@@ -1603,22 +1616,25 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Update preprocessor parameters using consolidated API
-                current_config = self._get_current_controlnet_config()
-                
-                if not current_config:
-                    raise HTTPException(status_code=400, detail="No ControlNet configuration available")
-                
-                if controlnet_index >= len(current_config):
-                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range (max: {len(current_config)-1})")
-                
-                # Update preprocessor_params for the specified controlnet
-                if 'preprocessor_params' not in current_config[controlnet_index]:
-                    current_config[controlnet_index]['preprocessor_params'] = {}
-                current_config[controlnet_index]['preprocessor_params'].update(preprocessor_params)
-                
-                # Apply the updated configuration
-                self.pipeline.update_stream_params(controlnet_config=current_config)
+                # Fast path: update module preprocessor directly when available
+                cn_pipeline = self._get_controlnet_pipeline()
+                preproc_list = getattr(cn_pipeline, 'preprocessors', None)
+                if preproc_list is None:
+                    raise HTTPException(status_code=400, detail="ControlNet preprocessors not available")
+
+                if controlnet_index >= len(preproc_list):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range (max: {len(preproc_list)-1})")
+
+                target_preproc = preproc_list[controlnet_index]
+                if target_preproc is None:
+                    raise HTTPException(status_code=400, detail="ControlNet preprocessor is not set")
+
+                # Merge params: update both the params map and setattr when attribute exists
+                if hasattr(target_preproc, 'params') and isinstance(target_preproc.params, dict):
+                    target_preproc.params.update(preprocessor_params)
+                for name, value in preprocessor_params.items():
+                    if hasattr(target_preproc, name):
+                        setattr(target_preproc, name, value)
                 
                 return JSONResponse({
                     "status": "success",

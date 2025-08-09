@@ -107,6 +107,13 @@ class ControlNetModule:
                     except Exception:
                         pass
 
+            # Provide pipeline reference for preprocessors that need it (e.g., FeedbackPreprocessor)
+            try:
+                if hasattr(preproc, 'set_pipeline_ref'):
+                    preproc.set_pipeline_ref(self._stream)
+            except Exception:
+                pass
+
         image_tensor: Optional[torch.Tensor] = None
         if control_image is not None and self._preprocessing_orchestrator is not None:
             image_tensor = self._prepare_control_image(control_image, preproc)
