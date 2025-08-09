@@ -216,8 +216,16 @@ class Pipeline:
         if self.pipeline_mode == "txt2img":
             # Text-to-image mode
             if self.has_controlnet:
-                # txt2img with ControlNets: need image for control
-                self.stream.update_control_image_efficient(params.image)
+                # txt2img with ControlNets: push control image via consolidated API
+                try:
+                    current_cfg = self.stream.stream._param_updater._get_current_controlnet_config() if hasattr(self.stream, 'stream') else []
+                except Exception:
+                    current_cfg = []
+                if current_cfg:
+                    # update just the control image for all configured CNs
+                    for i in range(len(current_cfg)):
+                        current_cfg[i]['control_image'] = params.image
+                    self.stream.update_stream_params(controlnet_config=current_cfg)
                 output_image = self.stream(params.image)
             elif self.has_ipadapter:
                 # txt2img with IPAdapter: no input image needed (style image handled separately)
@@ -228,8 +236,15 @@ class Pipeline:
         else:
             # Image-to-image mode: use original logic
             if self.has_controlnet:
-                # ControlNet mode: update control image and use PIL image
-                self.stream.update_control_image_efficient(params.image)
+                # ControlNet mode: push control image via consolidated API and use PIL image
+                try:
+                    current_cfg = self.stream.stream._param_updater._get_current_controlnet_config() if hasattr(self.stream, 'stream') else []
+                except Exception:
+                    current_cfg = []
+                if current_cfg:
+                    for i in range(len(current_cfg)):
+                        current_cfg[i]['control_image'] = params.image
+                    self.stream.update_stream_params(controlnet_config=current_cfg)
                 output_image = self.stream(params.image)
             elif self.has_ipadapter:
                 # IPAdapter mode: use PIL image for img2img

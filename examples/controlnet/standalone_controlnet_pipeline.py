@@ -70,21 +70,40 @@ class MultiControlNetStreamDiffusionPipeline:
             for i in range(self.warmup_steps):
                 if i % 3 == 0:  # Print progress every 3 steps
                     print(f"  Warmup step {i+1}/{self.warmup_steps}")
-                self.wrapper.update_control_image_efficient(image)
+                try:
+                    cfg = self.wrapper.stream._param_updater._get_current_controlnet_config() if hasattr(self.wrapper, 'stream') else []
+                except Exception:
+                    cfg = []
+                if cfg:
+                    for i in range(len(cfg)):
+                        cfg[i]['control_image'] = image
+                    self.wrapper.update_stream_params(controlnet_config=cfg)
                 _ = self.wrapper(image)
             self._warmed_up = True
             print("Warmup completed!")
         
         # Update control image for all ControlNets
-        self.wrapper.update_control_image_efficient(image)
+        try:
+            cfg = self.wrapper.stream._param_updater._get_current_controlnet_config() if hasattr(self.wrapper, 'stream') else []
+        except Exception:
+            cfg = []
+        if cfg:
+            for i in range(len(cfg)):
+                cfg[i]['control_image'] = image
+            self.wrapper.update_stream_params(controlnet_config=cfg)
         
         # Generate output with multi-ControlNet conditioning
         return self.wrapper(image)
     
     def update_controlnet_strength(self, index: int, strength: float):
         """Dynamically update ControlNet strength. This will be required for Product."""
-        if hasattr(self.wrapper, 'update_controlnet_scale'):
-            self.wrapper.update_controlnet_scale(index, strength)
+        try:
+            cfg = self.wrapper.stream._param_updater._get_current_controlnet_config() if hasattr(self.wrapper, 'stream') else []
+        except Exception:
+            cfg = []
+        if cfg and 0 <= index < len(cfg):
+            cfg[index]['conditioning_scale'] = float(strength)
+            self.wrapper.update_stream_params(controlnet_config=cfg)
             print(f"update_controlnet_strength: Updated ControlNet {index+1} strength to {strength}")
         else:
             print("update_controlnet_strength: Not supported for this pipeline")
