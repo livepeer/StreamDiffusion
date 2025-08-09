@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Tuple, Literal, Any, Callable
+import threading
 import torch
 import torch.nn.functional as F
 import gc
@@ -25,6 +26,8 @@ class StreamParameterUpdater:
         self.wrapper = wrapper  # Reference to wrapper for accessing pipeline structure
         self.normalize_prompt_weights = normalize_prompt_weights
         self.normalize_seed_weights = normalize_seed_weights
+        # Atomic update lock for deterministic, thread-safe runtime updates
+        self._update_lock = threading.RLock()
         # Prompt blending caches
         self._prompt_cache: Dict[int, Dict] = {}
         self._current_prompt_list: List[Tuple[str, float]] = []
@@ -282,60 +285,61 @@ class StreamParameterUpdater:
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
-        if num_inference_steps is not None:
-            self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
-            self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
+        with self._update_lock:
+            if num_inference_steps is not None:
+                self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
+                self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
 
-        if num_inference_steps is not None and t_index_list is None:
-            max_step = num_inference_steps - 1
-            t_index_list = [min(t, max_step) for t in self.stream.t_list]
+            if num_inference_steps is not None and t_index_list is None:
+                max_step = num_inference_steps - 1
+                t_index_list = [min(t, max_step) for t in self.stream.t_list]
 
-        if guidance_scale is not None:
-            if self.stream.cfg_type == "none" and guidance_scale > 1.0:
-                logger.warning("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
-            self.stream.guidance_scale = guidance_scale
+            if guidance_scale is not None:
+                if self.stream.cfg_type == "none" and guidance_scale > 1.0:
+                    logger.warning("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
+                self.stream.guidance_scale = guidance_scale
 
-        if delta is not None:
-            self.stream.delta = delta
+            if delta is not None:
+                self.stream.delta = delta
 
-        if seed is not None:
-            self._update_seed(seed)
-        
-        if normalize_prompt_weights is not None:
-            self.normalize_prompt_weights = normalize_prompt_weights
-            logger.info(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
+            if seed is not None:
+                self._update_seed(seed)
+            
+            if normalize_prompt_weights is not None:
+                self.normalize_prompt_weights = normalize_prompt_weights
+                logger.info(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
 
-        if normalize_seed_weights is not None:
-            self.normalize_seed_weights = normalize_seed_weights
-            logger.info(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
+            if normalize_seed_weights is not None:
+                self.normalize_seed_weights = normalize_seed_weights
+                logger.info(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
 
-        # Handle prompt blending if prompt_list is provided
-        if prompt_list is not None:
-            self._update_blended_prompts(
-                prompt_list=prompt_list,
-                negative_prompt=negative_prompt or self._current_negative_prompt,
-                prompt_interpolation_method=prompt_interpolation_method
-            )
+            # Handle prompt blending if prompt_list is provided
+            if prompt_list is not None:
+                self._update_blended_prompts(
+                    prompt_list=prompt_list,
+                    negative_prompt=negative_prompt or self._current_negative_prompt,
+                    prompt_interpolation_method=prompt_interpolation_method
+                )
 
-        # Handle seed blending if seed_list is provided
-        if seed_list is not None:
-            self._update_blended_seeds(
-                seed_list=seed_list,
-                interpolation_method=seed_interpolation_method
-            )
+            # Handle seed blending if seed_list is provided
+            if seed_list is not None:
+                self._update_blended_seeds(
+                    seed_list=seed_list,
+                    interpolation_method=seed_interpolation_method
+                )
 
-        if t_index_list is not None:
-            self._recalculate_timestep_dependent_params(t_index_list)
+            if t_index_list is not None:
+                self._recalculate_timestep_dependent_params(t_index_list)
 
-        # Handle ControlNet configuration updates
-        if controlnet_config is not None:
-            logger.info(f"update_stream_params: Updating ControlNet configuration with {len(controlnet_config)} controlnets")
-            self._update_controlnet_config(controlnet_config)
-        
-        # Handle IPAdapter configuration updates
-        if ipadapter_config is not None:
-            logger.info(f"update_stream_params: Updating IPAdapter configuration")
-            self._update_ipadapter_config(ipadapter_config)
+            # Handle ControlNet configuration updates
+            if controlnet_config is not None:
+                logger.info(f"update_stream_params: Updating ControlNet configuration with {len(controlnet_config)} controlnets")
+                self._update_controlnet_config(controlnet_config)
+            
+            # Handle IPAdapter configuration updates
+            if ipadapter_config is not None:
+                logger.info(f"update_stream_params: Updating IPAdapter configuration")
+                self._update_ipadapter_config(ipadapter_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -1022,6 +1026,17 @@ class StreamParameterUpdater:
         current_models = {i: getattr(cn, 'model_id', f'controlnet_{i}') for i, cn in enumerate(controlnet_pipeline.controlnets)}
         desired_models = {cfg['model_id']: cfg for cfg in desired_config}
         
+        # Reorder to match desired order (module supports stable reordering)
+        try:
+            desired_order = [cfg['model_id'] for cfg in desired_config if 'model_id' in cfg]
+            if hasattr(controlnet_pipeline, 'reorder_controlnets_by_model_ids'):
+                controlnet_pipeline.reorder_controlnets_by_model_ids(desired_order)
+        except Exception:
+            pass
+
+        # Recompute current models after potential reorder
+        current_models = {i: getattr(cn, 'model_id', f'controlnet_{i}') for i, cn in enumerate(controlnet_pipeline.controlnets)}
+
         # Remove controlnets not in desired config
         for i in reversed(range(len(controlnet_pipeline.controlnets))):
             model_id = current_models.get(i, f'controlnet_{i}')
@@ -1030,7 +1045,7 @@ class StreamParameterUpdater:
                 try:
                     controlnet_pipeline.remove_controlnet(i)
                 except Exception:
-                    pass
+                    raise
         
         # Add new controlnets and update existing ones
         for desired_cfg in desired_config:
@@ -1053,8 +1068,8 @@ class StreamParameterUpdater:
                         )
                         controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
                     except Exception:
-                        # Fallback to legacy shim signature (dict)
-                        controlnet_pipeline.add_controlnet(desired_cfg, desired_cfg.get('control_image'))
+                        # No fallback
+                        raise
                 except Exception as e:
                     logger.error(f"_update_controlnet_config: add_controlnet failed for {model_id}: {e}")
             else:
@@ -1067,12 +1082,26 @@ class StreamParameterUpdater:
                         logger.info(f"_update_controlnet_config: Updating {model_id} scale: {current_scale} → {desired_scale}")
                         controlnet_pipeline.update_controlnet_scale(existing_index, desired_scale)
                 
+                # Enable/disable toggle
+                if 'enabled' in desired_cfg and hasattr(controlnet_pipeline, 'update_controlnet_enabled'):
+                    try:
+                        controlnet_pipeline.update_controlnet_enabled(existing_index, bool(desired_cfg['enabled']))
+                    except Exception:
+                        raise
+
                 if 'preprocessor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
                     preprocessor = controlnet_pipeline.preprocessors[existing_index]
                     preprocessor.params.update(desired_cfg['preprocessor_params'])
                     for param_name, param_value in desired_cfg['preprocessor_params'].items():
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
+
+                # Efficient control image update when provided
+                if 'control_image' in desired_cfg and desired_cfg['control_image'] is not None:
+                    try:
+                        controlnet_pipeline.update_control_image_efficient(desired_cfg['control_image'], index=existing_index)
+                    except Exception:
+                        raise
 
     def _get_controlnet_pipeline(self):
         """
@@ -1110,11 +1139,17 @@ class StreamParameterUpdater:
         for i, controlnet in enumerate(controlnet_pipeline.controlnets):
             model_id = getattr(controlnet, 'model_id', f'controlnet_{i}')
             scale = controlnet_pipeline.controlnet_scales[i] if hasattr(controlnet_pipeline, 'controlnet_scales') and i < len(controlnet_pipeline.controlnet_scales) else 1.0
-            
+            enabled_val = True
+            try:
+                if hasattr(controlnet_pipeline, 'enabled_list') and i < len(controlnet_pipeline.enabled_list):
+                    enabled_val = bool(controlnet_pipeline.enabled_list[i])
+            except Exception:
+                enabled_val = True
             config = {
                 'model_id': model_id,
                 'conditioning_scale': scale,
-                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {}
+                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
+                'enabled': enabled_val,
             }
             current_config.append(config)
         
