@@ -67,7 +67,9 @@ class BaseIPAdapterPipeline:
                      ipadapter_model_path: str,
                      image_encoder_path: str,
                      style_image: Optional[Union[str, Image.Image]] = None,
-                     scale: float = 1.0) -> None:
+                     scale: float = 1.0,
+                     insightface_model_name: Optional[str] = None,
+                     is_faceid: bool = False) -> None:
         """
         Set the IPAdapter for the pipeline (replaces any existing IPAdapter)
         
@@ -76,6 +78,8 @@ class BaseIPAdapterPipeline:
             image_encoder_path: Full path to CLIP image encoder (local path or HuggingFace repo/file path)
             style_image: Style image for conditioning (optional)
             scale: Conditioning scale
+            insightface_model_name: InsightFace model name for FaceID models (e.g., 'buffalo_l')
+            is_faceid: Whether this is a FaceID model
         """
         # Clear any existing IPAdapter first
         self.clear_ipadapter()
@@ -84,22 +88,39 @@ class BaseIPAdapterPipeline:
         resolved_ipadapter_path = self._resolve_model_path(ipadapter_model_path)
         resolved_encoder_path = self._resolve_model_path(image_encoder_path)
         
-        # Create IPAdapter instance using existing code
-        self.ipadapter = IPAdapter(
-            pipe=self.stream.pipe,
-            ipadapter_ckpt_path=resolved_ipadapter_path,
-            image_encoder_path=resolved_encoder_path,
-            device=self.device,
-            dtype=self.dtype
-        )
+        # Create IPAdapter instance with FaceID support
+        ipadapter_kwargs = {
+            'pipe': self.stream.pipe,
+            'ipadapter_ckpt_path': resolved_ipadapter_path,
+            'image_encoder_path': resolved_encoder_path,
+            'device': self.device,
+            'dtype': self.dtype
+        }
+        
+        # Add FaceID-specific parameters if needed
+        if is_faceid and insightface_model_name:
+            ipadapter_kwargs['insightface_model_name'] = insightface_model_name
+            print(f"set_ipadapter: Initializing FaceID IPAdapter with InsightFace model: {insightface_model_name}")
+        
+        self.ipadapter = IPAdapter(**ipadapter_kwargs)
         
         # Create embedding preprocessor for parallel processing (if not already registered)
         if not self._has_registered_preprocessor():
-            embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
-                ipadapter=self.ipadapter,
-                device=self.device,
-                dtype=self.dtype
-            )
+            # Use FaceID preprocessor if this is a FaceID model
+            if is_faceid and hasattr(self.ipadapter, 'is_faceid') and self.ipadapter.is_faceid:
+                from ..preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
+                embedding_preprocessor = FaceIDEmbeddingPreprocessor(
+                    ipadapter=self.ipadapter,
+                    device=self.device,
+                    dtype=self.dtype
+                )
+                print(f"set_ipadapter: Using FaceIDEmbeddingPreprocessor for FaceID model")
+            else:
+                embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
+                    ipadapter=self.ipadapter,
+                    device=self.device,
+                    dtype=self.dtype
+                )
             
             # Register with StreamParameterUpdater for integrated processing
             self.stream._param_updater.register_embedding_preprocessor(
@@ -276,25 +297,43 @@ class BaseIPAdapterPipeline:
             
 
             
-            # Create IPAdapter instance - this will install processors with weights
-            self.ipadapter = IPAdapter(
-                pipe=self.stream.pipe,
-                ipadapter_ckpt_path=resolved_ipadapter_path,
-                image_encoder_path=resolved_encoder_path,
-                device=self.device,
-                dtype=self.dtype,
-            )
+            # Create IPAdapter instance with FaceID support - this will install processors with weights
+            ipadapter_kwargs = {
+                'pipe': self.stream.pipe,
+                'ipadapter_ckpt_path': resolved_ipadapter_path,
+                'image_encoder_path': resolved_encoder_path,
+                'device': self.device,
+                'dtype': self.dtype
+            }
+            
+            # Add FaceID-specific parameters if specified in config
+            if config and config.get('type') == 'faceid':
+                insightface_model_name = config.get('insightface_model_name', 'buffalo_l')
+                ipadapter_kwargs['insightface_model_name'] = insightface_model_name
+                print(f"preload_models_for_tensorrt: Loading FaceID model with InsightFace: {insightface_model_name}")
+            
+            self.ipadapter = IPAdapter(**ipadapter_kwargs)
             
             # Set the correct scale from config BEFORE TensorRT compilation
             self.ipadapter.set_scale(scale)
             
             # Create and register embedding preprocessor for parallel processing (if not already registered)
             if not self._has_registered_preprocessor():
-                embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
-                    ipadapter=self.ipadapter,
-                    device=self.device,
-                    dtype=self.dtype
-                )
+                # Use FaceID preprocessor if this is a FaceID model
+                if config and config.get('type') == 'faceid' and hasattr(self.ipadapter, 'is_faceid') and self.ipadapter.is_faceid:
+                    from ..preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
+                    embedding_preprocessor = FaceIDEmbeddingPreprocessor(
+                        ipadapter=self.ipadapter,
+                        device=self.device,
+                        dtype=self.dtype
+                    )
+                    print(f"preload_models_for_tensorrt: Using FaceIDEmbeddingPreprocessor for FaceID model")
+                else:
+                    embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
+                        ipadapter=self.ipadapter,
+                        device=self.device,
+                        dtype=self.dtype
+                    )
                 
                 # Register with StreamParameterUpdater for integrated processing
                 self.stream._param_updater.register_embedding_preprocessor(

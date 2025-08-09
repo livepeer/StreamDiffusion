@@ -78,7 +78,8 @@ class EngineManager:
                        use_tiny_vae: bool,
                        ipadapter_scale: Optional[float] = None,
                        ipadapter_tokens: Optional[int] = None,
-                       controlnet_model_id: Optional[str] = None) -> Path:
+                       controlnet_model_id: Optional[str] = None,
+                       is_faceid: Optional[bool] = None) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
         
@@ -108,7 +109,9 @@ class EngineManager:
             prefix = f"{base_name}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}"
             
             if ipadapter_scale is not None:
-                prefix += f"--ipa{ipadapter_scale}"
+                # Use ipa-fid prefix for FaceID models, ipa for regular IPAdapter
+                ipa_prefix = "ipa-fid" if is_faceid else "ipa"
+                prefix += f"--{ipa_prefix}{ipadapter_scale}"
             if ipadapter_tokens is not None:
                 prefix += f"--tokens{ipadapter_tokens}"
             

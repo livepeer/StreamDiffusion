@@ -208,6 +208,8 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             'style_image': ip_config.get('style_image'),
             'scale': ip_config.get('scale', 1.0),
             'enabled': ip_config.get('enabled', True),
+            'type': ip_config.get('type', 'regular'),  # 'regular' or 'faceid'
+            'insightface_model_name': ip_config.get('insightface_model_name'),  # For FaceID models
         }
         ipadapter_configs.append(ipadapter_config)
     
@@ -280,11 +282,16 @@ def _configure_fresh_pipeline(pipeline, config: Dict[str, Any]):
     if ipadapter_configs:
         ip_config = ipadapter_configs[0]
         if ip_config.get('enabled', True):
+            # Check if this is a FaceID configuration
+            is_faceid = ip_config.get('type') == 'faceid'
+            
             pipeline.set_ipadapter(
                 ipadapter_model_path=ip_config['ipadapter_model_path'],
                 image_encoder_path=ip_config['image_encoder_path'],
                 style_image=ip_config.get('style_image'),
-                scale=ip_config.get('scale', 1.0)
+                scale=ip_config.get('scale', 1.0),
+                insightface_model_name=ip_config.get('insightface_model_name') if is_faceid else None,
+                is_faceid=is_faceid
             )
             
             if len(ipadapter_configs) > 1:

@@ -2104,7 +2104,8 @@ class App:
             "scale": 1.0,
             "model_path": None,
             "style_image_set": False,
-            "style_image_path": None
+            "style_image_path": None,
+            "type": "regular"  # "regular" or "faceid"
         }
         
         # Check uploaded config first
@@ -2117,6 +2118,7 @@ class App:
                 first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
                 ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
                 
                 # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
@@ -2143,6 +2145,7 @@ class App:
                 first_ipadapter = self.pipeline.config['ipadapters'][0]
                 ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
                 
                 # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
