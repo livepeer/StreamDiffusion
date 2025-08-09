@@ -493,8 +493,13 @@ class PreprocessingOrchestrator:
         if preprocessor is not None and hasattr(preprocessor, 'process_tensor'):
             try:
                 processed_tensor = preprocessor.process_tensor(control_tensor)
+                # Ensure NCHW shape
                 if processed_tensor.dim() == 3:
                     processed_tensor = processed_tensor.unsqueeze(0)
+                # Resize to target spatial resolution if needed to match stream dimensions
+                processed_tensor = self._resize_tensor_if_needed(
+                    processed_tensor, target_width, target_height
+                )
                 return processed_tensor.to(device=self.device, dtype=self.dtype)
             except Exception:
                 pass  # Fall through to standard processing

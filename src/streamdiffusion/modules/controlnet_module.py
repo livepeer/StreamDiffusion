@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from diffusers.models import ControlNetModel
+import logging
 
 from streamdiffusion.hooks import StepCtx, UnetKwargsDelta, UnetHook
 from streamdiffusion.preprocessing.preprocessing_orchestrator import (
@@ -280,11 +281,35 @@ class ControlNetModule:
                 kwargs = base_kwargs.copy()
                 kwargs['controlnet_cond'] = current_img
                 kwargs['conditioning_scale'] = float(scale)
+                # For SDXL ControlNet, pass added_cond_kwargs (text_embeds, time_ids)
+                try:
+                    if getattr(self._stream, 'is_sdxl', False) and ctx.sdxl_cond is not None:
+                        kwargs['added_cond_kwargs'] = ctx.sdxl_cond
+                except Exception:
+                    pass
+                # For SDXL, log whether added_cond kwargs are available on stream (not passed here yet)
+                try:
+                    is_sdxl = getattr(self._stream, 'is_sdxl', False)
+                    has_add = hasattr(self._stream, 'add_text_embeds') and hasattr(self._stream, 'add_time_ids')
+                    logger.debug("ControlNetModule._unet_hook: preparing CN forward (is_sdxl=%s, has_additional_cond=%s, keys=%s)",
+                                 is_sdxl, has_add, list(kwargs.keys()))
+                except Exception:
+                    pass
                 try:
                     down_samples, mid_sample = cn(**kwargs)
                 except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).error(f"ControlNetModule: controlnet forward failed: {e}")
+                    import traceback
+                    logger.error("ControlNetModule: controlnet forward failed: %s", e)
+                    try:
+                        logger.error("ControlNetModule: kwargs_summary: keys=%s, cond_shape=%s, img_shape=%s, scale=%s, is_sdxl=%s",
+                                     list(kwargs.keys()),
+                                     (tuple(kwargs.get('encoder_hidden_states').shape) if isinstance(kwargs.get('encoder_hidden_states'), torch.Tensor) else None),
+                                     (tuple(current_img.shape) if isinstance(current_img, torch.Tensor) else None),
+                                     scale,
+                                     getattr(self._stream, 'is_sdxl', False))
+                    except Exception:
+                        pass
+                    logger.error(traceback.format_exc())
                     continue
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
