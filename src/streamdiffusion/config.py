@@ -54,10 +54,6 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
     wrapper_params = _extract_wrapper_params(final_config)
     wrapper = StreamDiffusionWrapper(**wrapper_params)
     
-    # Setup IPAdapter if configured
-    if 'ipadapters' in final_config and final_config['ipadapters']:
-        wrapper = _setup_ipadapter_from_config(wrapper, final_config)
-    
     prepare_params = _extract_prepare_params(final_config)
 
     # Handle prompt configuration with clear precedence
@@ -87,7 +83,7 @@ def create_wrapper_from_config(config: Dict[str, Any], **overrides) -> Any:
     # Apply seed blending if configured and not already handled in prepare
     if 'seed_blending' in final_config and 'prompt_blending' not in final_config:
         seed_blend_config = final_config['seed_blending']
-        wrapper.update_seed_blending(
+        wrapper.update_stream_params(
             seed_list=seed_blend_config.get('seed_list', []),
             interpolation_method=seed_blend_config.get('interpolation_method', 'linear')
         )
@@ -212,98 +208,6 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         ipadapter_configs.append(ipadapter_config)
     
     return ipadapter_configs
-
-
-def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
-    """Setup IPAdapter pipeline from configuration"""
-    try:
-        from .ipadapter import BaseIPAdapterPipeline
-        
-        # Create pipeline
-        device = config.get('device', 'cuda')
-        dtype = _parse_dtype(config.get('dtype', 'float16'))
-        pipeline = BaseIPAdapterPipeline(wrapper.stream, device, dtype)
-        
-        # Handle preloaded models vs fresh setup
-        if _has_preloaded_models(wrapper):
-            _configure_preloaded_pipeline(pipeline, config)
-        else:
-            _configure_fresh_pipeline(pipeline, config)
-        
-        # Setup pipeline attributes
-        pipeline.batch_size = getattr(wrapper, 'batch_size', 1)
-        pipeline._original_wrapper = wrapper
-        
-        return pipeline
-        
-    except ImportError as e:
-        raise ImportError(f"_setup_ipadapter_from_config: IPAdapter module not found: {e}") from e
-    except Exception as e:
-        print(f"_setup_ipadapter_from_config: Failed to setup IPAdapter: {e}")
-        raise
-
-
-
-
-
-def _has_preloaded_models(wrapper) -> bool:
-    """Check if wrapper has preloaded IPAdapter models"""
-    return (hasattr(wrapper, 'stream') and 
-            hasattr(wrapper.stream, '_preloaded_with_weights') and 
-            wrapper.stream._preloaded_with_weights and
-            hasattr(wrapper.stream, '_preloaded_ipadapters') and 
-            wrapper.stream._preloaded_ipadapters)
-
-
-def _configure_preloaded_pipeline(pipeline, config: Dict[str, Any]):
-    """Configure pipeline using preloaded models"""
-    pipeline.ipadapter = pipeline.stream._preloaded_ipadapters[0]
-    
-    ipadapter_configs = _prepare_ipadapter_configs(config)
-    if ipadapter_configs:
-        ip_config = ipadapter_configs[0]
-        if ip_config.get('enabled', True):
-            _apply_ipadapter_config(pipeline, ip_config)
-            
-            # Register enhancer for TensorRT compatibility
-            pipeline.stream._param_updater.register_embedding_enhancer(
-                pipeline._enhance_embeddings_with_ipadapter, name="IPAdapter"
-            )
-            
-            if len(ipadapter_configs) > 1:
-                print("_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
-
-
-def _configure_fresh_pipeline(pipeline, config: Dict[str, Any]):
-    """Configure pipeline with fresh IPAdapter setup"""
-    ipadapter_configs = _prepare_ipadapter_configs(config)
-    if ipadapter_configs:
-        ip_config = ipadapter_configs[0]
-        if ip_config.get('enabled', True):
-            pipeline.set_ipadapter(
-                ipadapter_model_path=ip_config['ipadapter_model_path'],
-                image_encoder_path=ip_config['image_encoder_path'],
-                style_image=ip_config.get('style_image'),
-                scale=ip_config.get('scale', 1.0)
-            )
-            
-            if len(ipadapter_configs) > 1:
-                print("_setup_ipadapter_from_config: WARNING - Multiple IPAdapters configured but only first one will be used")
-
-
-def _apply_ipadapter_config(pipeline, ip_config: Dict[str, Any]):
-    """Apply configuration to existing IPAdapter"""
-    # Set style image
-    style_image_path = ip_config.get('style_image')
-    if style_image_path:
-        from PIL import Image
-        pipeline.style_image = Image.open(style_image_path).convert("RGB")
-    
-    # Set scale
-    scale = ip_config.get('scale', 1.0)
-    pipeline.scale = scale
-    if pipeline.ipadapter:
-        pipeline.ipadapter.set_scale(scale)
 
 
 def create_prompt_blending_config(

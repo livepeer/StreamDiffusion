@@ -1,0 +1,57 @@
+# StreamDiffusion SD-Turbo Multi-ControlNet Configuration  
+# Demonstrates: Fast inference with multiple ControlNet guidance (no IPAdapter for speed)
+
+# Base model configuration
+model_id: "stabilityai/sd-turbo"
+
+# StreamDiffusion core parameters  
+t_index_list: [0, 16]       # SD-Turbo optimized timesteps
+width: 512
+height: 512
+device: "cuda"
+dtype: "float16"
+
+# Generation parameters
+prompt: "masterpiece, high quality, detailed anime character"
+negative_prompt: "blurry, low quality, distorted, 3d render"
+guidance_scale: 1.0         # SD-Turbo typically uses lower guidance
+num_inference_steps: 4      # SD-Turbo optimized for few steps
+seed: 789
+
+# Temporal consistency and optimization
+frame_buffer_size: 1
+delta: 0.7
+use_denoising_batch: true
+use_lcm_lora: true          # SD-Turbo benefits from LCM LoRA
+use_tiny_vae: true
+acceleration: "tensorrt"    # "xformers" for non-TensorRT setups
+cfg_type: "self"
+
+# Engine directory for TensorRT
+engine_dir: "./engines/sdturbo"
+
+# Enable ControlNet (no IPAdapter for maximum speed)
+use_controlnet: true
+
+# ControlNet configurations
+controlnets:
+  # Canny edge detection for structural guidance
+  - model_id: "thibaud/controlnet-sd21-canny-diffusers"
+    conditioning_scale: 0.5
+    preprocessor: "canny"
+    preprocessor_params:
+      low_threshold: 100
+      high_threshold: 200
+    enabled: true
+
+  # Soft edge detection for artistic guidance
+  - model_id: "thibaud/controlnet-sd21-hed-diffusers" 
+    conditioning_scale: 0.3
+    preprocessor: "soft_edge"
+    preprocessor_params:
+      image_resolution: 512
+      strength: 1.0
+      soft_threshold: 0.5
+      multi_scale: true
+      gaussian_sigma: 1.0
+    enabled: true

@@ -216,8 +216,16 @@ class Pipeline:
         if self.pipeline_mode == "txt2img":
             # Text-to-image mode
             if self.has_controlnet:
-                # txt2img with ControlNets: need image for control
-                self.stream.update_control_image_efficient(params.image)
+                # txt2img with ControlNets: push control image via consolidated API
+                try:
+                    current_cfg = self.stream.stream._param_updater._get_current_controlnet_config() if hasattr(self.stream, 'stream') else []
+                except Exception:
+                    current_cfg = []
+                if current_cfg:
+                    # update just the control image for all configured CNs
+                    for i in range(len(current_cfg)):
+                        current_cfg[i]['control_image'] = params.image
+                    self.stream.update_stream_params(controlnet_config=current_cfg)
                 output_image = self.stream(params.image)
             elif self.has_ipadapter:
                 # txt2img with IPAdapter: no input image needed (style image handled separately)
@@ -228,8 +236,15 @@ class Pipeline:
         else:
             # Image-to-image mode: use original logic
             if self.has_controlnet:
-                # ControlNet mode: update control image and use PIL image
-                self.stream.update_control_image_efficient(params.image)
+                # ControlNet mode: push control image via consolidated API and use PIL image
+                try:
+                    current_cfg = self.stream.stream._param_updater._get_current_controlnet_config() if hasattr(self.stream, 'stream') else []
+                except Exception:
+                    current_cfg = []
+                if current_cfg:
+                    for i in range(len(current_cfg)):
+                        current_cfg[i]['control_image'] = params.image
+                    self.stream.update_stream_params(controlnet_config=current_cfg)
                 output_image = self.stream(params.image)
             elif self.has_ipadapter:
                 # IPAdapter mode: use PIL image for img2img
@@ -285,6 +300,24 @@ class Pipeline:
         """Legacy method - use update_ipadapter_config instead"""
         return self.update_ipadapter_config(style_image=style_image)
 
+    def update_ipadapter_weight_type(self, weight_type: str) -> bool:
+        """Update IPAdapter weight type in real-time"""
+        if not self.has_ipadapter:
+            return False
+            
+        try:
+            # Use unified updater on wrapper
+            if hasattr(self.stream, 'update_stream_params'):
+                self.stream.update_stream_params(ipadapter_config={ 'weight_type': weight_type })
+                return True
+            # Direct attribute set as last resort
+            if hasattr(self.stream, 'ipadapter_weight_type'):
+                self.stream.ipadapter_weight_type = weight_type
+                return True
+            return False
+        except Exception as e:
+            return False
+
     def get_ipadapter_info(self) -> dict:
         """
         Get current IPAdapter information
@@ -295,6 +328,7 @@ class Pipeline:
         info = {
             "enabled": self.has_ipadapter,
             "scale": 1.0,
+            "weight_type": "linear",
             "model_path": None,
             "style_image_set": False
         }
@@ -304,14 +338,18 @@ class Pipeline:
             if len(self.config['ipadapters']) > 0:
                 ipadapter_config = self.config['ipadapters'][0]
                 info["scale"] = ipadapter_config.get('scale', 1.0)
+                info["weight_type"] = ipadapter_config.get('weight_type', 'linear')
                 info["model_path"] = ipadapter_config.get('ipadapter_model_path')
                 info["style_image_set"] = 'style_image' in ipadapter_config
                 
-        # Try to get current scale from stream if available
+        # Try to get current scale and weight type from stream if available
         if hasattr(self.stream, 'scale'):
             info["scale"] = self.stream.scale
         elif hasattr(self.stream, 'ipadapter') and hasattr(self.stream.ipadapter, 'scale'):
             info["scale"] = self.stream.ipadapter.scale
+            
+        if hasattr(self.stream, 'ipadapter_weight_type'):
+            info["weight_type"] = self.stream.ipadapter_weight_type
             
         return info
 

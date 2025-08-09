@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Tuple, Literal, Any, Callable
+import threading
 import torch
 import torch.nn.functional as F
 import gc
@@ -25,6 +26,8 @@ class StreamParameterUpdater:
         self.wrapper = wrapper  # Reference to wrapper for accessing pipeline structure
         self.normalize_prompt_weights = normalize_prompt_weights
         self.normalize_seed_weights = normalize_seed_weights
+        # Atomic update lock for deterministic, thread-safe runtime updates
+        self._update_lock = threading.RLock()
         # Prompt blending caches
         self._prompt_cache: Dict[int, Dict] = {}
         self._current_prompt_list: List[Tuple[str, float]] = []
@@ -36,8 +39,6 @@ class StreamParameterUpdater:
         self._current_seed_list: List[Tuple[int, float]] = []
         self._seed_cache_stats = CacheStats()
         
-        # Enhancement hooks (e.g., for IPAdapter)
-        self._embedding_enhancers = []
         
         # IPAdapter embedding preprocessing
         self._embedding_preprocessors = []
@@ -88,44 +89,7 @@ class StreamParameterUpdater:
         """Get the current seed weight normalization setting."""
         return self.normalize_seed_weights
     
-    def register_embedding_enhancer(self, enhancer_func, name: str = "unknown") -> None:
-        """
-        Register an embedding enhancer function that will be called after prompt blending.
-        
-        The enhancer function should have signature:
-        enhancer_func(prompt_embeds: torch.Tensor, negative_prompt_embeds: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
-        
-        Args:
-            enhancer_func: Function that takes (prompt_embeds, negative_prompt_embeds) and returns enhanced versions
-            name: Optional name for the enhancer (for debugging)
-        """
-        self._embedding_enhancers.append((enhancer_func, name))
-        # IMMEDIATELY apply enhancer to existing embeddings if they exist (fixes TensorRT timing issue)
-        if hasattr(self.stream, 'prompt_embeds') and self.stream.prompt_embeds is not None:
-            try:
-                current_negative_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
-                enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
-                    self.stream.prompt_embeds, current_negative_embeds
-                )
-                self.stream.prompt_embeds = enhanced_prompt_embeds
-                if enhanced_negative_embeds is not None:
-                    self.stream.negative_prompt_embeds = enhanced_negative_embeds
-            except Exception as e:
-                print(f"register_embedding_enhancer: Error applying '{name}' enhancer immediately: {e}")
-                import traceback
-                traceback.print_exc()
-    
-    def unregister_embedding_enhancer(self, enhancer_func) -> None:
-        """Unregister a specific embedding enhancer function."""
-        original_length = len(self._embedding_enhancers)
-        self._embedding_enhancers = [(func, name) for func, name in self._embedding_enhancers if func != enhancer_func]
-        removed_count = original_length - len(self._embedding_enhancers)
-
-    
-    def clear_embedding_enhancers(self) -> None:
-        """Clear all embedding enhancers."""
-        enhancer_count = len(self._embedding_enhancers)
-        self._embedding_enhancers.clear()
+    # Deprecated enhancer registration removed; embedding composition is handled via stream.embedding_hooks
 
     def register_embedding_preprocessor(self, preprocessor: Any, style_image_key: str) -> None:
         """
@@ -282,60 +246,61 @@ class StreamParameterUpdater:
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
-        if num_inference_steps is not None:
-            self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
-            self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
+        with self._update_lock:
+            if num_inference_steps is not None:
+                self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
+                self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
 
-        if num_inference_steps is not None and t_index_list is None:
-            max_step = num_inference_steps - 1
-            t_index_list = [min(t, max_step) for t in self.stream.t_list]
+            if num_inference_steps is not None and t_index_list is None:
+                max_step = num_inference_steps - 1
+                t_index_list = [min(t, max_step) for t in self.stream.t_list]
 
-        if guidance_scale is not None:
-            if self.stream.cfg_type == "none" and guidance_scale > 1.0:
-                logger.warning("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
-            self.stream.guidance_scale = guidance_scale
+            if guidance_scale is not None:
+                if self.stream.cfg_type == "none" and guidance_scale > 1.0:
+                    logger.warning("update_stream_params: Warning: guidance_scale > 1.0 with cfg_type='none' will have no effect")
+                self.stream.guidance_scale = guidance_scale
 
-        if delta is not None:
-            self.stream.delta = delta
+            if delta is not None:
+                self.stream.delta = delta
 
-        if seed is not None:
-            self._update_seed(seed)
-        
-        if normalize_prompt_weights is not None:
-            self.normalize_prompt_weights = normalize_prompt_weights
-            logger.info(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
+            if seed is not None:
+                self._update_seed(seed)
+            
+            if normalize_prompt_weights is not None:
+                self.normalize_prompt_weights = normalize_prompt_weights
+                logger.info(f"update_stream_params: Prompt weight normalization set to {normalize_prompt_weights}")
 
-        if normalize_seed_weights is not None:
-            self.normalize_seed_weights = normalize_seed_weights
-            logger.info(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
+            if normalize_seed_weights is not None:
+                self.normalize_seed_weights = normalize_seed_weights
+                logger.info(f"update_stream_params: Seed weight normalization set to {normalize_seed_weights}")
 
-        # Handle prompt blending if prompt_list is provided
-        if prompt_list is not None:
-            self._update_blended_prompts(
-                prompt_list=prompt_list,
-                negative_prompt=negative_prompt or self._current_negative_prompt,
-                prompt_interpolation_method=prompt_interpolation_method
-            )
+            # Handle prompt blending if prompt_list is provided
+            if prompt_list is not None:
+                self._update_blended_prompts(
+                    prompt_list=prompt_list,
+                    negative_prompt=negative_prompt or self._current_negative_prompt,
+                    prompt_interpolation_method=prompt_interpolation_method
+                )
 
-        # Handle seed blending if seed_list is provided
-        if seed_list is not None:
-            self._update_blended_seeds(
-                seed_list=seed_list,
-                interpolation_method=seed_interpolation_method
-            )
+            # Handle seed blending if seed_list is provided
+            if seed_list is not None:
+                self._update_blended_seeds(
+                    seed_list=seed_list,
+                    interpolation_method=seed_interpolation_method
+                )
 
-        if t_index_list is not None:
-            self._recalculate_timestep_dependent_params(t_index_list)
+            if t_index_list is not None:
+                self._recalculate_timestep_dependent_params(t_index_list)
 
-        # Handle ControlNet configuration updates
-        if controlnet_config is not None:
-            logger.info(f"update_stream_params: Updating ControlNet configuration with {len(controlnet_config)} controlnets")
-            self._update_controlnet_config(controlnet_config)
-        
-        # Handle IPAdapter configuration updates
-        if ipadapter_config is not None:
-            logger.info(f"update_stream_params: Updating IPAdapter configuration")
-            self._update_ipadapter_config(ipadapter_config)
+            # Handle ControlNet configuration updates
+            if controlnet_config is not None:
+                #TODO: happy path for control images
+                self._update_controlnet_config(controlnet_config)
+            
+            # Handle IPAdapter configuration updates
+            if ipadapter_config is not None:
+                logger.info(f"update_stream_params: Updating IPAdapter configuration")
+                self._update_ipadapter_config(ipadapter_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -486,20 +451,23 @@ class StreamParameterUpdater:
             final_prompt_embeds = combined_embeds.repeat(self.stream.batch_size, 1, 1)
             final_negative_embeds = None  # Will be set by enhancers if needed
         
-        # Apply embedding enhancers (e.g., IPAdapter)
-        if self._embedding_enhancers:
-            for enhancer_func, enhancer_name in self._embedding_enhancers:
-                try:
-                    enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
-                        final_prompt_embeds, final_negative_embeds
-                    )
-                    final_prompt_embeds = enhanced_prompt_embeds
-                    if enhanced_negative_embeds is not None:
-                        final_negative_embeds = enhanced_negative_embeds
-                except Exception as e:
-                    print(f"_apply_prompt_blending: Error in enhancer '{enhancer_name}': {e}")
-                    import traceback
-                    traceback.print_exc()
+        # Enhancer mechanism removed in favor of embedding_hooks
+
+        # Run embedding hooks to compose final embeddings (e.g., append IP-Adapter tokens)
+        try:
+            if hasattr(self.stream, 'embedding_hooks') and self.stream.embedding_hooks:
+                from .hooks import EmbedsCtx  # local import to avoid cycles
+                embeds_ctx = EmbedsCtx(
+                    prompt_embeds=final_prompt_embeds,
+                    negative_prompt_embeds=final_negative_embeds,
+                )
+                for hook in self.stream.embedding_hooks:
+                    embeds_ctx = hook(embeds_ctx)
+                final_prompt_embeds = embeds_ctx.prompt_embeds
+                final_negative_embeds = embeds_ctx.negative_prompt_embeds
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"_apply_prompt_blending: embedding hook failed: {e}")
         
         # Set final embeddings on stream
         self.stream.prompt_embeds = final_prompt_embeds
@@ -994,7 +962,7 @@ class StreamParameterUpdater:
             desired_config: Complete ControlNet configuration list defining the desired state.
                            Each dict contains: model_id, preprocessor, conditioning_scale, enabled, etc.
         """
-        # Find the ControlNet pipeline (might be nested in IPAdapter)
+        # Find the ControlNet pipeline/module (module-aware)
         controlnet_pipeline = self._get_controlnet_pipeline()
         if not controlnet_pipeline:
             logger.warning(f"_update_controlnet_config: No ControlNet pipeline found")
@@ -1006,12 +974,26 @@ class StreamParameterUpdater:
         current_models = {i: getattr(cn, 'model_id', f'controlnet_{i}') for i, cn in enumerate(controlnet_pipeline.controlnets)}
         desired_models = {cfg['model_id']: cfg for cfg in desired_config}
         
+        # Reorder to match desired order (module supports stable reordering)
+        try:
+            desired_order = [cfg['model_id'] for cfg in desired_config if 'model_id' in cfg]
+            if hasattr(controlnet_pipeline, 'reorder_controlnets_by_model_ids'):
+                controlnet_pipeline.reorder_controlnets_by_model_ids(desired_order)
+        except Exception:
+            pass
+
+        # Recompute current models after potential reorder
+        current_models = {i: getattr(cn, 'model_id', f'controlnet_{i}') for i, cn in enumerate(controlnet_pipeline.controlnets)}
+
         # Remove controlnets not in desired config
         for i in reversed(range(len(controlnet_pipeline.controlnets))):
             model_id = current_models.get(i, f'controlnet_{i}')
             if model_id not in desired_models:
                 logger.info(f"_update_controlnet_config: Removing ControlNet {model_id}")
-                controlnet_pipeline.remove_controlnet(i, immediate=False)
+                try:
+                    controlnet_pipeline.remove_controlnet(i)
+                except Exception:
+                    raise
         
         # Add new controlnets and update existing ones
         for desired_cfg in desired_config:
@@ -1021,7 +1003,23 @@ class StreamParameterUpdater:
             if existing_index is None:
                 # Add new controlnet
                 logger.info(f"_update_controlnet_config: Adding ControlNet {model_id}")
-                controlnet_pipeline.add_controlnet(desired_cfg, desired_cfg.get('control_image'), immediate=False)
+                try:
+                    # Prefer module path: construct ControlNetConfig
+                    try:
+                        from .modules.controlnet_module import ControlNetConfig  # type: ignore
+                        cn_cfg = ControlNetConfig(
+                            model_id=desired_cfg.get('model_id'),
+                            preprocessor=desired_cfg.get('preprocessor'),
+                            conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
+                            enabled=desired_cfg.get('enabled', True),
+                            preprocessor_params=desired_cfg.get('preprocessor_params'),
+                        )
+                        controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
+                    except Exception:
+                        # No fallback
+                        raise
+                except Exception as e:
+                    logger.error(f"_update_controlnet_config: add_controlnet failed for {model_id}: {e}")
             else:
                 # Update existing controlnet
                 if 'conditioning_scale' in desired_cfg:
@@ -1030,8 +1028,14 @@ class StreamParameterUpdater:
                     
                     if current_scale != desired_scale:
                         logger.info(f"_update_controlnet_config: Updating {model_id} scale: {current_scale} → {desired_scale}")
-                        controlnet_pipeline.update_controlnet_scale(existing_index, desired_scale)
+                        if hasattr(controlnet_pipeline, 'controlnet_scales') and 0 <= existing_index < len(controlnet_pipeline.controlnet_scales):
+                            controlnet_pipeline.controlnet_scales[existing_index] = float(desired_scale)
                 
+                # Enable/disable toggle
+                if 'enabled' in desired_cfg and hasattr(controlnet_pipeline, 'enabled_list'):
+                    if 0 <= existing_index < len(controlnet_pipeline.enabled_list):
+                        controlnet_pipeline.enabled_list[existing_index] = bool(desired_cfg['enabled'])
+
                 if 'preprocessor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
                     preprocessor = controlnet_pipeline.preprocessors[existing_index]
                     preprocessor.params.update(desired_cfg['preprocessor_params'])
@@ -1039,28 +1043,41 @@ class StreamParameterUpdater:
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
 
+                # Efficient control image update when provided
+                if 'control_image' in desired_cfg and desired_cfg['control_image'] is not None:
+                    try:
+                        # Route through module helper if available
+                        if hasattr(controlnet_pipeline, 'update_control_image_efficient'):
+                            controlnet_pipeline.update_control_image_efficient(desired_cfg['control_image'], index=existing_index)
+                        else:
+                            # Fallback to orchestrator-based processing if present on module
+                            if hasattr(controlnet_pipeline, '_prepare_control_image') and hasattr(controlnet_pipeline, 'preprocessors') and hasattr(controlnet_pipeline, 'controlnet_images'):
+                                preproc = controlnet_pipeline.preprocessors[existing_index] if existing_index < len(controlnet_pipeline.preprocessors) else None
+                                processed = controlnet_pipeline._prepare_control_image(desired_cfg['control_image'], preproc)
+                                if existing_index < len(controlnet_pipeline.controlnet_images):
+                                    controlnet_pipeline.controlnet_images[existing_index] = processed
+                    except Exception:
+                        raise
+
     def _get_controlnet_pipeline(self):
         """
-        Get the ControlNet pipeline from the pipeline structure (handles IPAdapter wrapping).
-        
-        Returns:
-            ControlNet pipeline object or None if not found
+        Get the ControlNet module or legacy pipeline from the structure (module-aware).
         """
-        # Check if stream is ControlNet pipeline directly
+        # Module-installed path
+        if hasattr(self.stream, '_controlnet_module'):
+            return self.stream._controlnet_module
+        # Legacy paths
         if hasattr(self.stream, 'controlnets'):
             return self.stream
-            
-        # Check if stream has nested stream (IPAdapter wrapper)
         if hasattr(self.stream, 'stream') and hasattr(self.stream.stream, 'controlnets'):
             return self.stream.stream
-        
-        # Check if we have a wrapper reference and can access through it
         if self.wrapper and hasattr(self.wrapper, 'stream'):
+            if hasattr(self.wrapper.stream, '_controlnet_module'):
+                return self.wrapper.stream._controlnet_module
             if hasattr(self.wrapper.stream, 'controlnets'):
                 return self.wrapper.stream
-            elif hasattr(self.wrapper.stream, 'stream') and hasattr(self.wrapper.stream.stream, 'controlnets'):
+            if hasattr(self.wrapper.stream, 'stream') and hasattr(self.wrapper.stream.stream, 'controlnets'):
                 return self.wrapper.stream.stream
-        
         return None
 
     def _get_current_controlnet_config(self) -> List[Dict[str, Any]]:
@@ -1078,11 +1095,17 @@ class StreamParameterUpdater:
         for i, controlnet in enumerate(controlnet_pipeline.controlnets):
             model_id = getattr(controlnet, 'model_id', f'controlnet_{i}')
             scale = controlnet_pipeline.controlnet_scales[i] if hasattr(controlnet_pipeline, 'controlnet_scales') and i < len(controlnet_pipeline.controlnet_scales) else 1.0
-            
+            enabled_val = True
+            try:
+                if hasattr(controlnet_pipeline, 'enabled_list') and i < len(controlnet_pipeline.enabled_list):
+                    enabled_val = bool(controlnet_pipeline.enabled_list[i])
+            except Exception:
+                enabled_val = True
             config = {
                 'model_id': model_id,
                 'conditioning_scale': scale,
-                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {}
+                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
+                'enabled': enabled_val,
             }
             current_config.append(config)
         

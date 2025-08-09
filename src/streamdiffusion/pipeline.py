@@ -11,6 +11,7 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 )
 
 from streamdiffusion.model_detection import detect_model
+from streamdiffusion.hooks import EmbedsCtx, StepCtx, UnetKwargsDelta, EmbeddingHook, UnetHook
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
@@ -101,6 +102,10 @@ class StreamDiffusion:
         # Default IP-Adapter runtime weight mode (None = uniform). Can be set to strings like
         # "ease in", "ease out", "ease in-out", "reverse in-out", "style transfer precise", "composition precise".
         self.ipadapter_weight_type = None
+
+        # Hook containers (step 1: introduced but initially no-op)
+        self.embedding_hooks: List[EmbeddingHook] = []
+        self.unet_hooks: List[UnetHook] = []
 
     def load_lcm_lora(
         self,
@@ -212,8 +217,8 @@ class StreamDiffusion:
             if len(encoder_output) >= 4:
                 prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = encoder_output[:4]
                 
-                # Set up prompt embeddings for the UNet
-                self.prompt_embeds = prompt_embeds.repeat(self.batch_size, 1, 1)
+                # Set up prompt embeddings for the UNet (base before hooks)
+                base_prompt_embeds = prompt_embeds.repeat(self.batch_size, 1, 1)
                 
                 # Handle CFG for prompt embeddings
                 if self.use_denoising_batch and self.cfg_type == "full":
@@ -224,8 +229,8 @@ class StreamDiffusion:
                 if self.guidance_scale > 1.0 and (
                     self.cfg_type == "initialize" or self.cfg_type == "full"
                 ):
-                    self.prompt_embeds = torch.cat(
-                        [uncond_prompt_embeds, self.prompt_embeds], dim=0
+                    base_prompt_embeds = torch.cat(
+                        [uncond_prompt_embeds, base_prompt_embeds], dim=0
                     )
                 
                 # Set up SDXL-specific conditioning (added_cond_kwargs)
@@ -248,6 +253,15 @@ class StreamDiffusion:
                     self.add_time_ids = add_time_ids
             else:
                 raise ValueError(f"SDXL encode_prompt returned {len(encoder_output)} outputs, expected at least 4")
+            # Run embedding hooks (no-op unless modules register)
+            embeds_ctx = EmbedsCtx(prompt_embeds=base_prompt_embeds, negative_prompt_embeds=None)
+            for hook in self.embedding_hooks:
+                try:
+                    embeds_ctx = hook(embeds_ctx)
+                except Exception as e:
+                    logger.error(f"prepare: embedding hook failed: {e}")
+                    raise
+            self.prompt_embeds = embeds_ctx.prompt_embeds
         else:
             # SD1.5/SD2.1 encode_prompt returns 2 values: (prompt_embeds, negative_prompt_embeds)
             encoder_output = self.pipe.encode_prompt(
@@ -257,7 +271,7 @@ class StreamDiffusion:
                 do_classifier_free_guidance=do_classifier_free_guidance,
                 negative_prompt=negative_prompt,
             )
-            self.prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
+            base_prompt_embeds = encoder_output[0].repeat(self.batch_size, 1, 1)
 
             if self.use_denoising_batch and self.cfg_type == "full":
                 uncond_prompt_embeds = encoder_output[1].repeat(self.batch_size, 1, 1)
@@ -267,9 +281,19 @@ class StreamDiffusion:
             if self.guidance_scale > 1.0 and (
                 self.cfg_type == "initialize" or self.cfg_type == "full"
             ):
-                self.prompt_embeds = torch.cat(
-                    [uncond_prompt_embeds, self.prompt_embeds], dim=0
+                base_prompt_embeds = torch.cat(
+                    [uncond_prompt_embeds, base_prompt_embeds], dim=0
                 )
+
+            # Run embedding hooks (no-op unless modules register)
+            embeds_ctx = EmbedsCtx(prompt_embeds=base_prompt_embeds, negative_prompt_embeds=None)
+            for hook in self.embedding_hooks:
+                try:
+                    embeds_ctx = hook(embeds_ctx)
+                except Exception as e:
+                    logger.error(f"prepare: embedding hook failed: {e}")
+                    raise
+            self.prompt_embeds = embeds_ctx.prompt_embeds
 
         self.scheduler.set_timesteps(num_inference_steps, self.device)
         self.timesteps = self.scheduler.timesteps.to(self.device)
@@ -361,75 +385,7 @@ class StreamDiffusion:
             prompt_interpolation_method="linear"
         )
 
-    @torch.no_grad()
-    def update_stream_params(
-        self,
-        num_inference_steps: Optional[int] = None,
-        guidance_scale: Optional[float] = None,
-        delta: Optional[float] = None,
-        t_index_list: Optional[List[int]] = None,
-        seed: Optional[int] = None,
-        # Prompt blending parameters
-        prompt_list: Optional[List[Tuple[str, float]]] = None,
-        negative_prompt: Optional[str] = None,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
-        normalize_prompt_weights: Optional[bool] = None,
-        # Seed blending parameters
-        seed_list: Optional[List[Tuple[int, float]]] = None,
-        seed_interpolation_method: Literal["linear", "slerp"] = "linear",
-        normalize_seed_weights: Optional[bool] = None,
-        # IPAdapter parameters
-        ipadapter_config: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Update streaming parameters efficiently in a single call.
-
-        Parameters
-        ----------
-        num_inference_steps : Optional[int]
-            The number of inference steps to perform.
-        guidance_scale : Optional[float]
-            The guidance scale to use for CFG.
-        delta : Optional[float]
-            The delta multiplier of virtual residual noise.
-        t_index_list : Optional[List[int]]
-            The t_index_list to use for inference.
-        seed : Optional[int]
-            The random seed to use for noise generation.
-        prompt_list : Optional[List[Tuple[str, float]]]
-            List of prompts with weights for blending.
-        negative_prompt : Optional[str]
-            The negative prompt to apply to all blended prompts.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings.
-        normalize_prompt_weights : Optional[bool]
-            Whether to normalize prompt weights in blending to sum to 1, by default None (no change).
-            When False, weights > 1 will amplify embeddings.
-        seed_list : Optional[List[Tuple[int, float]]]
-            List of seeds with weights for blending.
-        seed_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors.
-        normalize_seed_weights : Optional[bool]
-            Whether to normalize seed weights in blending to sum to 1, by default None (no change).
-            When False, weights > 1 will amplify noise.
-        ipadapter_config : Optional[Dict[str, Any]]
-            IPAdapter configuration dict containing scale, style_image, etc.
-        """
-        self._param_updater.update_stream_params(
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            delta=delta,
-            t_index_list=t_index_list,
-            seed=seed,
-            prompt_list=prompt_list,
-            negative_prompt=negative_prompt,
-            prompt_interpolation_method=prompt_interpolation_method,
-            seed_list=seed_list,
-            seed_interpolation_method=seed_interpolation_method,
-            normalize_prompt_weights=normalize_prompt_weights,
-            normalize_seed_weights=normalize_seed_weights,
-            ipadapter_config=ipadapter_config,
-        )
+    
 
 
 
@@ -532,6 +488,46 @@ class StreamDiffusion:
                     'time_ids': add_time_ids
                 }
         
+        # Allow modules to contribute additional UNet kwargs via hooks
+        try:
+            step_ctx = StepCtx(
+                x_t_latent=x_t_latent_plus_uc,
+                t_list=t_list,
+                step_index=idx if isinstance(idx, int) else (int(idx) if idx is not None else None),
+                guidance_mode=self.cfg_type if self.guidance_scale > 1.0 else "none",
+                sdxl_cond=unet_kwargs.get('added_cond_kwargs', None)
+            )
+            extra_from_hooks = {}
+            for hook in self.unet_hooks:
+                delta: UnetKwargsDelta = hook(step_ctx)
+                if delta is None:
+                    continue
+                if delta.down_block_additional_residuals is not None:
+                    unet_kwargs['down_block_additional_residuals'] = delta.down_block_additional_residuals
+                if delta.mid_block_additional_residual is not None:
+                    unet_kwargs['mid_block_additional_residual'] = delta.mid_block_additional_residual
+                if delta.added_cond_kwargs is not None:
+                    # Merge SDXL cond if both exist
+                    base_added = unet_kwargs.get('added_cond_kwargs', {})
+                    base_added.update(delta.added_cond_kwargs)
+                    unet_kwargs['added_cond_kwargs'] = base_added
+                if getattr(delta, 'extra_unet_kwargs', None):
+                    # Merge extra kwargs from hooks (e.g., ipadapter_scale)
+                    try:
+                        extra_from_hooks.update(delta.extra_unet_kwargs)
+                    except Exception:
+                        pass
+            if extra_from_hooks:
+                unet_kwargs['extra_unet_kwargs'] = extra_from_hooks
+        except Exception as e:
+            logger.error(f"unet_step: unet hook failed: {e}")
+            raise
+
+        # Extract potential ControlNet residual kwargs and generic extra kwargs (e.g., ipadapter_scale)
+        hook_down_res = unet_kwargs.get('down_block_additional_residuals', None)
+        hook_mid_res = unet_kwargs.get('mid_block_additional_residual', None)
+        hook_extra_kwargs = unet_kwargs.get('extra_unet_kwargs', None) if 'extra_unet_kwargs' in unet_kwargs else None
+
         # Call UNet with appropriate conditioning
         if self.is_sdxl:
             try:
@@ -546,35 +542,16 @@ class StreamDiffusion:
                 is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
                 
                 if is_tensorrt_engine:
-                    # TensorRT engine expects positional args + kwargs
-                    # Provide ipadapter_scale vector if engine was built with IP-Adapter
+                    # TensorRT engine expects positional args + kwargs. IP-Adapter scale vector, if any, is provided by hooks via extra_unet_kwargs
                     extra_kwargs = {}
-                    if getattr(self.unet, 'use_ipadapter', False):
-                        num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
-                        if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
-                            raise RuntimeError("unet_step: Invalid num_ip_layers on TRT engine")
-                        base_weight = float(getattr(self, 'ipadapter_scale', 1.0))
-                        weight_type = getattr(self, 'ipadapter_weight_type', None)
-                        try:
-                            from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
-                            weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
-                        except Exception:
-                            weights = None
-                        if weights is None:
-                            weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
-                        # Apply per-step time factor if applicable
-                        try:
-                            total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
-                            if total_steps is not None and idx is not None:
-                                time_factor = build_time_weight_factor(weight_type, int(idx), int(total_steps))
-                                weights = weights * float(time_factor)
-                        except Exception:
-                            pass
-                        extra_kwargs['ipadapter_scale'] = weights
-                        try:
-                            logger.debug(f"pipeline.unet_step: TRT SDXL ipadapter_scale shape={tuple(weights.shape)}, min={float(weights.min().item())}, max={float(weights.max().item())}")
-                        except Exception:
-                            pass
+                    if isinstance(hook_extra_kwargs, dict):
+                        extra_kwargs.update(hook_extra_kwargs)
+
+                    # Include ControlNet residuals if provided by hooks
+                    if hook_down_res is not None:
+                        extra_kwargs['down_block_additional_residuals'] = hook_down_res
+                    if hook_mid_res is not None:
+                        extra_kwargs['mid_block_additional_residual'] = hook_mid_res
 
                     logger.debug(f"pipeline.unet_step: Calling TRT SDXL UNet with extra_kwargs keys={list(extra_kwargs.keys())}")
                     model_pred = self.unet(
@@ -582,33 +559,25 @@ class StreamDiffusion:
                         unet_kwargs['timestep'],                  # timestep (positional)
                         unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
                         **extra_kwargs,
+                        # For TRT engines, ensure SDXL cond shapes match engine builds; if engine expects 81 tokens (77+4), append dummy image tokens when none
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
                     )[0]
                 else:
-                    # PyTorch UNet expects diffusers-style named arguments
-                    # For PyTorch, optionally apply per-step time scheduling by temporarily scaling processors
-                    time_factor = 1.0
-                    try:
-                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
-                        total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
-                        if total_steps is not None and idx is not None:
-                            time_factor = float(build_time_weight_factor(getattr(self, 'ipadapter_weight_type', None), int(idx), int(total_steps)))
-                        # Modulate by time factor using stored _base_scale so user-selected strength is respected
-                        if hasattr(self.pipe.unet, 'attn_processors') and time_factor != 1.0:
-                            for p in self.pipe.unet.attn_processors.values():
-                                if hasattr(p, 'scale') and hasattr(p, '_ip_layer_index'):
-                                    base_val = getattr(p, '_base_scale', p.scale)
-                                    p.scale = float(base_val) * time_factor
-                    except Exception:
-                        pass
+                    # PyTorch UNet expects diffusers-style named arguments. Any processor scaling is handled by IP-Adapter hook
 
-                    model_pred = self.unet(
+                    call_kwargs = dict(
                         sample=unet_kwargs['sample'],
                         timestep=unet_kwargs['timestep'],
                         encoder_hidden_states=unet_kwargs['encoder_hidden_states'],
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
-                    )[0]
+                    )
+                    # Include ControlNet residuals if present
+                    if hook_down_res is not None:
+                        call_kwargs['down_block_additional_residuals'] = hook_down_res
+                    if hook_mid_res is not None:
+                        call_kwargs['mid_block_additional_residual'] = hook_mid_res
+                    model_pred = self.unet(**call_kwargs)[0]
                     # No restoration for per-layer scale; next step will set again via updater/time factor
                 
             except Exception as e:
@@ -618,52 +587,21 @@ class StreamDiffusion:
                 raise
         else:
             # For SD1.5/SD2.1, use the old calling convention for compatibility
-            # If running with TensorRT and IP-Adapter, provide ipadapter_scale as runtime input
+            # Build kwargs from hooks and include residuals
             ip_scale_kw = {}
             is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
-            
-            if is_tensorrt_engine and getattr(self.unet, 'use_ipadapter', False):
-                num_ip_layers = getattr(self.unet, 'num_ip_layers', None)
-                if isinstance(num_ip_layers, int) and num_ip_layers > 0:
-                    base_weight = float(getattr(self, 'ipadapter_scale', 1.0))
-                    weight_type = getattr(self, 'ipadapter_weight_type', None)
-                    try:
-                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights, build_time_weight_factor
-                        weights = build_layer_weights(num_ip_layers, base_weight, weight_type)
-                    except Exception:
-                        weights = None
-                    if weights is None:
-                        weights = torch.full((num_ip_layers,), base_weight, dtype=torch.float32, device=self.device)
-                    # Apply per-step time factor if applicable
-                    try:
-                        total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
-                        if total_steps is not None and idx is not None:
-                            time_factor = build_time_weight_factor(weight_type, int(idx), int(total_steps))
-                            weights = weights * float(time_factor)
-                    except Exception:
-                        pass
-                    ip_scale_kw['ipadapter_scale'] = weights
-                    try:
-                        logger.debug(f"pipeline.unet_step: TRT SD1.5 ipadapter_scale shape={tuple(weights.shape)}, min={float(weights.min().item())}, max={float(weights.max().item())}")
-                    except Exception:
-                        pass
+            if isinstance(hook_extra_kwargs, dict):
+                ip_scale_kw.update(hook_extra_kwargs)
 
-            # For PyTorch branch (no TRT), optionally apply per-step time factor
-            time_factor = 1.0
-            try:
-                from diffusers_ipadapter.ip_adapter.attention_processor import build_time_weight_factor
-                total_steps = getattr(self, 'denoising_steps_num', None) or (len(self.t_list) if hasattr(self, 't_list') else None)
-                if total_steps is not None and idx is not None:
-                    time_factor = float(build_time_weight_factor(getattr(self, 'ipadapter_weight_type', None), int(idx), int(total_steps)))
-                if hasattr(self.unet, 'attn_processors') and time_factor != 1.0:
-                    for p in self.unet.attn_processors.values():
-                        if hasattr(p, 'scale') and hasattr(p, '_ip_layer_index'):
-                            base_val = getattr(p, '_base_scale', p.scale)
-                            p.scale = float(base_val) * time_factor
-            except Exception:
-                pass
+            # PyTorch processor time scaling is handled by the IP-Adapter hook
 
-            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with ip_scale={ 'ipadapter_scale' in ip_scale_kw }")
+            # Include ControlNet residuals if present
+            if hook_down_res is not None:
+                ip_scale_kw['down_block_additional_residuals'] = hook_down_res
+            if hook_mid_res is not None:
+                ip_scale_kw['mid_block_additional_residual'] = hook_mid_res
+
+            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with keys={list(ip_scale_kw.keys())}")
             model_pred = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
