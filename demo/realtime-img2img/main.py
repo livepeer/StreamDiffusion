@@ -163,8 +163,8 @@ class App:
                     current_config = self._get_current_controlnet_config()
                     if current_config and index < len(current_config):
                         current_config[index]['conditioning_scale'] = float(value)
-                        # Apply the updated config
-                        self.pipeline.stream.apply_controlnet_config(current_config)
+                        # Apply the updated config via unified API
+                        self.pipeline.update_stream_params(controlnet_config=current_config)
             elif parameter_name.startswith('controlnet_') and '_preprocessor_' in parameter_name:
                 # Handle ControlNet preprocessor parameters
                 match = re.match(r'controlnet_(\d+)_preprocessor_(.+)', parameter_name)

@@ -40,6 +40,7 @@ class ControlNetModule:
         self.controlnet_images: List[Optional[torch.Tensor]] = []
         self.controlnet_scales: List[float] = []
         self.preprocessors: List[Optional[Any]] = []
+        self.enabled_list: List[bool] = []
 
         self._collections_lock = threading.RLock()
         self._preprocessing_orchestrator: Optional[PreprocessingOrchestrator] = None
@@ -60,6 +61,7 @@ class ControlNetModule:
         # Attach facade methods expected by existing wrapper/demo code
         setattr(stream, 'update_control_image_efficient', self.update_control_image_efficient)
         setattr(stream, 'update_controlnet_scale', self.update_controlnet_scale)
+        setattr(stream, 'update_controlnet_enabled', self.update_controlnet_enabled)
         setattr(stream, 'remove_controlnet', self.remove_controlnet)
         setattr(stream, 'get_current_controlnet_config', self.get_current_config)
         # Expose controlnet collections so existing updater can find them
@@ -114,6 +116,7 @@ class ControlNetModule:
             self.controlnet_images.append(image_tensor)
             self.controlnet_scales.append(float(cfg.conditioning_scale))
             self.preprocessors.append(preproc)
+            self.enabled_list.append(bool(cfg.enabled))
 
     def update_control_image_efficient(self, control_image: Union[str, Any, torch.Tensor], index: Optional[int] = None) -> None:
         if self._preprocessing_orchestrator is None:
@@ -139,6 +142,11 @@ class ControlNetModule:
             if 0 <= index < len(self.controlnet_scales):
                 self.controlnet_scales[index] = float(scale)
 
+    def update_controlnet_enabled(self, index: int, enabled: bool) -> None:
+        with self._collections_lock:
+            if 0 <= index < len(self.enabled_list):
+                self.enabled_list[index] = bool(enabled)
+
     def remove_controlnet(self, index: int) -> None:
         with self._collections_lock:
             if 0 <= index < len(self.controlnets):
@@ -149,6 +157,46 @@ class ControlNetModule:
                     del self.controlnet_scales[index]
                 if index < len(self.preprocessors):
                     del self.preprocessors[index]
+                if index < len(self.enabled_list):
+                    del self.enabled_list[index]
+
+    def reorder_controlnets_by_model_ids(self, desired_model_ids: List[str]) -> None:
+        """Reorder internal collections to match the desired model_id order.
+
+        Any controlnet whose model_id is not present in desired_model_ids retains its
+        relative order after those that are specified.
+        """
+        with self._collections_lock:
+            # Build current mapping from model_id to index
+            current_ids: List[str] = []
+            for i, cn in enumerate(self.controlnets):
+                model_id = getattr(cn, 'model_id', f'controlnet_{i}')
+                current_ids.append(model_id)
+
+            # Compute new index order
+            picked = set()
+            new_order: List[int] = []
+            for mid in desired_model_ids:
+                if mid in current_ids:
+                    idx = current_ids.index(mid)
+                    new_order.append(idx)
+                    picked.add(idx)
+            # Append remaining indices (not specified) preserving order
+            for i in range(len(self.controlnets)):
+                if i not in picked:
+                    new_order.append(i)
+
+            if new_order == list(range(len(self.controlnets))):
+                return  # Already in desired order
+
+            def reindex(lst: List[Any]) -> List[Any]:
+                return [lst[i] for i in new_order]
+
+            self.controlnets = reindex(self.controlnets)
+            self.controlnet_images = reindex(self.controlnet_images)
+            self.controlnet_scales = reindex(self.controlnet_scales)
+            self.preprocessors = reindex(self.preprocessors)
+            self.enabled_list = reindex(self.enabled_list)
 
     def get_current_config(self) -> List[Dict[str, Any]]:
         cfg: List[Dict[str, Any]] = []
@@ -161,6 +209,7 @@ class ControlNetModule:
                     'model_id': model_id,
                     'conditioning_scale': scale,
                     'preprocessor_params': preproc_params,
+                    'enabled': (self.enabled_list[i] if i < len(self.enabled_list) else True),
                 })
         return cfg
 
@@ -177,10 +226,15 @@ class ControlNetModule:
 
                 active_indices = [
                     i
-                    for i, (cn, img, scale) in enumerate(
-                        zip(self.controlnets, self.controlnet_images, self.controlnet_scales)
+                    for i, (cn, img, scale, enabled) in enumerate(
+                        zip(
+                            self.controlnets,
+                            self.controlnet_images,
+                            self.controlnet_scales,
+                            self.enabled_list if len(self.enabled_list) == len(self.controlnets) else [True] * len(self.controlnets),
+                        )
                     )
-                    if cn is not None and img is not None and scale > 0
+                    if cn is not None and img is not None and scale > 0 and bool(enabled)
                 ]
 
                 if not active_indices:
