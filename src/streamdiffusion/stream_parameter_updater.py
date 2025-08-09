@@ -1004,6 +1004,22 @@ class StreamParameterUpdater(OrchestratorUser):
             
             if existing_index is None:
                 # Add new controlnet
+                # Respect wrapper/init configuration: block adds when parallel enabled
+                try:
+                    block_add = bool(getattr(self.stream, 'controlnet_block_add_when_parallel', True))
+                except Exception:
+                    block_add = True
+                concurrency_active = False
+                try:
+                    cn_module = getattr(self.stream, '_controlnet_module', None)
+                    if cn_module is not None:
+                        max_par = int(getattr(cn_module, '_max_parallel_controlnets', 0))
+                        concurrency_active = max_par > 1
+                except Exception:
+                    concurrency_active = False
+                if block_add and concurrency_active:
+                    logger.warning(f"_update_controlnet_config: Add blocked by configuration while parallel ControlNet is active; skipping add for {model_id}")
+                    continue
                 logger.info(f"_update_controlnet_config: Adding ControlNet {model_id}")
                 try:
                     # Prefer module path: construct ControlNetConfig

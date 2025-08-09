@@ -110,6 +110,9 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # Concurrency options
+        controlnet_max_parallel: Optional[int] = None,
+        controlnet_block_add_when_parallel: bool = True,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -198,6 +201,9 @@ class StreamDiffusionWrapper:
         self.enable_pytorch_fallback = enable_pytorch_fallback
         self.use_ipadapter = use_ipadapter
         self.ipadapter_config = ipadapter_config
+        # Concurrency settings
+        self.controlnet_max_parallel = controlnet_max_parallel
+        self.controlnet_block_add_when_parallel = controlnet_block_add_when_parallel
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -1482,6 +1488,17 @@ class StreamDiffusionWrapper:
                 from streamdiffusion.modules.controlnet_module import ControlNetModule, ControlNetConfig
                 cn_module = ControlNetModule(device=self.device, dtype=self.dtype)
                 cn_module.install(stream)
+                # Apply configured max parallel if provided
+                try:
+                    if self.controlnet_max_parallel is not None:
+                        setattr(cn_module, '_max_parallel_controlnets', int(self.controlnet_max_parallel))
+                except Exception:
+                    pass
+                # Expose add-blocking policy on stream
+                try:
+                    setattr(stream, 'controlnet_block_add_when_parallel', bool(self.controlnet_block_add_when_parallel))
+                except Exception:
+                    pass
                 # Normalize to list of configs
                 configs = controlnet_config if isinstance(controlnet_config, list) else [controlnet_config]
                 for cfg in configs:
