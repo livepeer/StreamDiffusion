@@ -41,14 +41,19 @@ class IPAdapterModule:
         def _embedding_hook(ctx: EmbedsCtx) -> EmbedsCtx:
             # Fetch cached image token embeddings (prompt, negative)
             cached: Optional[Tuple[torch.Tensor, torch.Tensor]] = stream._param_updater.get_cached_embeddings(style_key)
-            if cached is None:
-                # No style embeddings available; leave embeddings unchanged
-                return ctx
+            image_prompt_tokens: Optional[torch.Tensor] = None
+            image_negative_tokens: Optional[torch.Tensor] = None
+            if cached is not None:
+                image_prompt_tokens, image_negative_tokens = cached
 
-            image_prompt_tokens, image_negative_tokens = cached
-
-            # Validate token count if specified
-            if image_prompt_tokens is not None and num_tokens is not None:
+            # Validate or synthesize tokens when missing to satisfy engine shape (e.g., TRT expects 77+num_tokens)
+            hidden_dim = ctx.prompt_embeds.shape[2]
+            batch_size = ctx.prompt_embeds.shape[0]
+            if image_prompt_tokens is None:
+                image_prompt_tokens = torch.zeros(
+                    (batch_size, num_tokens, hidden_dim), dtype=ctx.prompt_embeds.dtype, device=ctx.prompt_embeds.device
+                )
+            else:
                 if image_prompt_tokens.shape[1] != num_tokens:
                     raise ValueError(
                         f"IPAdapterModule: Expected {num_tokens} image tokens, got {image_prompt_tokens.shape[1]}"
@@ -65,11 +70,16 @@ class IPAdapterModule:
                 prompt_with_image = torch.cat([prompt_with_image, image_prompt_tokens], dim=1)
 
             neg_with_image = ctx.negative_prompt_embeds
-            if neg_with_image is not None and image_negative_tokens is not None:
-                if image_negative_tokens.shape[0] != neg_with_image.shape[0]:
-                    image_negative_tokens = image_negative_tokens.repeat_interleave(
-                        repeats=neg_with_image.shape[0] // max(image_negative_tokens.shape[0], 1), dim=0
+            if neg_with_image is not None:
+                if image_negative_tokens is None:
+                    image_negative_tokens = torch.zeros(
+                        (neg_with_image.shape[0], num_tokens, hidden_dim), dtype=neg_with_image.dtype, device=neg_with_image.device
                     )
+                else:
+                    if image_negative_tokens.shape[0] != neg_with_image.shape[0]:
+                        image_negative_tokens = image_negative_tokens.repeat_interleave(
+                            repeats=neg_with_image.shape[0] // max(image_negative_tokens.shape[0], 1), dim=0
+                        )
                 neg_with_image = torch.cat([neg_with_image, image_negative_tokens], dim=1)
 
             return EmbedsCtx(prompt_embeds=prompt_with_image, negative_prompt_embeds=neg_with_image)

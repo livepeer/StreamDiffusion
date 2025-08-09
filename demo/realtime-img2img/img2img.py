@@ -272,7 +272,7 @@ class Pipeline:
                 ipadapter_config['style_image'] = style_image
                 
             # Use unified update_stream_params approach
-            self.stream._param_updater.update_stream_params(ipadapter_config=ipadapter_config)
+            self.stream.update_stream_params(ipadapter_config=ipadapter_config)
             return True
         except Exception as e:
             return False
@@ -291,11 +291,11 @@ class Pipeline:
             return False
             
         try:
-            # Prefer consolidated updater so PyTorch per-layer vector is applied immediately
-            if hasattr(self.stream, '_param_updater'):
-                self.stream._param_updater.update_stream_params(ipadapter_config={ 'weight_type': weight_type })
+            # Use unified updater on wrapper
+            if hasattr(self.stream, 'update_stream_params'):
+                self.stream.update_stream_params(ipadapter_config={ 'weight_type': weight_type })
                 return True
-            # Fallback to direct attribute set if updater not present
+            # Direct attribute set as last resort
             if hasattr(self.stream, 'ipadapter_weight_type'):
                 self.stream.ipadapter_weight_type = weight_type
                 return True
@@ -346,4 +346,4 @@ class Pipeline:
             **kwargs: All parameters supported by StreamDiffusionWrapper.update_stream_params()
                      including controlnet_config, guidance_scale, delta, etc.
         """
-        return self.stream._param_updater.update_stream_params(**kwargs)
+        return self.stream.update_stream_params(**kwargs)
