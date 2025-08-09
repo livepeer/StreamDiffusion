@@ -294,7 +294,7 @@ class StreamParameterUpdater:
 
             # Handle ControlNet configuration updates
             if controlnet_config is not None:
-                logger.info(f"update_stream_params: Updating ControlNet configuration with {len(controlnet_config)} controlnets")
+                #TODO: happy path for control images
                 self._update_controlnet_config(controlnet_config)
             
             # Handle IPAdapter configuration updates
@@ -1028,14 +1028,13 @@ class StreamParameterUpdater:
                     
                     if current_scale != desired_scale:
                         logger.info(f"_update_controlnet_config: Updating {model_id} scale: {current_scale} → {desired_scale}")
-                        controlnet_pipeline.update_controlnet_scale(existing_index, desired_scale)
+                        if hasattr(controlnet_pipeline, 'controlnet_scales') and 0 <= existing_index < len(controlnet_pipeline.controlnet_scales):
+                            controlnet_pipeline.controlnet_scales[existing_index] = float(desired_scale)
                 
                 # Enable/disable toggle
-                if 'enabled' in desired_cfg and hasattr(controlnet_pipeline, 'update_controlnet_enabled'):
-                    try:
-                        controlnet_pipeline.update_controlnet_enabled(existing_index, bool(desired_cfg['enabled']))
-                    except Exception:
-                        raise
+                if 'enabled' in desired_cfg and hasattr(controlnet_pipeline, 'enabled_list'):
+                    if 0 <= existing_index < len(controlnet_pipeline.enabled_list):
+                        controlnet_pipeline.enabled_list[existing_index] = bool(desired_cfg['enabled'])
 
                 if 'preprocessor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
                     preprocessor = controlnet_pipeline.preprocessors[existing_index]
@@ -1047,7 +1046,16 @@ class StreamParameterUpdater:
                 # Efficient control image update when provided
                 if 'control_image' in desired_cfg and desired_cfg['control_image'] is not None:
                     try:
-                        controlnet_pipeline.update_control_image_efficient(desired_cfg['control_image'], index=existing_index)
+                        # Route through module helper if available
+                        if hasattr(controlnet_pipeline, 'update_control_image_efficient'):
+                            controlnet_pipeline.update_control_image_efficient(desired_cfg['control_image'], index=existing_index)
+                        else:
+                            # Fallback to orchestrator-based processing if present on module
+                            if hasattr(controlnet_pipeline, '_prepare_control_image') and hasattr(controlnet_pipeline, 'preprocessors') and hasattr(controlnet_pipeline, 'controlnet_images'):
+                                preproc = controlnet_pipeline.preprocessors[existing_index] if existing_index < len(controlnet_pipeline.preprocessors) else None
+                                processed = controlnet_pipeline._prepare_control_image(desired_cfg['control_image'], preproc)
+                                if existing_index < len(controlnet_pipeline.controlnet_images):
+                                    controlnet_pipeline.controlnet_images[existing_index] = processed
                     except Exception:
                         raise
 

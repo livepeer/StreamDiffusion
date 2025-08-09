@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Any
 import torch
 
-from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook
+from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
 
 
@@ -172,6 +172,9 @@ class IPAdapterModule:
         # Register embedding hook for concatenation of image tokens
         stream.embedding_hooks.append(self.build_embedding_hook(stream))
 
+        # Register UNet hook to supply per-step IP-Adapter scale via extra kwargs
+        stream.unet_hooks.append(self.build_unet_hook(stream))
+
     def _resolve_model_path(self, model_path: Optional[str]) -> str:
         """Resolve a model path.
 
@@ -212,4 +215,86 @@ class IPAdapterModule:
             if not os.path.exists(full_path):
                 raise FileNotFoundError(f"IPAdapterModule._resolve_model_path: Downloaded path not found: {full_path}")
             return full_path
+
+    def build_unet_hook(self, stream) -> UnetHook:
+        """Provide per-step ipadapter_scale vector via UNet hook extra kwargs.
+
+        - For TensorRT UNet engines compiled with IP-Adapter, pass a per-layer vector in extra kwargs
+        - For PyTorch UNet with installed IP processors, modulate per-layer processor scale by time factor
+        """
+        def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
+            # If no IP-Adapter installed, do nothing
+            if not hasattr(stream, 'ipadapter') or stream.ipadapter is None:
+                return UnetKwargsDelta()
+
+            # Read base weight and weight type from stream
+            try:
+                base_weight = float(getattr(stream, 'ipadapter_scale', getattr(self, 'config', None).scale if hasattr(self, 'config') else 1.0))
+            except Exception:
+                base_weight = 1.0
+            weight_type = getattr(stream, 'ipadapter_weight_type', None)
+
+            # Determine total steps and current step index for time scheduling
+            total_steps = None
+            try:
+                if hasattr(stream, 'denoising_steps_num') and isinstance(stream.denoising_steps_num, int):
+                    total_steps = int(stream.denoising_steps_num)
+                elif hasattr(stream, 't_list') and stream.t_list is not None:
+                    total_steps = len(stream.t_list)
+            except Exception:
+                total_steps = None
+
+            time_factor = 1.0
+            if total_steps is not None and ctx.step_index is not None:
+                try:
+                    from diffusers_ipadapter.ip_adapter.attention_processor import build_time_weight_factor
+                    time_factor = float(build_time_weight_factor(weight_type, int(ctx.step_index), int(total_steps)))
+                except Exception:
+                    # Do not add fallback mechanisms
+                    pass
+
+            # TensorRT engine path: supply ipadapter_scale vector via extra kwargs
+            try:
+                is_trt_unet = hasattr(stream, 'unet') and hasattr(stream.unet, 'engine') and hasattr(stream.unet, 'stream')
+            except Exception:
+                is_trt_unet = False
+
+            if is_trt_unet and getattr(stream.unet, 'use_ipadapter', False):
+                try:
+                    from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                except Exception:
+                    # If helper unavailable, do not construct weights here
+                    build_layer_weights = None  # type: ignore
+
+                num_ip_layers = getattr(stream.unet, 'num_ip_layers', None)
+                if isinstance(num_ip_layers, int) and num_ip_layers > 0:
+                    weights_tensor = None
+                    try:
+                        if build_layer_weights is not None:
+                            weights_tensor = build_layer_weights(num_ip_layers, float(base_weight), weight_type)
+                    except Exception:
+                        weights_tensor = None
+                    if weights_tensor is None:
+                        import torch as _torch
+                        weights_tensor = _torch.full((num_ip_layers,), float(base_weight), dtype=_torch.float32, device=stream.device)
+                    # Apply per-step time factor
+                    try:
+                        weights_tensor = weights_tensor * float(time_factor)
+                    except Exception:
+                        pass
+                    return UnetKwargsDelta(extra_unet_kwargs={'ipadapter_scale': weights_tensor})
+
+            # PyTorch UNet path: modulate installed processor scales by time factor
+            try:
+                if time_factor != 1.0 and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                    for proc in stream.pipe.unet.attn_processors.values():
+                        if hasattr(proc, 'scale') and hasattr(proc, '_ip_layer_index'):
+                            base_val = getattr(proc, '_base_scale', proc.scale)
+                            proc.scale = float(base_val) * float(time_factor)
+            except Exception:
+                pass
+
+            return UnetKwargsDelta()
+
+        return _unet_hook
 

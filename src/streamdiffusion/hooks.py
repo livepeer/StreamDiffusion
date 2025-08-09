@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import torch
 
 
@@ -41,6 +41,8 @@ class UnetKwargsDelta:
     down_block_additional_residuals: Optional[List[torch.Tensor]] = None
     mid_block_additional_residual: Optional[torch.Tensor] = None
     added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None
+    # Additional kwargs to pass directly to the UNet call (e.g., ipadapter_scale)
+    extra_unet_kwargs: Optional[Dict[str, Any]] = None
 
 
 # Type aliases for clarity

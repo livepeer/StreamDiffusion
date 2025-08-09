@@ -1594,12 +1594,7 @@ class StreamDiffusionWrapper:
 
         return self.stream.get_last_processed_image(index)
     
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
-        """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        return self.stream.update_control_image_efficient(control_image, index)
+    # Removed legacy shims. Use update_stream_params(controlnet_config=...) instead.
     
     
     def cleanup_controlnets(self) -> None:

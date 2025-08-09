@@ -59,32 +59,10 @@ class ControlNetModule:
             )
         # Register UNet hook
         stream.unet_hooks.append(self.build_unet_hook())
-        # Attach facade methods expected by existing wrapper/demo code
-        setattr(stream, 'update_control_image_efficient', self.update_control_image_efficient)
-        setattr(stream, 'update_controlnet_scale', self.update_controlnet_scale)
-        setattr(stream, 'update_controlnet_enabled', self.update_controlnet_enabled)
-        setattr(stream, 'remove_controlnet', self.remove_controlnet)
-        setattr(stream, 'get_current_controlnet_config', self.get_current_config)
         # Expose controlnet collections so existing updater can find them
         setattr(stream, 'controlnets', self.controlnets)
         setattr(stream, 'controlnet_scales', self.controlnet_scales)
         setattr(stream, 'preprocessors', self.preprocessors)
-        # Add shim for add_controlnet with legacy signature
-        def _add_controlnet_legacy(cfg_dict: Dict[str, Any], control_image: Optional[Any] = None, immediate: bool = False) -> None:
-            try:
-                cfg = ControlNetConfig(
-                    model_id=cfg_dict.get('model_id'),
-                    preprocessor=cfg_dict.get('preprocessor'),
-                    conditioning_scale=cfg_dict.get('conditioning_scale', 1.0),
-                    enabled=cfg_dict.get('enabled', True),
-                    preprocessor_params=cfg_dict.get('preprocessor_params'),
-                )
-                self.add_controlnet(cfg, control_image=control_image)
-            except Exception:
-                import logging, traceback
-                logging.getLogger(__name__).error("ControlNetModule: add_controlnet legacy shim failed")
-                logging.getLogger(__name__).error(traceback.format_exc())
-        setattr(stream, 'add_controlnet', _add_controlnet_legacy)
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         model = self._load_pytorch_controlnet_model(cfg.model_id)
