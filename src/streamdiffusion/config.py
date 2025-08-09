@@ -210,38 +210,6 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return ipadapter_configs
 
 
-def _setup_ipadapter_from_config(wrapper, config: Dict[str, Any]):
-    """Deprecation shim kept for compatibility; no-op under module-based install."""
-    return wrapper
-
-
-
-
-
-def _has_preloaded_models(wrapper) -> bool:
-    """Check if wrapper has preloaded IPAdapter models"""
-    return (hasattr(wrapper, 'stream') and 
-            hasattr(wrapper.stream, '_preloaded_with_weights') and 
-            wrapper.stream._preloaded_with_weights and
-            hasattr(wrapper.stream, '_preloaded_ipadapters') and 
-            wrapper.stream._preloaded_ipadapters)
-
-
-def _configure_preloaded_pipeline(pipeline, config: Dict[str, Any]):
-    """Deprecated: handled by module install path in wrapper."""
-    return None
-
-
-def _configure_fresh_pipeline(pipeline, config: Dict[str, Any]):
-    """Deprecated: handled by module install path in wrapper."""
-    return None
-
-
-def _apply_ipadapter_config(pipeline, ip_config: Dict[str, Any]):
-    """Deprecated: handled by module install path in wrapper."""
-    return None
-
-
 def create_prompt_blending_config(
     base_config: Dict[str, Any],
     prompt_list: List[Tuple[str, float]],

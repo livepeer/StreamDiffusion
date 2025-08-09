@@ -39,8 +39,6 @@ class StreamParameterUpdater:
         self._current_seed_list: List[Tuple[int, float]] = []
         self._seed_cache_stats = CacheStats()
         
-        # Enhancement hooks (e.g., for IPAdapter)
-        self._embedding_enhancers = []
         
         # IPAdapter embedding preprocessing
         self._embedding_preprocessors = []
@@ -91,44 +89,7 @@ class StreamParameterUpdater:
         """Get the current seed weight normalization setting."""
         return self.normalize_seed_weights
     
-    def register_embedding_enhancer(self, enhancer_func, name: str = "unknown") -> None:
-        """
-        Register an embedding enhancer function that will be called after prompt blending.
-        
-        The enhancer function should have signature:
-        enhancer_func(prompt_embeds: torch.Tensor, negative_prompt_embeds: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]
-        
-        Args:
-            enhancer_func: Function that takes (prompt_embeds, negative_prompt_embeds) and returns enhanced versions
-            name: Optional name for the enhancer (for debugging)
-        """
-        self._embedding_enhancers.append((enhancer_func, name))
-        # IMMEDIATELY apply enhancer to existing embeddings if they exist (fixes TensorRT timing issue)
-        if hasattr(self.stream, 'prompt_embeds') and self.stream.prompt_embeds is not None:
-            try:
-                current_negative_embeds = getattr(self.stream, 'negative_prompt_embeds', None)
-                enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
-                    self.stream.prompt_embeds, current_negative_embeds
-                )
-                self.stream.prompt_embeds = enhanced_prompt_embeds
-                if enhanced_negative_embeds is not None:
-                    self.stream.negative_prompt_embeds = enhanced_negative_embeds
-            except Exception as e:
-                print(f"register_embedding_enhancer: Error applying '{name}' enhancer immediately: {e}")
-                import traceback
-                traceback.print_exc()
-    
-    def unregister_embedding_enhancer(self, enhancer_func) -> None:
-        """Unregister a specific embedding enhancer function."""
-        original_length = len(self._embedding_enhancers)
-        self._embedding_enhancers = [(func, name) for func, name in self._embedding_enhancers if func != enhancer_func]
-        removed_count = original_length - len(self._embedding_enhancers)
-
-    
-    def clear_embedding_enhancers(self) -> None:
-        """Clear all embedding enhancers."""
-        enhancer_count = len(self._embedding_enhancers)
-        self._embedding_enhancers.clear()
+    # Deprecated enhancer registration removed; embedding composition is handled via stream.embedding_hooks
 
     def register_embedding_preprocessor(self, preprocessor: Any, style_image_key: str) -> None:
         """
@@ -490,20 +451,7 @@ class StreamParameterUpdater:
             final_prompt_embeds = combined_embeds.repeat(self.stream.batch_size, 1, 1)
             final_negative_embeds = None  # Will be set by enhancers if needed
         
-        # Legacy embedding enhancers (kept for compatibility)
-        if self._embedding_enhancers:
-            for enhancer_func, enhancer_name in self._embedding_enhancers:
-                try:
-                    enhanced_prompt_embeds, enhanced_negative_embeds = enhancer_func(
-                        final_prompt_embeds, final_negative_embeds
-                    )
-                    final_prompt_embeds = enhanced_prompt_embeds
-                    if enhanced_negative_embeds is not None:
-                        final_negative_embeds = enhanced_negative_embeds
-                except Exception as e:
-                    print(f"_apply_prompt_blending: Error in enhancer '{enhancer_name}': {e}")
-                    import traceback
-                    traceback.print_exc()
+        # Enhancer mechanism removed in favor of embedding_hooks
 
         # Run embedding hooks to compose final embeddings (e.g., append IP-Adapter tokens)
         try:
