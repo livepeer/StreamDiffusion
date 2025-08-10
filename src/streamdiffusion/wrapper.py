@@ -110,6 +110,9 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # T2I-Adapter options
+        use_t2i_adapter: bool = False,
+        t2i_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -198,6 +201,8 @@ class StreamDiffusionWrapper:
         self.enable_pytorch_fallback = enable_pytorch_fallback
         self.use_ipadapter = use_ipadapter
         self.ipadapter_config = ipadapter_config
+        self.use_t2i_adapter = use_t2i_adapter
+        self.t2i_config = t2i_config
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -450,6 +455,8 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        # T2I-Adapter configuration
+        t2i_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -508,6 +515,7 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
+            t2i_config=t2i_config,
         )
 
     def __call__(
@@ -1542,6 +1550,32 @@ class StreamDiffusionWrapper:
                 import traceback
                 traceback.print_exc()
                 logger.error("Failed to install ControlNetModule")
+                raise
+
+        # Install T2I-Adapter module (PyTorch) via hooks using unified ControlNet API
+        if self.use_t2i_adapter and self.t2i_config:
+            try:
+                from streamdiffusion.modules.t2i_adapter_module import T2IAdapterModule
+                from streamdiffusion.modules.controlnet_module import ControlNetConfig
+                t2i_module = T2IAdapterModule(device=self.device, dtype=self.dtype)
+                t2i_module.install(stream)
+                configs = self.t2i_config if isinstance(self.t2i_config, list) else [self.t2i_config]
+                for cfg in configs:
+                    if not cfg.get('model_path'):
+                        continue
+                    cn_cfg = ControlNetConfig(
+                        model_id=cfg['model_path'],
+                        preprocessor=cfg.get('preprocessor'),
+                        conditioning_scale=float(cfg.get('conditioning_scale', 1.0)),
+                        enabled=bool(cfg.get('enabled', True)),
+                        preprocessor_params=cfg.get('preprocessor_params'),
+                    )
+                    t2i_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
+                stream._t2i_adapter_module = t2i_module
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                logger.error("Failed to install T2IAdapterModule")
                 raise
 
         if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):

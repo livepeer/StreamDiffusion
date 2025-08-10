@@ -97,6 +97,7 @@ class Pipeline:
         self.pipeline_mode = "img2img"  # default mode
         self.has_controlnet = False
         self.has_ipadapter = False
+        self.has_t2i = False
 
         if args.controlnet_config:
             try:
@@ -108,6 +109,7 @@ class Pipeline:
                 # Check what features are enabled
                 self.has_controlnet = 'controlnets' in self.config and len(self.config['controlnets']) > 0
                 self.has_ipadapter = 'ipadapters' in self.config and len(self.config['ipadapters']) > 0
+                self.has_t2i = 't2i_adapters' in self.config and len(self.config['t2i_adapters']) > 0
                 
 
                 
@@ -226,12 +228,52 @@ class Pipeline:
                     for i in range(len(current_cfg)):
                         current_cfg[i]['control_image'] = params.image
                     self.stream.update_stream_params(controlnet_config=current_cfg)
-                output_image = self.stream(params.image)
+                # If T2I-Adapter is active, push control image for this frame
+                if self.has_t2i and params.image is not None:
+                    try:
+                        t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                        if t2i_module is not None:
+                            try:
+                                num = len(getattr(t2i_module, 'controlnets', []))
+                            except Exception:
+                                num = 0
+                            if num > 0:
+                                t2i_cfg = [{'control_image': params.image} for _ in range(num)]
+                                self.stream.update_stream_params(t2i_config=t2i_cfg)
+                    except Exception:
+                        pass
+                output_image = self.stream()
             elif self.has_ipadapter:
                 # txt2img with IPAdapter: no input image needed (style image handled separately)
+                if self.has_t2i and params.image is not None:
+                    try:
+                        t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                        if t2i_module is not None:
+                            try:
+                                num = len(getattr(t2i_module, 'controlnets', []))
+                            except Exception:
+                                num = 0
+                            if num > 0:
+                                t2i_cfg = [{'control_image': params.image} for _ in range(num)]
+                                self.stream.update_stream_params(t2i_config=t2i_cfg)
+                    except Exception:
+                        pass
                 output_image = self.stream()
             else:
                 # Pure txt2img: no image needed
+                if self.has_t2i and params.image is not None:
+                    try:
+                        t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                        if t2i_module is not None:
+                            try:
+                                num = len(getattr(t2i_module, 'controlnets', []))
+                            except Exception:
+                                num = 0
+                            if num > 0:
+                                t2i_cfg = [{'control_image': params.image} for _ in range(num)]
+                                self.stream.update_stream_params(t2i_config=t2i_cfg)
+                    except Exception:
+                        pass
                 output_image = self.stream()
         else:
             # Image-to-image mode: use original logic
@@ -248,15 +290,54 @@ class Pipeline:
                 output_image = self.stream(params.image)
             elif self.has_ipadapter:
                 # IPAdapter mode: use PIL image for img2img
+                if self.has_t2i and params.image is not None:
+                    try:
+                        t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                        if t2i_module is not None:
+                            try:
+                                num = len(getattr(t2i_module, 'controlnets', []))
+                            except Exception:
+                                num = 0
+                            if num > 0:
+                                t2i_cfg = [{'control_image': params.image} for _ in range(num)]
+                                self.stream.update_stream_params(t2i_config=t2i_cfg)
+                    except Exception:
+                        pass
                 output_image = self.stream(params.image)
             else:
                 # Standard mode: handle tensor inputs (always from bytes_to_pt)
                 if isinstance(params.image, torch.Tensor):
                     # Direct tensor input - already preprocessed
+                    if self.has_t2i:
+                        try:
+                            t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                            if t2i_module is not None:
+                                try:
+                                    num = len(getattr(t2i_module, 'controlnets', []))
+                                except Exception:
+                                    num = 0
+                                if num > 0:
+                                    t2i_cfg = [{'control_image': params.image} for _ in range(num)]
+                                    self.stream.update_stream_params(t2i_config=t2i_cfg)
+                        except Exception:
+                            pass
                     output_image = self.stream(image=params.image)
                 else:
                     # Fallback for PIL input - needs preprocessing
                     image_tensor = self.stream.preprocess_image(params.image)
+                    if self.has_t2i:
+                        try:
+                            t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                            if t2i_module is not None:
+                                try:
+                                    num = len(getattr(t2i_module, 'controlnets', []))
+                                except Exception:
+                                    num = 0
+                                if num > 0:
+                                    t2i_cfg = [{'control_image': image_tensor} for _ in range(num)]
+                                    self.stream.update_stream_params(t2i_config=t2i_cfg)
+                        except Exception:
+                            pass
                     output_image = self.stream(image=image_tensor)
 
         return output_image
