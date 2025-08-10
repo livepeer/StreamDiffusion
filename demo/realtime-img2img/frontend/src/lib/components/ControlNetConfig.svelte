@@ -30,7 +30,10 @@
 
   async function updateControlNetStrength(index: number, strength: number) {
     try {
-      const response = await fetch('/api/controlnet/update-strength', {
+      // If the indexed item is a T2I-Adapter (type==='t2i'), switch endpoint
+      const isT2I = controlnetInfo?.controlnets?.[index]?.type === 't2i';
+      const endpoint = isT2I ? '/api/t2i/update-strength' : '/api/controlnet/update-strength';
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

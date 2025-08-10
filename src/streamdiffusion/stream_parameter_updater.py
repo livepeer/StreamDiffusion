@@ -245,6 +245,7 @@ class StreamParameterUpdater(OrchestratorUser):
         normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        t2i_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -303,6 +304,11 @@ class StreamParameterUpdater(OrchestratorUser):
             if ipadapter_config is not None:
                 logger.info(f"update_stream_params: Updating IPAdapter configuration")
                 self._update_ipadapter_config(ipadapter_config)
+
+            # Handle T2I-Adapter configuration updates
+            if t2i_config is not None:
+                logger.info(f"update_stream_params: Updating T2I-Adapter configuration")
+                self._update_t2i_config(t2i_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -1217,6 +1223,67 @@ class StreamParameterUpdater(OrchestratorUser):
                 return self.wrapper.stream.stream
         
         return None
+
+    def _get_t2i_pipeline(self):
+        """Get the T2I-Adapter pipeline/module if installed"""
+        if hasattr(self.stream, '_t2i_adapter_module'):
+            return self.stream._t2i_adapter_module
+        if hasattr(self.stream, 'stream') and hasattr(self.stream.stream, '_t2i_adapter_module'):
+            return self.stream.stream._t2i_adapter_module
+        if self.wrapper and hasattr(self.wrapper, 'stream'):
+            if hasattr(self.wrapper.stream, '_t2i_adapter_module'):
+                return self.wrapper.stream._t2i_adapter_module
+            if hasattr(self.wrapper.stream, 'stream') and hasattr(self.wrapper.stream.stream, '_t2i_adapter_module'):
+                return self.wrapper.stream.stream._t2i_adapter_module
+        return None
+
+    def _update_t2i_config(self, desired_configs: List[Dict[str, Any]]) -> None:
+        """Add/update T2I-Adapters using the unified ControlNetModule API"""
+        t2i_pipeline = self._get_t2i_pipeline()
+        if not t2i_pipeline:
+            logger.warning("_update_t2i_config: No T2I-Adapter pipeline found")
+            return
+        # Ensure list
+        configs = desired_configs if isinstance(desired_configs, list) else [desired_configs]
+        # Use ControlNetConfig to add T2I entries via the unified API
+        try:
+            from streamdiffusion.modules.controlnet_module import ControlNetConfig  # type: ignore
+        except Exception:
+            ControlNetConfig = None  # type: ignore
+        # Naive reconcile: add if missing; update scale/enabled; update image efficiently
+        for idx, cfg in enumerate(configs):
+            # Add new adapter if slot missing
+            try:
+                num_existing = len(getattr(t2i_pipeline, 'controlnets', []))
+            except Exception:
+                num_existing = 0
+            if 'model_path' in cfg and (num_existing <= idx or getattr(t2i_pipeline.controlnets[idx], 'model_id', None) is None):
+                if ControlNetConfig is None:
+                    raise RuntimeError("_update_t2i_config: ControlNetConfig not available")
+                cn_cfg = ControlNetConfig(
+                    model_id=cfg['model_path'],
+                    preprocessor=cfg.get('preprocessor'),
+                    conditioning_scale=float(cfg.get('conditioning_scale', 1.0)),
+                    enabled=bool(cfg.get('enabled', True)),
+                    preprocessor_params=cfg.get('preprocessor_params'),
+                )
+                t2i_pipeline.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
+            # Update scale
+            if 'conditioning_scale' in cfg and idx < len(getattr(t2i_pipeline, 'controlnet_scales', [])):
+                t2i_pipeline.update_controlnet_scale(idx, float(cfg['conditioning_scale']))
+            # Update enabled
+            if 'enabled' in cfg and idx < len(getattr(t2i_pipeline, 'enabled_list', [])):
+                t2i_pipeline.update_controlnet_enabled(idx, bool(cfg['enabled']))
+            # Update image efficiently
+            if 'control_image' in cfg and cfg['control_image'] is not None:
+                if hasattr(t2i_pipeline, 'update_control_image_efficient'):
+                    t2i_pipeline.update_control_image_efficient(cfg['control_image'], index=idx)
+                else:
+                    # Direct orchestrator call as a last resort (no fallback mechanism)
+                    preproc = t2i_pipeline.preprocessors[idx] if idx < len(getattr(t2i_pipeline, 'preprocessors', [])) else None
+                    processed = t2i_pipeline._prepare_control_image(cfg['control_image'], preproc)
+                    if idx < len(getattr(t2i_pipeline, 'controlnet_images', [])):
+                        t2i_pipeline.controlnet_images[idx] = processed
 
     def _get_current_ipadapter_config(self) -> Optional[Dict[str, Any]]:
         """

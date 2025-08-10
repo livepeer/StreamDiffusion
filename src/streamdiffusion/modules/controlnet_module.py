@@ -168,7 +168,6 @@ class ControlNetModule(OrchestratorUser):
                         # Use default batch size of 1 for now, will be adjusted on first use
                         self.prepare_frame_tensors(self._stream.device, self._stream.dtype, 1)
             return
-
         # Use intelligent pipelining (automatically detects feedback preprocessors and switches to sync)
         processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
             control_image=control_image,
