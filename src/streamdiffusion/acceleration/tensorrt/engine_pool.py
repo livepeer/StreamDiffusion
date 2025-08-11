@@ -87,7 +87,7 @@ class ControlNetEnginePool:
     
     def get_or_load_engine(self, 
                           model_id: str,
-                          pytorch_model: Any,
+                          pytorch_model: Any = None,
                           model_type: str = "sd15",
                           batch_size: int = 1) -> HybridControlNet:
         """Get or load ControlNet engine with TensorRT/PyTorch fallback"""

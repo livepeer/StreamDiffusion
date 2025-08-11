@@ -207,10 +207,6 @@ class BaseControlNetPipeline:
 
     def _load_controlnet_model(self, model_id: str):
         """Load a ControlNet model with TensorRT acceleration support"""
-        # First load the PyTorch model as fallback
-        pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
-        
-        # Check if TensorRT engine pool is available
         if hasattr(self.stream, 'controlnet_engine_pool'):
             model_type = self._detected_model_type
             
@@ -219,12 +215,22 @@ class BaseControlNetPipeline:
             
             # Debug: Check what batch size we're getting
             detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)
-            return self.stream.controlnet_engine_pool.get_or_load_engine(
-                model_id=model_id,
-                pytorch_model=pytorch_controlnet,
-                model_type=model_type,
-                batch_size=detected_batch_size
-            )
+            try:
+                return self.stream.controlnet_engine_pool.get_or_load_engine(
+                    model_id=model_id,
+                    model_type=model_type,
+                    batch_size=detected_batch_size
+                )
+            except Exception as e:
+                print(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
+                pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
+                return self.stream.controlnet_engine_pool.get_or_load_engine(
+                    model_id=model_id,
+                    pytorch_model=pytorch_controlnet,
+                    model_type=model_type,
+                    batch_size=detected_batch_size
+                )
+            
         else:
             # Fallback to PyTorch only
             print(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
@@ -232,6 +238,7 @@ class BaseControlNetPipeline:
     
     def _load_pytorch_controlnet_model(self, model_id: str):
         """Load a ControlNet model from HuggingFace or local path"""
+        print("controlnet loadinggggggg")
         try:
             # Check if it's a local path
             if Path(model_id).exists():
