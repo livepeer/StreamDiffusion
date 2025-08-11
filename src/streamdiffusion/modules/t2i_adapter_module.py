@@ -243,12 +243,12 @@ class T2IAdapterModule(ControlNetModule):
             self._preprocessing_orchestrator = PreprocessingOrchestrator(
                 device=self.device, dtype=self.dtype, max_workers=4
             )
-        logger.debug("install: Installing T2I-Adapter module; device=%s dtype=%s", str(self.device), str(self.dtype))
+
         stream.unet_hooks.append(self.build_unet_hook())
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         """Unified add method: treat cfg.model_id as a T2I checkpoint path."""
-        logger.debug("add_controlnet: Loading T2I adapter from path=%s", str(cfg.model_id))
+
         model = self._load_t2i_model(cfg.model_id)
         model = model.to(device=self.device, dtype=self.dtype)
         # Attach an identifier for parity with ControlNet
@@ -281,7 +281,7 @@ class T2IAdapterModule(ControlNetModule):
 
         image_tensor: Optional[torch.Tensor] = None
         if control_image is not None and self._preprocessing_orchestrator is not None:
-            logger.debug("add_controlnet: Preparing initial control image via orchestrator")
+
             image_tensor = super()._prepare_control_image(control_image, preproc)
 
         with self._collections_lock:
@@ -292,13 +292,7 @@ class T2IAdapterModule(ControlNetModule):
             self.preprocessors.append(preproc)
             self.enabled_list.append(bool(cfg.enabled))
             self._cached_controls.append(None)
-        logger.debug(
-            "add_controlnet: Added T2I adapter idx=%d scale=%.4f enabled=%s has_image=%s",
-            len(self.controlnets) - 1,
-            float(cfg.conditioning_scale),
-            str(bool(cfg.enabled)),
-            str(image_tensor is not None),
-        )
+
 
     # Control image updates, scale/enable toggles, reordering, and removal
     # are inherited from ControlNetModule:
@@ -314,13 +308,9 @@ class T2IAdapterModule(ControlNetModule):
 
     def build_unet_hook(self) -> UnetHook:
         def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
-            try:
-                logger.debug("build_unet_hook: step_index=%s x_t_shape=%s t_len=%s", str(ctx.step_index), str(tuple(ctx.x_t_latent.shape) if isinstance(ctx.x_t_latent, torch.Tensor) else None), str(len(ctx.t_list) if hasattr(ctx.t_list, '__len__') else None))
-            except Exception:
-                pass
+
             with self._collections_lock:
                 if not self.controlnets:
-                    logger.debug("build_unet_hook: No adapters installed; skipping")
                     return UnetKwargsDelta()
 
                 active_indices = [
@@ -336,9 +326,7 @@ class T2IAdapterModule(ControlNetModule):
                     if adp is not None and img is not None and scale > 0 and bool(enabled)
                 ]
 
-                logger.debug("build_unet_hook: total_adapters=%d active_indices=%s", len(self.controlnets), str(active_indices))
                 if not active_indices:
-                    logger.debug("build_unet_hook: No active adapters for this step; skipping")
                     return UnetKwargsDelta()
 
                 active_adapters = [self.controlnets[i] for i in active_indices]
@@ -349,10 +337,14 @@ class T2IAdapterModule(ControlNetModule):
             # Compute or reuse cached controls per adapter
             down_samples_list: List[List[torch.Tensor]] = []
             mid_samples_list: List[Optional[torch.Tensor]] = []
+            # Track intrablock vs block-mode lists for merging
+            # PyTorch path: nested per-block intrablock residuals: List[List[Tensor]]
+            intra_down_lists: List[List[List[torch.Tensor]]] = []
+            # TRT path: per-block aggregated residual: List[Tensor]
+            block_down_lists: List[List[torch.Tensor]] = []
 
             for idx, (adapter, image_tensor, scale, cached) in enumerate(zip(active_adapters, active_images, active_scales, cached_controls)):
                 if image_tensor is None:
-                    logger.debug("build_unet_hook: adapter_local_idx=%d has no image; skipping", idx)
                     continue
                 # Align with latent batch/device/dtype
                 current_img = image_tensor
@@ -365,7 +357,6 @@ class T2IAdapterModule(ControlNetModule):
                             repeat_factor = max(1, main_batch // current_img.shape[0])
                             current_img = current_img.repeat(repeat_factor, 1, 1, 1)
                     current_img = current_img.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
-                    logger.debug("build_unet_hook: adapter_local_idx=%d image aligned; shape=%s dtype=%s device=%s", idx, str(tuple(current_img.shape)), str(current_img.dtype), str(current_img.device))
                 except Exception:
                     pass
 
@@ -375,7 +366,7 @@ class T2IAdapterModule(ControlNetModule):
                         adapter.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
                         with torch.no_grad():
                             controls = adapter(current_img)
-                        logger.debug("build_unet_hook: adapter_local_idx=%d cache MISS; computed controls keys=%s", idx, ",".join(list(controls.keys())) if isinstance(controls, dict) else str(type(controls)))
+
                     except Exception as e:
                         logger.error(f"build_unet_hook: adapter forward failed: {e}")
                         continue
@@ -387,7 +378,7 @@ class T2IAdapterModule(ControlNetModule):
                         except Exception:
                             pass
                 else:
-                    logger.debug("build_unet_hook: adapter_local_idx=%d cache HIT", idx)
+                    pass
 
                 # Extract down and middle lists
                 down_list = controls.get("input", []) if isinstance(controls, dict) else []
@@ -397,189 +388,225 @@ class T2IAdapterModule(ControlNetModule):
                 else:
                     mid_tensor = None
 
-                # Apply scale and normalize shapes/dtypes
-                scaled_down: List[Optional[torch.Tensor]] = []
+                # Apply scale and normalize shapes/dtypes (log raw candidate shapes)
+                scaled_candidates: List[torch.Tensor] = []
                 for t in down_list:
                     if t is None:
-                        scaled_down.append(t)  # keep placeholders
-                    else:
-                        td = t.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype) * float(scale)
-                        scaled_down.append(td)
+                        continue
+                    td = t.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype) * float(scale)
+                    scaled_candidates.append(td)
                 if mid_tensor is not None:
                     mid_tensor = mid_tensor.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype) * float(scale)
-                logger.debug("build_unet_hook: adapter_local_idx=%d scale=%.4f down_count=%d mid_present=%s", idx, float(scale), len(scaled_down), str(mid_tensor is not None))
 
-                # Adapt spatial shapes to match UNet expectations (SD1.5 vs SDXL)
+                # verbose candidate shapes logging removed in cleanup
+
+                # Introspect UNet down path to compute expected intrablock slots (shapes and channels)
                 try:
-                    sample_h, sample_w = ctx.x_t_latent.shape[-2], ctx.x_t_latent.shape[-1]
-                    is_sdxl = bool(getattr(self._stream, 'is_sdxl', False))
-                    expected_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4] if is_sdxl else [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]
-                    adapted_down: List[Optional[torch.Tensor]] = []
-                    for i, ten in enumerate(scaled_down):
-                        if ten is None:
-                            adapted_down.append(None)
-                            continue
-                        if i < len(expected_factors):
-                            fac = expected_factors[i]
-                            exp_h = sample_h // fac
-                            exp_w = sample_w // fac
-                            if ten.shape[-2] != exp_h or ten.shape[-1] != exp_w:
-                                import torch.nn.functional as F
-                                ten = F.interpolate(ten, size=(exp_h, exp_w), mode='bilinear', align_corners=False)
-                        adapted_down.append(ten)
-                    scaled_down = adapted_down
-                    if mid_tensor is not None:
-                        mid_fac = 4 if is_sdxl else 8
-                        exp_h = sample_h // mid_fac
-                        exp_w = sample_w // mid_fac
-                        if mid_tensor.shape[-2] != exp_h or mid_tensor.shape[-1] != exp_w:
-                            import torch.nn.functional as F
-                            mid_tensor = F.interpolate(mid_tensor, size=(exp_h, exp_w), mode='bilinear', align_corners=False)
-                except Exception:
-                    pass
-                # Adjust channel dimensions to match UNet expectations per position
-                try:
-                    if not is_sdxl:
-                        # SD1.5 typical expected channels sequence across 12 residuals
-                        expected_channels = [320, 320, 320, 640, 640, 640, 1280, 1280, 1280, 1280, 1280, 1280]
-                    else:
-                        # SDXL rough expected channels across 9 residuals
-                        expected_channels = [320, 320, 320, 640, 640, 640, 1280, 1280, 1280]
-                    adjusted_down: List[Optional[torch.Tensor]] = []
-                    for i, ten in enumerate(scaled_down):
-                        if ten is None or i >= len(expected_channels):
-                            adjusted_down.append(ten)
-                            continue
-                        exp_ch = expected_channels[i]
-                        cur_ch = ten.shape[1]
-                        if cur_ch == exp_ch:
-                            adjusted_down.append(ten)
-                        elif cur_ch > exp_ch:
-                            adjusted_down.append(ten[:, :exp_ch, :, :])
-                        else:
-                            pad_ch = exp_ch - cur_ch
-                            pad = torch.zeros(ten.shape[0], pad_ch, ten.shape[2], ten.shape[3], device=ten.device, dtype=ten.dtype)
-                            adjusted_down.append(torch.cat([ten, pad], dim=1))
-                    scaled_down = adjusted_down
-                except Exception:
-                    pass
-                # Fill missing entries so UNet receives a tensor for each intrablock residual
-                try:
-                    expected_len = len(expected_channels)
-                    if len(scaled_down) < expected_len:
-                        # pad with Nones for uniform handling
-                        scaled_down = scaled_down + [None] * (expected_len - len(scaled_down))
-                    group_size = 3 if not is_sdxl else 3
-                    num_groups = expected_len // group_size
-                    filled_down: List[torch.Tensor] = []
-                    for g in range(num_groups):
-                        group_indices = list(range(g * group_size, (g + 1) * group_size))
-                        # pick first available tensor in the group
-                        base_ten: Optional[torch.Tensor] = None
-                        for gi in group_indices:
-                            ten = scaled_down[gi]
-                            if isinstance(ten, torch.Tensor):
-                                base_ten = ten
+                    sample_h, sample_w = int(ctx.x_t_latent.shape[-2]), int(ctx.x_t_latent.shape[-1])
+                    unet = getattr(self._stream, 'unet', None)
+                    down_blocks = getattr(unet, 'down_blocks', []) if unet is not None else []
+                    expected_slots: List[Tuple[int, int, int, int, str]] = []  # (h,w,exp_ch,block_idx,block_class)
+                    h, w = sample_h, sample_w
+                    resnets_per_block: List[int] = []
+                    for b_i, block in enumerate(down_blocks):
+                        block_cls = block.__class__.__name__
+                        resnets = getattr(block, 'resnets', [])
+                        downsamplers = getattr(block, 'downsamplers', None)
+                        downsamplers_len = 0
+                        try:
+                            downsamplers_len = len(downsamplers) if hasattr(downsamplers, '__len__') else (1 if downsamplers is not None else 0)
+                        except Exception:
+                            downsamplers_len = 0
+
+                        resnets_per_block.append(len(resnets))
+                        for r_i, res in enumerate(resnets):
+                            exp_ch = getattr(res, 'out_channels', None)
+                            if exp_ch is None:
+                                try:
+                                    exp_ch = getattr(res, 'conv2', getattr(res, 'conv_shortcut', None)).out_channels  # type: ignore
+                                except Exception:
+                                    exp_ch = scaled_candidates[0].shape[1] if scaled_candidates else 0
+                            expected_slots.append((h, w, int(exp_ch), b_i, block_cls))
+                        if downsamplers_len > 0:
+                            h = max(1, h // 2)
+                            w = max(1, w // 2)
+
+                except Exception as e:
+                    logger.error(f"build_unet_hook: UNet introspection failed: {e}")
+                    expected_slots = []
+
+                # Map candidates to expected slots by HxW match, then adjust channels
+                import torch.nn.functional as F
+                # Reuse-by-resolution: reuse a candidate for multiple resnets at same resolution
+                resolution_to_candidate_idx: Dict[Tuple[int, int], int] = {}
+                intrablock_down: List[torch.Tensor] = []
+                for slot_i, (eh, ew, ech, b_i, b_cls) in enumerate(expected_slots):
+                    key = (int(eh), int(ew))
+                    chosen_j = resolution_to_candidate_idx.get(key, None)
+                    if chosen_j is None:
+                        for j, cand in enumerate(scaled_candidates):
+                            if int(cand.shape[-2]) == int(eh) and int(cand.shape[-1]) == int(ew):
+                                chosen_j = j
+                                resolution_to_candidate_idx[key] = j
                                 break
-                        # if still None, try previous group's tensor
-                        if base_ten is None and filled_down:
-                            base_ten = filled_down[-1]
-                        # if still None (very first group), create zeros matching expected channels and spatial size
-                        if base_ten is None:
-                            exp_ch = expected_channels[group_indices[0]]
-                            h = sample_h // ([1, 2, 4, 8][g] if not is_sdxl else [1, 2, 4][g])
-                            w = sample_w // ([1, 2, 4, 8][g] if not is_sdxl else [1, 2, 4][g])
-                            base_ten = torch.zeros(ctx.x_t_latent.shape[0], exp_ch, h, w, device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
-                        # replicate for all positions in the group
-                        for gi in group_indices:
-                            filled_down.append(base_ten)
-                    scaled_down = filled_down
-                except Exception:
-                    pass
-                try:
-                    shapes_down = [tuple(t.shape) if isinstance(t, torch.Tensor) else None for t in scaled_down]
-                    logger.debug("build_unet_hook: adapter_local_idx=%d adapted down shapes=%s mid_shape=%s", idx, str(shapes_down), str(tuple(mid_tensor.shape) if isinstance(mid_tensor, torch.Tensor) else None))
-                except Exception:
-                    pass
+                    if chosen_j is None and scaled_candidates:
+                        diffs = [abs(int(c.shape[-2]) - int(eh)) + abs(int(c.shape[-1]) - int(ew)) for c in scaled_candidates]
+                        sorted_idxs = sorted([(d, j) for j, d in enumerate(diffs)], key=lambda x: x[0])
+                        if sorted_idxs:
+                            chosen_j = sorted_idxs[0][1]
+                            resolution_to_candidate_idx[key] = chosen_j
+                    if chosen_j is None:
+                        logger.error("build_unet_hook: adapter_local_idx=%d slot=%d(b%d:%s) no candidate for expected (H=%d,W=%d,C=%d)", idx, slot_i, b_i, b_cls, eh, ew, ech)
+                        continue
+                    cand = scaled_candidates[chosen_j]
+                    pre_shape = tuple(cand.shape)
+                    if int(cand.shape[-2]) != int(eh) or int(cand.shape[-1]) != int(ew):
+                        cand = F.interpolate(cand, size=(int(eh), int(ew)), mode='bilinear', align_corners=False)
+                    cur_ch = int(cand.shape[1])
+                    if ech > 0 and cur_ch != ech:
+                        if cur_ch > ech:
+                            cand = cand[:, :ech, :, :]
+                        else:
+                            pad = torch.zeros(cand.shape[0], ech - cur_ch, cand.shape[2], cand.shape[3], device=cand.device, dtype=cand.dtype)
+                            cand = torch.cat([cand, pad], dim=1)
+                    post_shape = tuple(cand.shape)
+                    intrablock_down.append(cand)
+                    # per-slot mapping log removed in cleanup
+                
 
-                # Reduce intrablock residuals to per-block residuals by summing each group
-                try:
-                    group_size = 3
-                    block_down: List[torch.Tensor] = []
-                    num_groups = (len(scaled_down) // group_size)
-                    for g in range(num_groups):
-                        group = scaled_down[g * group_size:(g + 1) * group_size]
-                        base: Optional[torch.Tensor] = None
-                        for t in group:
-                            if isinstance(t, torch.Tensor):
-                                base = t if base is None else (base + t)
-                        # If still None, synthesize zero tensor with expected channels/size
-                        if base is None:
-                            exp_ch = expected_channels[g * group_size]
-                            h = sample_h // ([1, 2, 4, 8][g] if not is_sdxl else [1, 2, 4][g])
-                            w = sample_w // ([1, 2, 4, 8][g] if not is_sdxl else [1, 2, 4][g])
-                            base = torch.zeros(ctx.x_t_latent.shape[0], exp_ch, h, w, device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
-                        block_down.append(base)
-                    scaled_down = block_down
-                    logger.debug("build_unet_hook: adapter_local_idx=%d reduced to block residuals count=%d", idx, len(scaled_down))
-                except Exception:
-                    pass
+                # Group intrablock residuals per block in encounter order
+                intrablock_by_block: List[List[torch.Tensor]] = [[] for _ in range(len(resnets_per_block))]
+                block_counts: Dict[int, int] = {b_i: 0 for b_i in range(len(resnets_per_block))}
+                for slot_i, slot in enumerate(expected_slots):
+                    b_i = slot[3]
+                    if slot_i < len(intrablock_down):
+                        intrablock_by_block[b_i].append(intrablock_down[slot_i])
+                        block_counts[b_i] += 1
 
-                down_samples_list.append(scaled_down)
+                # per-block tensor shapes logging removed in cleanup
+                # Compute per-block list for TensorRT engines; keep intrablock for PyTorch
+                try:
+                    is_trt = hasattr(self._stream, 'unet') and hasattr(self._stream.unet, 'engine') and hasattr(self._stream.unet, 'stream')
+                except Exception:
+                    is_trt = False
+
+                if is_trt:
+                    try:
+                        block_down: List[torch.Tensor] = []
+                        for b_i, group in enumerate(intrablock_by_block):
+                            base: Optional[torch.Tensor] = None
+                            for t in group:
+                                if isinstance(t, torch.Tensor):
+                                    base = t if base is None else (base + t)
+                            if base is None:
+                                # Synthesize zero tensor matching group first element
+                                ref = group[0]
+                                exp_ch = int(ref.shape[1])
+                                h = int(ref.shape[-2])
+                                w = int(ref.shape[-1])
+                                base = torch.zeros(ctx.x_t_latent.shape[0], exp_ch, h, w, device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
+                            block_down.append(base)
+                        block_down_lists.append(block_down)
+
+                    except Exception:
+                        pass
+                else:
+                    intra_down_lists.append(intrablock_by_block)
+
+
+                # Keep for mid usage alignment (should be None for adapter path)
+                down_samples_list.append(intrablock_down)
                 mid_samples_list.append(mid_tensor)
 
             if not down_samples_list:
                 return UnetKwargsDelta()
 
-            # If single adapter, return directly
+            # If single adapter, return directly (choose intrablock vs block based on engine)
             if len(down_samples_list) == 1:
-                only_down = down_samples_list[0]
-                only_mid = mid_samples_list[0]
                 try:
-                    logger.debug("build_unet_hook: single adapter: emitting down_count=%d mid_present=%s", len([t for t in only_down if t is not None]) if only_down else 0, str(only_mid is not None))
+                    is_trt = hasattr(self._stream, 'unet') and hasattr(self._stream.unet, 'engine') and hasattr(self._stream.unet, 'stream')
                 except Exception:
-                    pass
-                return UnetKwargsDelta(
-                    down_block_additional_residuals=only_down if only_down else None,
-                    mid_block_additional_residual=only_mid if only_mid is not None else None,
-                )
+                    is_trt = False
+                only_mid = None  # Adapter path: no mid residual
+                if not is_trt and len(intra_down_lists) == 1:
+                    only_intra = intra_down_lists[0]
+
+                    return UnetKwargsDelta(
+                        down_intrablock_additional_residuals=only_intra if only_intra else None,
+                        mid_block_additional_residual=None,
+                    )
+                else:
+                    only_block = block_down_lists[0] if block_down_lists else down_samples_list[0]
+
+                    return UnetKwargsDelta(
+                        down_block_additional_residuals=only_block if only_block else None,
+                        mid_block_additional_residual=None,
+                    )
 
             # Multiple adapters: sum element-wise, preserving None placeholders
-            merged_down = down_samples_list[0]
-            merged_mid = mid_samples_list[0]
-            for ds, ms in zip(down_samples_list[1:], mid_samples_list[1:]):
-                # Down blocks
-                max_len = max(len(merged_down), len(ds))
-                if len(merged_down) < max_len:
-                    merged_down = merged_down + [None] * (max_len - len(merged_down))
-                if len(ds) < max_len:
-                    ds = ds + [None] * (max_len - len(ds))
-                for j in range(max_len):
-                    a = merged_down[j]
-                    b = ds[j]
-                    if a is None:
-                        merged_down[j] = b
-                    elif b is None:
-                        merged_down[j] = a
-                    else:
-                        merged_down[j] = a + b
-                # Mid block
-                if merged_mid is None:
-                    merged_mid = ms
-                elif ms is None:
-                    merged_mid = merged_mid
-                else:
-                    merged_mid = merged_mid + ms
-
-            filtered_down = merged_down
+            # Merge multiple adapters element-wise; pick mode by engine
             try:
-                logger.debug("build_unet_hook: merged adapters: emitting down_count=%d mid_present=%s", len([t for t in filtered_down if t is not None]) if filtered_down else 0, str(merged_mid is not None))
+                is_trt = hasattr(self._stream, 'unet') and hasattr(self._stream.unet, 'engine') and hasattr(self._stream.unet, 'stream')
             except Exception:
-                pass
-            return UnetKwargsDelta(
-                down_block_additional_residuals=filtered_down if filtered_down else None,
-                mid_block_additional_residual=merged_mid if merged_mid is not None else None,
-            )
+                is_trt = False
+
+            if is_trt:
+                lists_to_merge_blocks = block_down_lists
+                merged_down = lists_to_merge_blocks[0]
+                for ds in lists_to_merge_blocks[1:]:
+                    max_len = max(len(merged_down), len(ds))
+                    if len(merged_down) < max_len:
+                        merged_down = merged_down + [None] * (max_len - len(merged_down))
+                    if len(ds) < max_len:
+                        ds = ds + [None] * (max_len - len(ds))
+                    for j in range(max_len):
+                        a = merged_down[j]
+                        b = ds[j]
+                        if a is None:
+                            merged_down[j] = b
+                        elif b is None:
+                            merged_down[j] = a
+                        else:
+                            merged_down[j] = a + b
+
+                return UnetKwargsDelta(
+                    down_block_additional_residuals=merged_down if merged_down else None,
+                    mid_block_additional_residual=None,
+                )
+            else:
+                lists_to_merge_nested = intra_down_lists  # List[adapters][blocks][resnets]
+                # Initialize merged structure with first adapter
+                merged_nested: List[List[torch.Tensor]] = [blk.copy() for blk in lists_to_merge_nested[0]]
+                # Merge others
+                for intra in lists_to_merge_nested[1:]:
+                    # Resize to max blocks
+                    if len(merged_nested) < len(intra):
+                        merged_nested += [[] for _ in range(len(intra) - len(merged_nested))]
+                    for b_i in range(len(intra)):
+                        # Ensure per-resnet alignment
+                        if b_i >= len(merged_nested):
+                            merged_nested.append([])
+                        a_block = merged_nested[b_i]
+                        b_block = intra[b_i]
+                        max_r = max(len(a_block), len(b_block))
+                        # Normalize lengths by filling with None-equivalent zeros of proper shape if needed
+                        # Since we cannot infer shapes safely here, prefer using existing tensors when available
+                        new_block: List[torch.Tensor] = []
+                        for r in range(max_r):
+                            a_t = a_block[r] if r < len(a_block) else None
+                            b_t = b_block[r] if r < len(b_block) else None
+                            if a_t is None:
+                                new_block.append(b_t)
+                            elif b_t is None:
+                                new_block.append(a_t)
+                            else:
+                                new_block.append(a_t + b_t)
+                        merged_nested[b_i] = new_block
+
+                return UnetKwargsDelta(
+                    down_intrablock_additional_residuals=merged_nested if merged_nested else None,
+                    mid_block_additional_residual=None,
+                )
 
         return _unet_hook
 
@@ -595,7 +622,7 @@ class T2IAdapterModule(ControlNetModule):
             raise FileNotFoundError(f"_load_t2i_model: model not found at {model_path}")
 
         # Load state dict (safe_load semantics expected from comfy utils; use torch.load here)
-        logger.debug("_load_t2i_model: Loading checkpoint from %s", str(p))
+
         sd = torch.load(str(p), map_location="cpu")
 
         # Some checkpoints may wrap under 'adapter'
@@ -608,7 +635,7 @@ class T2IAdapterModule(ControlNetModule):
         keys = list(sd.keys())
         # AdapterLight branch
         if any(k.endswith("body.0.in_conv.weight") for k in keys):
-            logger.debug("_load_t2i_model: Detected AdapterLight layout")
+
             cin = sd['body.0.in_conv.weight'].shape[1]
             channels = [320, 640, 1280, 1280]
             model = _AdapterLight(channels=channels, nums_rb=4, cin=cin)
@@ -616,12 +643,12 @@ class T2IAdapterModule(ControlNetModule):
             if missing:
                 logger.warning(f"_load_t2i_model: missing keys (light): {missing}")
             if unexpected:
-                logger.debug(f"_load_t2i_model: unexpected keys (light): {unexpected}")
+                pass
             return model
 
         # Adapter (XL-aware) branch
         if 'conv_in.weight' in sd:
-            logger.debug("_load_t2i_model: Detected Adapter (XL-aware) layout")
+
             cin = sd['conv_in.weight'].shape[1]
             channel = sd['conv_in.weight'].shape[0]
             ksize = sd.get('body.0.block2.weight', torch.empty(1, 1, 3, 3)).shape[2]
@@ -634,7 +661,7 @@ class T2IAdapterModule(ControlNetModule):
             if missing:
                 logger.warning(f"_load_t2i_model: missing keys: {missing}")
             if unexpected:
-                logger.debug(f"_load_t2i_model: unexpected keys: {unexpected}")
+                pass
             return model
 
         raise ValueError("_load_t2i_model: unsupported T2I-Adapter checkpoint format")
