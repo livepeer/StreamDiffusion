@@ -238,7 +238,6 @@ class BaseControlNetPipeline:
     
     def _load_pytorch_controlnet_model(self, model_id: str):
         """Load a ControlNet model from HuggingFace or local path"""
-        print("controlnet loadinggggggg")
         try:
             # Check if it's a local path
             if Path(model_id).exists():
