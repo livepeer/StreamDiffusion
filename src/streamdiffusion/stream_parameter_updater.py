@@ -307,7 +307,6 @@ class StreamParameterUpdater(OrchestratorUser):
 
             # Handle T2I-Adapter configuration updates
             if t2i_config is not None:
-                logger.info(f"update_stream_params: Updating T2I-Adapter configuration")
                 self._update_t2i_config(t2i_config)
 
     @torch.no_grad()
