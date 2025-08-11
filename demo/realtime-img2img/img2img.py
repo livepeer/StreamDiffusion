@@ -287,6 +287,21 @@ class Pipeline:
                     for i in range(len(current_cfg)):
                         current_cfg[i]['control_image'] = params.image
                     self.stream.update_stream_params(controlnet_config=current_cfg)
+                # Also push T2I-Adapter control image in img2img when configured
+                if self.has_t2i and params.image is not None:
+                    try:
+                        t2i_module = getattr(self.stream.stream, '_t2i_adapter_module', None)
+                        if t2i_module is not None:
+                            try:
+                                num = len(getattr(t2i_module, 'controlnets', []))
+                            except Exception:
+                                num = 0
+                            if num > 0:
+                                t2i_cfg = [{'control_image': params.image} for _ in range(num)]
+                                print("predict: updating T2I-Adapter control images for img2img")
+                                self.stream.update_stream_params(t2i_config=t2i_cfg)
+                    except Exception:
+                        pass
                 output_image = self.stream(params.image)
             elif self.has_ipadapter:
                 # IPAdapter mode: use PIL image for img2img
