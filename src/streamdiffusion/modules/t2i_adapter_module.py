@@ -229,8 +229,6 @@ class T2IAdapterModule(ControlNetModule):
 
     def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16) -> None:
         super().__init__(device=device, dtype=dtype)
-        # Cached features per adapter (recomputed when image changes)
-        self._cached_controls: List[Optional[Dict[str, List[Optional[torch.Tensor]]]]] = []
         # Stream reference set in install
         self._stream = None
 
@@ -291,7 +289,6 @@ class T2IAdapterModule(ControlNetModule):
             self.controlnet_scales.append(float(cfg.conditioning_scale))
             self.preprocessors.append(preproc)
             self.enabled_list.append(bool(cfg.enabled))
-            self._cached_controls.append(None)
 
 
     # Control image updates, scale/enable toggles, reordering, and removal
@@ -332,7 +329,6 @@ class T2IAdapterModule(ControlNetModule):
                 active_adapters = [self.controlnets[i] for i in active_indices]
                 active_images = [self.controlnet_images[i] for i in active_indices]
                 active_scales = [self.controlnet_scales[i] for i in active_indices]
-                cached_controls = [self._cached_controls[i] for i in active_indices]
 
             # Compute or reuse cached controls per adapter
             down_samples_list: List[List[torch.Tensor]] = []
@@ -343,7 +339,7 @@ class T2IAdapterModule(ControlNetModule):
             # TRT path: per-block aggregated residual: List[Tensor]
             block_down_lists: List[List[torch.Tensor]] = []
 
-            for idx, (adapter, image_tensor, scale, cached) in enumerate(zip(active_adapters, active_images, active_scales, cached_controls)):
+            for idx, (adapter, image_tensor, scale) in enumerate(zip(active_adapters, active_images, active_scales)):
                 if image_tensor is None:
                     continue
                 # Align with latent batch/device/dtype
@@ -360,25 +356,13 @@ class T2IAdapterModule(ControlNetModule):
                 except Exception:
                     pass
 
-                controls = cached
-                if controls is None:
-                    try:
-                        adapter.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
-                        with torch.no_grad():
-                            controls = adapter(current_img)
-
-                    except Exception as e:
-                        logger.error(f"build_unet_hook: adapter forward failed: {e}")
-                        continue
-                    # Store into cache (under lock)
-                    with self._collections_lock:
-                        try:
-                            orig_index = active_indices[idx]
-                            self._cached_controls[orig_index] = controls
-                        except Exception:
-                            pass
-                else:
-                    pass
+                try:
+                    adapter.to(device=ctx.x_t_latent.device, dtype=ctx.x_t_latent.dtype)
+                    with torch.no_grad():
+                        controls = adapter(current_img)
+                except Exception as e:
+                    logger.error(f"build_unet_hook: adapter forward failed: {e}")
+                    continue
 
                 # Extract down and middle lists
                 down_list = controls.get("input", []) if isinstance(controls, dict) else []
