@@ -867,27 +867,38 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
 
-                # Build current t2i config from source of truth
+                # Build current t2i config from source of truth and map combined index → t2i index
                 current = None
+                base_index = 0
+                # Prefer runtime config
                 if self.runtime_controlnet_config and 't2i_adapters' in self.runtime_controlnet_config:
                     current = self.runtime_controlnet_config['t2i_adapters']
+                    base_index = len(self.runtime_controlnet_config.get('controlnets', []))
                 elif self.uploaded_controlnet_config and 't2i_adapters' in self.uploaded_controlnet_config:
                     current = self.uploaded_controlnet_config['t2i_adapters']
+                    base_index = len(self.uploaded_controlnet_config.get('controlnets', []))
                 elif self.pipeline.use_config and self.pipeline.config and 't2i_adapters' in self.pipeline.config:
                     current = self.pipeline.config['t2i_adapters']
-                if current is None or adapter_index >= len(current):
-                    raise HTTPException(status_code=400, detail="T2I-Adapter index out of range or not configured")
+                    base_index = len(self.pipeline.config.get('controlnets', []))
+                if current is None:
+                    raise HTTPException(status_code=400, detail="T2I-Adapter not configured")
+
+                # Translate combined control index into t2i-relative index
+                t2i_idx = int(adapter_index) - int(base_index)
+                if t2i_idx < 0 or t2i_idx >= len(current):
+                    raise HTTPException(status_code=400, detail=f"T2I-Adapter index {adapter_index} out of range (base={base_index}, local_len={len(current)})")
 
                 # Update scale
-                old_strength = current[adapter_index].get('conditioning_scale', 1.0)
-                current[adapter_index]['conditioning_scale'] = float(strength)
+                old_strength = current[t2i_idx].get('conditioning_scale', 1.0)
+                current[t2i_idx]['conditioning_scale'] = float(strength)
 
                 # Push to stream updater
                 self.pipeline.update_stream_params(t2i_config=current)
 
                 return JSONResponse({
                     "status": "success",
-                    "message": f"Updated T2I-Adapter {adapter_index} strength {old_strength} -> {strength}"
+                    "message": f"Updated T2I-Adapter {t2i_idx} strength {old_strength} -> {strength}",
+                    "base_index": base_index
                 })
             except Exception as e:
                 logging.error(f"update_t2i_strength: Failed to update strength: {e}")
