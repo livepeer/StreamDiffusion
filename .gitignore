@@ -212,3 +212,4 @@ models/RealESR*
 # Ignore user config files
 configs/*.yaml
 configs/*.yml
+controlnet_test_sdturbo_multicontrolnet_test_video*
