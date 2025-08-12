@@ -18,7 +18,7 @@ class ControlNetEnginePool:
     """Manages multiple ControlNet TensorRT engines"""
     
     def __init__(self, engine_dir: str, stream: Optional[cuda.Stream] = None, 
-                 image_width: int = 512, image_height: int = 512):
+                 image_width: int = 512, image_height: int = 512, max_batch_size: int = 1, min_batch_size: int = 1):
         """Initialize ControlNet engine pool"""
         self.engine_dir = Path(engine_dir)
         self.engine_dir.mkdir(parents=True, exist_ok=True)
@@ -30,6 +30,8 @@ class ControlNetEnginePool:
         # Store image dimensions for engine compilation
         self.image_width = image_width
         self.image_height = image_height
+        self.max_batch_size = max_batch_size
+        self.min_batch_size = min_batch_size
         
         self._discover_existing_engines()
     
@@ -92,17 +94,20 @@ class ControlNetEnginePool:
                           batch_size: int = 1) -> HybridControlNet:
         """Get or load ControlNet engine with TensorRT/PyTorch fallback"""
         # Use dynamic cache key to match new naming convention
-        cache_key = f"{model_id}--batch-{batch_size}--dyn-384-1024"
+        cache_key = f"{model_id}--min_batch-{self.min_batch_size}--max_batch-{self.max_batch_size}--dyn-384-1024"
         
         if cache_key in self.engines:
             return self.engines[cache_key]
         
         # Use dynamic engine directory (no longer depends on specific width/height)
-        model_engine_dir = self._get_model_engine_dir(model_id, batch_size, self.image_width, self.image_height)
+        model_engine_dir = self._get_model_engine_dir(model_id, self.min_batch_size, self.max_batch_size, self.image_width, self.image_height)
         engine_path = model_engine_dir / "cnet.engine"
         
         if not engine_path.exists():
             print(f"ControlNetEnginePool.get_or_load_engine: ControlNet engine not found for {model_id} ({self.image_width}x{self.image_height}), compiling now...")
+            if pytorch_model is None:
+                raise ValueError(f"ControlNetEnginePool.get_or_load_engine: PyTorch model not provided for {model_id}")
+            
             compilation_start = time.time()
             
             try:
@@ -164,8 +169,8 @@ class ControlNetEnginePool:
             
             controlnet_model = create_controlnet_model(
                 model_type=model_type,
-                max_batch=batch_size,
-                min_batch_size=1,
+                max_batch_size=self.max_batch_size,
+                min_batch_size=self.min_batch_size,
                 embedding_dim=embedding_dim
             )
             
@@ -267,14 +272,14 @@ class ControlNetEnginePool:
         """Cleanup on destruction"""
         self.cleanup()
 
-    def _get_model_engine_dir(self, model_id: str, batch_size: int = 1, width: int = 512, height: int = 512) -> Path:
+    def _get_model_engine_dir(self, model_id: str, min_batch_size: int = 1, max_batch_size: int = 1, width: int = 512, height: int = 512) -> Path:
         """Get the engine directory for a specific ControlNet model with resolution-specific naming"""
         safe_name = model_id.replace("/", "_").replace("\\", "_").replace(":", "_")
         
         # Use dynamic naming convention to match main UNet engines
         # This allows ControlNet engines to support 384-1024 resolution range
         dynamic_suffix = "dyn-384-1024"
-        safe_name = f"controlnet_{safe_name}--batch-{batch_size}--{dynamic_suffix}"
+        safe_name = f"controlnet_{safe_name}--min_batch-{min_batch_size}--max_batch-{max_batch_size}--{dynamic_suffix}"
         
         model_dir = Path(self.engine_dir) / safe_name
         model_dir.mkdir(parents=True, exist_ok=True)

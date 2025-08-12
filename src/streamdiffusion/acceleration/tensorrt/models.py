@@ -69,7 +69,7 @@ class BaseModel:
         fp16=False,
         device="cuda",
         verbose=True,
-        max_batch=16,
+        max_batch_size=16,
         min_batch_size=1,
         embedding_dim=768,
         text_maxlen=77,
@@ -80,7 +80,7 @@ class BaseModel:
         self.verbose = verbose
 
         self.min_batch = min_batch_size
-        self.max_batch = max_batch
+        self.max_batch = max_batch_size
         self.min_image_shape = 256  # min image resolution: 256x256
         self.max_image_shape = 1024  # max image resolution: 1024x1024
         self.min_latent_shape = self.min_image_shape // 8
@@ -247,7 +247,7 @@ class UNet(BaseModel):
         self,
         fp16=False,
         device="cuda",
-        max_batch=16,
+        max_batch_size=16,
         min_batch_size=1,
         embedding_dim=768,
         text_maxlen=77,
@@ -260,7 +260,7 @@ class UNet(BaseModel):
         super(UNet, self).__init__(
             fp16=fp16,
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=embedding_dim,
             text_maxlen=text_maxlen,
@@ -526,10 +526,10 @@ class UNet(BaseModel):
 
 
 class VAE(BaseModel):
-    def __init__(self, device, max_batch, min_batch_size=1):
+    def __init__(self, device, max_batch_size, min_batch_size=1):
         super(VAE, self).__init__(
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=None,
         )
@@ -589,10 +589,10 @@ class VAE(BaseModel):
 
 
 class VAEEncoder(BaseModel):
-    def __init__(self, device, max_batch, min_batch_size=1):
+    def __init__(self, device, max_batch_size, min_batch_size=1):
         super(VAEEncoder, self).__init__(
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=None,
         )
