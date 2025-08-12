@@ -323,13 +323,19 @@ class App:
                         # Check if we need image data based on pipeline
                         need_image = True
                         if self.pipeline and hasattr(self.pipeline, 'pipeline_mode'):
-                            # Need image for img2img OR for txt2img with ControlNets
-                            has_controlnets = self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config
-                            need_image = self.pipeline.pipeline_mode == "img2img" or has_controlnets
+                            # Need image for img2img OR for txt2img with Control-like modules (ControlNet or T2I-Adapter)
+                            has_control_like = (
+                                self.pipeline.use_config and self.pipeline.config and (
+                                    ('controlnets' in self.pipeline.config) or ('t2i_adapters' in self.pipeline.config)
+                                )
+                            )
+                            need_image = self.pipeline.pipeline_mode == "img2img" or has_control_like
                         elif self.uploaded_controlnet_config and 'mode' in self.uploaded_controlnet_config:
-                            # Need image for img2img OR for txt2img with ControlNets
-                            has_controlnets = 'controlnets' in self.uploaded_controlnet_config
-                            need_image = self.uploaded_controlnet_config['mode'] == "img2img" or has_controlnets
+                            # Need image for img2img OR for txt2img with Control-like modules (ControlNet or T2I-Adapter)
+                            has_control_like = (
+                                ('controlnets' in self.uploaded_controlnet_config) or ('t2i_adapters' in self.uploaded_controlnet_config)
+                            )
+                            need_image = self.uploaded_controlnet_config['mode'] == "img2img" or has_control_like
                         
                         if need_image:
                             image_data = await self.conn_manager.receive_bytes(user_id)
@@ -720,6 +726,54 @@ class App:
             """Get current ControlNet configuration info"""
             return JSONResponse({"controlnet": self._get_controlnet_info()})
 
+        @self.app.get("/api/t2i/info")
+        async def get_t2i_info():
+            """Get current T2I-Adapter configuration info (mirrors controlnet info schema)"""
+            try:
+                info = {
+                    "enabled": False,
+                    "config_loaded": False,
+                    "adapters": []
+                }
+                # Prefer runtime config, then uploaded config, then active pipeline
+                if self.runtime_controlnet_config and 't2i_adapters' in self.runtime_controlnet_config:
+                    info["enabled"] = True
+                    info["config_loaded"] = True
+                    for i, a in enumerate(self.runtime_controlnet_config['t2i_adapters']):
+                        info["adapters"].append({
+                            "index": i,
+                            "name": Path(a['model_path']).name if 'model_path' in a else f"t2i_{i}",
+                            "conditioning_scale": a.get('conditioning_scale', 1.0),
+                            "enabled": a.get('enabled', True),
+                            "preprocessor": a.get('preprocessor', 'passthrough')
+                        })
+                elif self.uploaded_controlnet_config and 't2i_adapters' in self.uploaded_controlnet_config:
+                    info["enabled"] = True
+                    info["config_loaded"] = True
+                    for i, a in enumerate(self.uploaded_controlnet_config['t2i_adapters']):
+                        info["adapters"].append({
+                            "index": i,
+                            "name": Path(a['model_path']).name if 'model_path' in a else f"t2i_{i}",
+                            "conditioning_scale": a.get('conditioning_scale', 1.0),
+                            "enabled": a.get('enabled', True),
+                            "preprocessor": a.get('preprocessor', 'passthrough')
+                        })
+                elif self.pipeline and self.pipeline.use_config and self.pipeline.config and 't2i_adapters' in self.pipeline.config:
+                    info["enabled"] = True
+                    info["config_loaded"] = True
+                    for i, a in enumerate(self.pipeline.config['t2i_adapters']):
+                        info["adapters"].append({
+                            "index": i,
+                            "name": Path(a['model_path']).name if 'model_path' in a else f"t2i_{i}",
+                            "conditioning_scale": a.get('conditioning_scale', 1.0),
+                            "enabled": a.get('enabled', True),
+                            "preprocessor": a.get('preprocessor', 'passthrough')
+                        })
+                return JSONResponse({"t2i": info})
+            except Exception as e:
+                logging.error(f"get_t2i_info: Failed: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get T2I info: {str(e)}")
+
         @self.app.get("/api/blending/current")
         async def get_current_blending_config():
             """Get current prompt and seed blending configurations"""
@@ -799,6 +853,56 @@ class App:
             except Exception as e:
                 logging.error(f"update_controlnet_strength: Failed to update strength: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update strength: {str(e)}")
+
+        @self.app.post("/api/t2i/update-strength")
+        async def update_t2i_strength(request: Request):
+            """Update T2I-Adapter conditioning_scale in real-time (reuses controlnet flow)"""
+            try:
+                data = await request.json()
+                adapter_index = data.get("index")
+                strength = data.get("strength")
+                if adapter_index is None or strength is None:
+                    raise HTTPException(status_code=400, detail="Missing index or strength parameter")
+
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+
+                # Build current t2i config from source of truth and map combined index → t2i index
+                current = None
+                base_index = 0
+                # Prefer runtime config
+                if self.runtime_controlnet_config and 't2i_adapters' in self.runtime_controlnet_config:
+                    current = self.runtime_controlnet_config['t2i_adapters']
+                    base_index = len(self.runtime_controlnet_config.get('controlnets', []))
+                elif self.uploaded_controlnet_config and 't2i_adapters' in self.uploaded_controlnet_config:
+                    current = self.uploaded_controlnet_config['t2i_adapters']
+                    base_index = len(self.uploaded_controlnet_config.get('controlnets', []))
+                elif self.pipeline.use_config and self.pipeline.config and 't2i_adapters' in self.pipeline.config:
+                    current = self.pipeline.config['t2i_adapters']
+                    base_index = len(self.pipeline.config.get('controlnets', []))
+                if current is None:
+                    raise HTTPException(status_code=400, detail="T2I-Adapter not configured")
+
+                # Translate combined control index into t2i-relative index
+                t2i_idx = int(adapter_index) - int(base_index)
+                if t2i_idx < 0 or t2i_idx >= len(current):
+                    raise HTTPException(status_code=400, detail=f"T2I-Adapter index {adapter_index} out of range (base={base_index}, local_len={len(current)})")
+
+                # Update scale
+                old_strength = current[t2i_idx].get('conditioning_scale', 1.0)
+                current[t2i_idx]['conditioning_scale'] = float(strength)
+
+                # Push to stream updater
+                self.pipeline.update_stream_params(t2i_config=current)
+
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated T2I-Adapter {t2i_idx} strength {old_strength} -> {strength}",
+                    "base_index": base_index
+                })
+            except Exception as e:
+                logging.error(f"update_t2i_strength: Failed to update strength: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update T2I strength: {str(e)}")
 
         @self.app.get("/api/controlnet/available")
         async def get_available_controlnets():
@@ -2145,6 +2249,39 @@ class App:
                         "strength": cn_config['conditioning_scale']
                     })
         
+        # Append T2I-Adapters as ControlNet-like entries for maximum reuse
+        try:
+            # Determine the source of truth for t2i adapters similar to controlnets
+            t2i_list = None
+            if self.runtime_controlnet_config and 't2i_adapters' in self.runtime_controlnet_config:
+                t2i_list = self.runtime_controlnet_config['t2i_adapters']
+            elif self.uploaded_controlnet_config and 't2i_adapters' in self.uploaded_controlnet_config:
+                t2i_list = self.uploaded_controlnet_config['t2i_adapters']
+            elif self.pipeline and self.pipeline.use_config and self.pipeline.config and 't2i_adapters' in self.pipeline.config:
+                t2i_list = self.pipeline.config['t2i_adapters']
+
+            if t2i_list:
+                base_index = len(controlnet_info["controlnets"])  # offset after controlnets
+                for i, a in enumerate(t2i_list):
+                    name = a.get('model_path', f't2i_{i}')
+                    try:
+                        from pathlib import Path as _P
+                        name = _P(name).name
+                    except Exception:
+                        pass
+                    controlnet_info["controlnets"].append({
+                        "index": base_index + i,
+                        "name": name,
+                        "preprocessor": a.get('preprocessor', 'passthrough'),
+                        "strength": a.get('conditioning_scale', 1.0),
+                        "type": "t2i"
+                    })
+                controlnet_info["enabled"] = True
+                if not controlnet_info["config_loaded"]:
+                    controlnet_info["config_loaded"] = True
+        except Exception:
+            pass
+
         return controlnet_info
 
     def _load_default_style_image(self):

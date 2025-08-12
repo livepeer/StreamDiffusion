@@ -138,6 +138,7 @@ class ControlNetModule:
 
         # Decide whether to enable inter-frame pipelining (disabled if Feedback preprocessor is active)
         allow_pipelining = True
+        #TODO FIX THIS
         try:
             from streamdiffusion.preprocessing.processors.feedback import FeedbackPreprocessor  # type: ignore
             for prep in preprocessors:

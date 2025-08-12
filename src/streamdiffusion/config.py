@@ -140,6 +140,14 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
     
+    # Set T2I-Adapter usage if T2I adapters are configured
+    if 't2i_adapters' in config and config['t2i_adapters']:
+        param_map['use_t2i_adapter'] = True
+        param_map['t2i_config'] = _prepare_t2i_configs(config)
+    else:
+        param_map['use_t2i_adapter'] = config.get('use_t2i_adapter', False)
+        param_map['t2i_config'] = config.get('t2i_config')
+    
     return {k: v for k, v in param_map.items() if v is not None}
 
 
@@ -208,6 +216,23 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         ipadapter_configs.append(ipadapter_config)
     
     return ipadapter_configs
+
+
+def _prepare_t2i_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Prepare T2I-Adapter configurations for wrapper"""
+    t2i_configs: List[Dict[str, Any]] = []
+    for entry in config['t2i_adapters']:
+        t2i_cfg = {
+            'model_path': entry['model_path'],
+            'conditioning_scale': entry.get('conditioning_scale', 1.0),
+            'enabled': entry.get('enabled', True),
+            'preprocessor': entry.get('preprocessor', 'passthrough'),
+            'preprocessor_params': entry.get('preprocessor_params'),
+            # control_image is optional and typically provided at runtime; allow config too
+            'control_image': entry.get('control_image'),
+        }
+        t2i_configs.append(t2i_cfg)
+    return t2i_configs
 
 
 def create_prompt_blending_config(
@@ -374,3 +399,13 @@ def _validate_config(config: Dict[str, Any]) -> None:
         enable_pytorch_fallback = config['enable_pytorch_fallback']
         if not isinstance(enable_pytorch_fallback, bool):
             raise ValueError("_validate_config: 'enable_pytorch_fallback' must be a boolean value")
+
+    # Validate t2i_adapters if present
+    if 't2i_adapters' in config:
+        if not isinstance(config['t2i_adapters'], list):
+            raise ValueError("_validate_config: 't2i_adapters' must be a list")
+        for i, t2i in enumerate(config['t2i_adapters']):
+            if not isinstance(t2i, dict):
+                raise ValueError(f"_validate_config: T2I-Adapter {i} must be a dictionary")
+            if 'model_path' not in t2i:
+                raise ValueError(f"_validate_config: T2I-Adapter {i} missing required 'model_path'")

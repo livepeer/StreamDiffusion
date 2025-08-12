@@ -502,7 +502,10 @@ class StreamDiffusion:
                 delta: UnetKwargsDelta = hook(step_ctx)
                 if delta is None:
                     continue
-                if delta.down_block_additional_residuals is not None:
+                if getattr(delta, 'down_intrablock_additional_residuals', None) is not None:
+                    # Prefer intrablock residuals if provided (PyTorch UNet path)
+                    unet_kwargs['down_intrablock_additional_residuals'] = delta.down_intrablock_additional_residuals
+                elif delta.down_block_additional_residuals is not None:
                     unet_kwargs['down_block_additional_residuals'] = delta.down_block_additional_residuals
                 if delta.mid_block_additional_residual is not None:
                     unet_kwargs['mid_block_additional_residual'] = delta.mid_block_additional_residual
@@ -524,7 +527,8 @@ class StreamDiffusion:
             raise
 
         # Extract potential ControlNet residual kwargs and generic extra kwargs (e.g., ipadapter_scale)
-        hook_down_res = unet_kwargs.get('down_block_additional_residuals', None)
+        hook_down_intra_res = unet_kwargs.get('down_intrablock_additional_residuals', None)
+        hook_down_res = None if hook_down_intra_res is not None else unet_kwargs.get('down_block_additional_residuals', None)
         hook_mid_res = unet_kwargs.get('mid_block_additional_residual', None)
         hook_extra_kwargs = unet_kwargs.get('extra_unet_kwargs', None) if 'extra_unet_kwargs' in unet_kwargs else None
 
@@ -572,8 +576,27 @@ class StreamDiffusion:
                         added_cond_kwargs=added_cond_kwargs,
                         return_dict=False,
                     )
-                    # Include ControlNet residuals if present
-                    if hook_down_res is not None:
+                    # Prefer intrablock residuals if present (diffusers >= 0.24); otherwise use block residuals
+                    if hook_down_intra_res is not None:
+                        # For current diffusers version, CrossAttnDownBlock2D expects a single tensor per block
+                        # Convert per-block intrablock lists into block-level sums
+                        if isinstance(hook_down_intra_res, list) and hook_down_intra_res and isinstance(hook_down_intra_res[0], list):
+                            block_summed: list = []
+                            for b_idx, blk in enumerate(hook_down_intra_res):
+                                if not blk:
+                                    continue
+                                summed = None
+                                for t in blk:
+                                    summed = t if summed is None else (summed + t)
+                                if summed is not None:
+                                    block_summed.append(summed)
+                            call_kwargs['down_block_additional_residuals'] = block_summed
+                            logger.debug(f"pipeline.unet_step: Using block-level residuals (PyTorch) blocks={len(block_summed)}")
+                        else:
+                            # Received a flat intrablock list but current UNet expects per-block tensors; conservatively sum by thirds/quads is unsafe
+                            # Do not pass intrablock directly; rely on any block-level hook output instead
+                            logger.debug("pipeline.unet_step: Ignoring flat intrablock residuals for PyTorch path; expecting per-block tensors")
+                    elif hook_down_res is not None:
                         call_kwargs['down_block_additional_residuals'] = hook_down_res
                     if hook_mid_res is not None:
                         call_kwargs['mid_block_additional_residual'] = hook_mid_res
@@ -595,13 +618,28 @@ class StreamDiffusion:
 
             # PyTorch processor time scaling is handled by the IP-Adapter hook
 
-            # Include ControlNet residuals if present
-            if hook_down_res is not None:
+            # Prefer intrablock residuals if present; else use block residuals
+            if hook_down_intra_res is not None:
+                if isinstance(hook_down_intra_res, list) and hook_down_intra_res and isinstance(hook_down_intra_res[0], list):
+                    block_summed: list = []
+                    for b_idx, blk in enumerate(hook_down_intra_res):
+                        if not blk:
+                            continue
+                        summed = None
+                        for t in blk:
+                            summed = t if summed is None else (summed + t)
+                        if summed is not None:
+                            block_summed.append(summed)
+                    ip_scale_kw['down_block_additional_residuals'] = block_summed
+                    logger.debug(f"pipeline.unet_step: Using block-level residuals (SD1.5/SD2.x, PyTorch) blocks={len(block_summed)}")
+                else:
+                    logger.debug("pipeline.unet_step: Ignoring flat intrablock residuals for PyTorch path; expecting per-block tensors")
+            elif hook_down_res is not None:
                 ip_scale_kw['down_block_additional_residuals'] = hook_down_res
             if hook_mid_res is not None:
                 ip_scale_kw['mid_block_additional_residual'] = hook_mid_res
 
-            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with keys={list(ip_scale_kw.keys())}")
+            logger.debug(f"pipeline.unet_step: Calling PyTorch SD1.5 UNet with keys={list(ip_scale_kw.keys())}")
             model_pred = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
