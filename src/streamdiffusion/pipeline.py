@@ -39,6 +39,7 @@ class StreamDiffusion:
         use_denoising_batch: bool = True,
         frame_buffer_size: int = 1,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
+        lora_dict: Optional[Dict[str, float]] = None,
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
         scheduler: Literal["lcm", "tcd", "dpm++ 2m", "uni_pc", "ddim", "euler"] = "lcm",

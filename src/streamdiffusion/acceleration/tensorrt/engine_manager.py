@@ -1,4 +1,6 @@
 import os
+import re
+import hashlib
 from enum import Enum
 from typing import Any, Optional, Dict
 from pathlib import Path
@@ -67,7 +69,22 @@ class EngineManager:
                 )
             }
         }
-    
+
+    def _lora_signature(self, lora_dict: Dict[str, float]) -> str:
+        """Create a short, stable signature for a set of LoRAs.
+
+        Uses sorted basenames and weights, hashed to a short hex to avoid
+        long/invalid paths while keeping cache keys stable across runs.
+        """
+        # Build canonical string of basename:weight pairs
+        parts = []
+        for path, weight in sorted(lora_dict.items(), key=lambda x: str(x[0])):
+            base = Path(str(path)).name  # basename only
+            parts.append(f"{base}:{weight}")
+        canon = "|".join(parts)
+        h = hashlib.sha1(canon.encode("utf-8")).hexdigest()[:10]
+        return f"{len(lora_dict)}-{h}"
+
     def get_engine_path(self, 
                        engine_type: EngineType,
                        model_id_or_path: str,
@@ -76,6 +93,7 @@ class EngineManager:
                        mode: str,
                        use_lcm_lora: bool,
                        use_tiny_vae: bool,
+                       lora_dict: Optional[Dict[str, float]] = None,
                        ipadapter_scale: Optional[float] = None,
                        ipadapter_tokens: Optional[int] = None,
                        controlnet_model_id: Optional[str] = None) -> Path:
@@ -111,6 +129,10 @@ class EngineManager:
                 prefix += f"--ipa{ipadapter_scale}"
             if ipadapter_tokens is not None:
                 prefix += f"--tokens{ipadapter_tokens}"
+
+            # Fused Loras - use concise hashed signature to avoid long/invalid paths
+            if lora_dict is not None and len(lora_dict) > 0:
+                prefix += f"--lora-{self._lora_signature(lora_dict)}"
             
             prefix += f"--mode-{mode}"
             

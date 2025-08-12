@@ -979,6 +979,7 @@ class StreamDiffusionWrapper:
             frame_buffer_size=self.frame_buffer_size,
             use_denoising_batch=self.use_denoising_batch,
             cfg_type=cfg_type,
+            lora_dict=lora_dict, # We pass this to include loras in engine path names
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
             scheduler=scheduler,
@@ -1154,7 +1155,8 @@ class StreamDiffusionWrapper:
                     use_lcm_lora=use_lcm_lora,
                     use_tiny_vae=use_tiny_vae,
                     ipadapter_scale=ipadapter_scale,
-                    ipadapter_tokens=ipadapter_tokens
+                    ipadapter_tokens=ipadapter_tokens,
+                    lora_dict=lora_dict
                 )
                 vae_encoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_ENCODER,
