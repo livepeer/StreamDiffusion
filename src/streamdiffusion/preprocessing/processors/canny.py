@@ -5,7 +5,7 @@ import torch
 from typing import Union
 from .base import BasePreprocessor
 
-
+#TODO provide gpu native edge detection
 class CannyPreprocessor(BasePreprocessor):
     """
     Canny edge detection preprocessor for ControlNet
