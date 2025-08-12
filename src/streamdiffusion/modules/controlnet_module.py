@@ -12,6 +12,7 @@ from streamdiffusion.hooks import StepCtx, UnetKwargsDelta, UnetHook
 from streamdiffusion.preprocessing.preprocessing_orchestrator import (
     PreprocessingOrchestrator,
 )
+from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
 
 
 @dataclass
@@ -23,7 +24,7 @@ class ControlNetConfig:
     preprocessor_params: Optional[Dict[str, Any]] = None
 
 
-class ControlNetModule:
+class ControlNetModule(OrchestratorUser):
     """ControlNet module that provides a UNet hook for residual conditioning.
 
     Responsibilities in this step (3):
@@ -57,9 +58,8 @@ class ControlNetModule:
         self.device = stream.device
         self.dtype = stream.dtype
         if self._preprocessing_orchestrator is None:
-            self._preprocessing_orchestrator = PreprocessingOrchestrator(
-                device=self.device, dtype=self.dtype, max_workers=4
-            )
+            # Enforce shared orchestrator via base helper (raises if missing)
+            self.attach_orchestrator(stream)
         # Register UNet hook
         stream.unet_hooks.append(self.build_unet_hook())
         # Expose controlnet collections so existing updater can find them

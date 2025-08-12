@@ -6,6 +6,7 @@ import torch
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
+from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
 
 
 @dataclass
@@ -23,7 +24,7 @@ class IPAdapterConfig:
     scale: float = 1.0
 
 
-class IPAdapterModule:
+class IPAdapterModule(OrchestratorUser):
     """IP-Adapter embedding hook provider.
 
     Produces an embedding hook that concatenates cached image tokens (from
@@ -98,6 +99,9 @@ class IPAdapterModule:
         logger = __import__('logging').getLogger(__name__)
         style_key = self.config.style_image_key or "ipadapter_main"
 
+        # Attach shared orchestrator to ensure consistent reuse across modules
+        self.attach_orchestrator(stream)
+
         # Validate required paths
         if not self.config.ipadapter_model_path or not self.config.image_encoder_path:
             raise ValueError("IPAdapterModule.install: ipadapter_model_path and image_encoder_path are required")
@@ -128,7 +132,7 @@ class IPAdapterModule:
         )
         self.ipadapter = ipadapter
 
-        # Register embedding preprocessor for this style key
+        # Register embedding preprocessor for this style key 
         embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
             ipadapter=ipadapter,
             device=stream.device,

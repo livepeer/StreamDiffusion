@@ -6,6 +6,7 @@ import gc
 
 import logging
 logger = logging.getLogger(__name__)
+from .preprocessing.orchestrator_user import OrchestratorUser
 
 class CacheStats:
     """Helper class to track cache statistics"""
@@ -20,7 +21,7 @@ class CacheStats:
         self.misses += 1
 
 
-class StreamParameterUpdater:
+class StreamParameterUpdater(OrchestratorUser):
     def __init__(self, stream_diffusion, wrapper=None, normalize_prompt_weights: bool = True, normalize_seed_weights: bool = True):
         self.stream = stream_diffusion
         self.wrapper = wrapper  # Reference to wrapper for accessing pipeline structure
@@ -40,11 +41,15 @@ class StreamParameterUpdater:
         self._seed_cache_stats = CacheStats()
         
         
+        # Attach shared orchestrator once (lazy-creates on stream if absent)
+        self.attach_orchestrator(self.stream)
+
         # IPAdapter embedding preprocessing
         self._embedding_preprocessors = []
         self._embedding_cache: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
         self._current_style_images: Dict[str, Any] = {}
-        self._embedding_orchestrator = None
+        # Use the shared orchestrator attached via OrchestratorUser
+        self._embedding_orchestrator = self._preprocessing_orchestrator
     def get_cache_info(self) -> Dict:
         """Get cache statistics for monitoring performance."""
         total_requests = self._prompt_cache_stats.hits + self._prompt_cache_stats.misses
@@ -100,12 +105,9 @@ class StreamParameterUpdater:
             style_image_key: Unique key for the style image this preprocessor handles
         """
         if self._embedding_orchestrator is None:
-            from .preprocessing.preprocessing_orchestrator import PreprocessingOrchestrator
-            self._embedding_orchestrator = PreprocessingOrchestrator(
-                device=self.stream.device,
-                dtype=self.stream.dtype,
-                max_workers=4
-            )
+            # Ensure orchestrator is present
+            self.attach_orchestrator(self.stream)
+            self._embedding_orchestrator = self._preprocessing_orchestrator
         
         self._embedding_preprocessors.append((preprocessor, style_image_key))
     
