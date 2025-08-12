@@ -35,6 +35,10 @@ class PreprocessingOrchestrator:
         # Pipeline state for embedding preprocessing
         self._next_embedding_future = None
         self._next_embedding_result = None
+        
+        # Cache pipelining decision to avoid hot path checks
+        self._preprocessors_cache_key = None
+        self._has_feedback_cache = False
     
     def cleanup(self) -> None:
         """Cleanup thread pool resources"""
@@ -85,11 +89,22 @@ class PreprocessingOrchestrator:
                                        stream_width: int,
                                        stream_height: int) -> List[Optional[torch.Tensor]]:
         """
-        Process control images with inter-frame pipelining for improved performance.
+        Process control images with intelligent pipelining.
+        
+        Automatically falls back to sync processing when feedback preprocessors are detected
+        to avoid temporal artifacts, otherwise uses pipelined processing for performance.
         
         Returns:
             List of processed tensors for each ControlNet
         """
+        # Check for feedback preprocessors that require sync processing (cached)
+        has_feedback = self._check_feedback_cached(preprocessors)
+        if has_feedback:
+            return self.process_control_images_sync(
+                control_image, preprocessors, scales, stream_width, stream_height
+            )
+        
+        # No feedback preprocessors detected - use pipelined processing
         # Wait for previous frame preprocessing; non-blocking with short timeout
         self._wait_for_previous_preprocessing()
         
@@ -739,6 +754,38 @@ class PreprocessingOrchestrator:
             logger.error(f"PreprocessingOrchestrator: Preprocessor {preprocessor_key} failed: {e}")
             return None
     
+    def _check_feedback_cached(self, preprocessors: List[Optional[Any]]) -> bool:
+        """
+        _check_feedback_cached: Efficiently check for feedback preprocessors using caching
+        
+        Only performs expensive isinstance checks when preprocessor list actually changes.
+        """
+        # Create cache key from preprocessor identities
+        cache_key = tuple(id(p) for p in preprocessors)
+        
+        # Return cached result if preprocessors haven't changed
+        if cache_key == self._preprocessors_cache_key:
+            return self._has_feedback_cache
+        
+        # Preprocessors changed - recompute and cache
+        self._preprocessors_cache_key = cache_key
+        self._has_feedback_cache = False
+        
+        try:
+            from .processors.feedback import FeedbackPreprocessor
+            for prep in preprocessors:
+                if isinstance(prep, FeedbackPreprocessor):
+                    self._has_feedback_cache = True
+                    break
+        except Exception:
+            # Fallback on class name check without importing
+            for prep in preprocessors:
+                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
+                    self._has_feedback_cache = True
+                    break
+        
+        return self._has_feedback_cache
+
     def _wait_for_previous_preprocessing(self) -> None:
         """Wait for previous frame preprocessing with optimized timeout"""
         if hasattr(self, '_next_frame_future') and self._next_frame_future is not None:

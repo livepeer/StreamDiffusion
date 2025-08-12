@@ -136,38 +136,14 @@ class ControlNetModule:
                     self.controlnet_images[index] = processed
             return
 
-        # Decide whether to enable inter-frame pipelining (disabled if Feedback preprocessor is active)
-        allow_pipelining = True
-        try:
-            from streamdiffusion.preprocessing.processors.feedback import FeedbackPreprocessor  # type: ignore
-            for prep in preprocessors:
-                if isinstance(prep, FeedbackPreprocessor):
-                    allow_pipelining = False
-                    break
-        except Exception:
-            # Fallback on class name check without importing
-            for prep in preprocessors:
-                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
-                    allow_pipelining = False
-                    break
-
-        # Run processing with intraframe parallelism always; use interframe pipelining when allowed
-        if allow_pipelining:
-            processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
-                control_image=control_image,
-                preprocessors=preprocessors,
-                scales=scales,
-                stream_width=self._stream.width,
-                stream_height=self._stream.height,
-            )
-        else:
-            processed_images = self._preprocessing_orchestrator.process_control_images_sync(
-                control_image=control_image,
-                preprocessors=preprocessors,
-                scales=scales,
-                stream_width=self._stream.width,
-                stream_height=self._stream.height,
-            )
+        # Use intelligent pipelining (automatically detects feedback preprocessors and switches to sync)
+        processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
+            control_image=control_image,
+            preprocessors=preprocessors,
+            scales=scales,
+            stream_width=self._stream.width,
+            stream_height=self._stream.height,
+        )
 
         # If orchestrator returns empty list, it indicates no update needed for this frame
         if processed_images is None or (isinstance(processed_images, list) and len(processed_images) == 0):
