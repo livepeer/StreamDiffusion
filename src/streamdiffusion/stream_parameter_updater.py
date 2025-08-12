@@ -696,7 +696,7 @@ class StreamParameterUpdater:
         c_skip_list = []
         c_out_list = []
         for timestep in self.stream.sub_timesteps:
-            c_skip, c_out = self.stream.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
+            c_skip, c_out = self.stream._get_scheduler_scalings(timestep)
             c_skip_list.append(c_skip)
             c_out_list.append(c_out)
 

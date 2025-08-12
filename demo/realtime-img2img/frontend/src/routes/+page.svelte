@@ -224,18 +224,20 @@
       
       if (response.ok) {
         const result = await response.json();
-        console.log('Resolution updated successfully:', result.message ?? result);
+        console.log('Resolution updated successfully:', result.detail);
 
         // Show success message - no restart needed for real-time updates
-        warningMessage = result.message || 'Resolution updated';
-        // Clear message after a few seconds
-        setTimeout(() => {
-          warningMessage = '';
-        }, 3000);
+        if (result.detail) {
+          warningMessage = result.detail;
+          // Clear message after a few seconds
+          setTimeout(() => {
+            warningMessage = '';
+          }, 3000);
+        }
       } else {
         const result = await response.json();
-        console.error('Failed to update resolution:', result.detail || result.message);
-        warningMessage = 'Failed to update resolution: ' + (result.detail || result.message || 'Unknown error');
+        console.error('Failed to update resolution:', result.detail);
+        warningMessage = 'Failed to update resolution: ' + result.detail;
       }
     } catch (error: unknown) {
       console.error('Failed to update resolution:', error);
@@ -789,9 +791,9 @@
             </button>
           </div>
           
-          <ControlNetConfig 
-            {controlnetInfo} 
-            {tIndexList} 
+          <ControlNetConfig
+            {controlnetInfo}
+            {tIndexList}
             {guidanceScale}
             {delta}
             {numInferenceSteps}
@@ -800,8 +802,8 @@
             on:controlnetConfigChanged={getSettings}
           ></ControlNetConfig>
           
-          <IPAdapterConfig 
-            {ipadapterInfo} 
+          <IPAdapterConfig
+            {ipadapterInfo}
             currentScale={ipadapterScale}
           ></IPAdapterConfig>
         </div>
@@ -917,5 +919,8 @@
     cursor: col-resize !important;
   }
 
-  /* Removed unused .resizer:hover selector */
+  /* Improved resizer hover effects */
+  .resizer:hover {
+    background-color: rgb(59 130 246) !important; /* blue-500 */
+  }
 </style>
