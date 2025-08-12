@@ -214,7 +214,7 @@
 
   async function handleResolutionUpdate(resolution: string) {
     try {
-      const response = await fetch('/api/update-resolution', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -225,7 +225,7 @@
       if (response.ok) {
         const result = await response.json();
         console.log('Resolution updated successfully:', result.detail);
-        
+
         // Show success message - no restart needed for real-time updates
         if (result.detail) {
           warningMessage = result.detail;
@@ -710,11 +710,15 @@
         </div>
 
         <!-- Left Resizer -->
-        <div
+        <button
+          type="button"
           class="w-1 bg-gray-300 dark:bg-gray-600 hover:bg-blue-500 cursor-col-resize flex-shrink-0 transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize left panel"
           on:mousedown={(e) => startDrag(e, 'left')}
           title="Drag to resize"
-        ></div>
+        ></button>
       {:else}
         <!-- Collapsed Left Panel Toggle -->
         <div class="flex flex-col items-center py-4 pr-2">
@@ -761,11 +765,15 @@
       <!-- Right Panel - Advanced Controls -->
       {#if !rightPanelCollapsed}
         <!-- Right Resizer -->
-        <div
+        <button
+          type="button"
           class="w-1 bg-gray-300 dark:bg-gray-600 hover:bg-blue-500 cursor-col-resize flex-shrink-0 transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize right panel"
           on:mousedown={(e) => startDrag(e, 'right')}
           title="Drag to resize"
-        ></div>
+        ></button>
 
         <div
           class="flex flex-col gap-4 overflow-y-auto pl-2"
@@ -853,6 +861,8 @@
       <!-- Drag Handle -->
       <div
         class="bg-gray-100 dark:bg-gray-700 px-3 py-2 rounded-t-lg cursor-move border-b border-gray-200 dark:border-gray-600 flex items-center justify-between"
+        role="button"
+        tabindex="0"
         on:mousedown={startVideoDrag}
       >
         <div class="flex items-center gap-2 text-sm font-medium">
