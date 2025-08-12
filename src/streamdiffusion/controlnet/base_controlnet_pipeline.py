@@ -1,5 +1,8 @@
 import torch
 import traceback
+import threading
+import queue
+from enum import Enum
 from typing import List, Optional, Union, Dict, Any, Tuple
 from PIL import Image
 import numpy as np
@@ -15,6 +18,12 @@ from ..preprocessing.preprocessing_orchestrator import PreprocessingOrchestrator
 
 # Setup logger for parallel processing
 logger = logging.getLogger(__name__)
+
+
+class ControlNetOperation(Enum):
+    """Types of ControlNet operations for deferred execution"""
+    ADD = "add"
+    REMOVE = "remove"
 
 class BaseControlNetPipeline:
     """
@@ -60,11 +69,48 @@ class BaseControlNetPipeline:
             dtype=self.dtype, 
             max_workers=4
         )
+        
+        # Non-blocking operation support
+        self._operation_queue = queue.Queue()
+        self._collections_lock = threading.RLock()
+        self._enable_persistent_patching = True
+        
+        # Background thread for processing operations
+        self._shutdown_event = threading.Event()
+        self._background_thread = threading.Thread(target=self._process_operations_worker, daemon=True)
+        self._background_thread.start()
+        logger.info(f"BaseControlNetPipeline: Started background operations thread")
     
     def add_controlnet(self, 
                       controlnet_config: Dict[str, Any],
-                      control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None) -> int:
-        """Add a ControlNet to the pipeline"""
+                      control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
+                      immediate: bool = False) -> Optional[int]:
+        """Add a ControlNet to the pipeline
+        
+        Args:
+            controlnet_config: ControlNet configuration dict
+            control_image: Optional control image
+            immediate: If True, add immediately (blocking). If False, queue for deferred execution.
+        
+        Returns:
+            ControlNet index if immediate=True, None if deferred
+        """
+        if immediate:
+            return self._add_controlnet_immediate(controlnet_config, control_image)
+        else:
+            operation = {
+                'type': ControlNetOperation.ADD,
+                'config': controlnet_config,
+                'control_image': control_image
+            }
+            self._operation_queue.put(operation)
+            logger.info(f"add_controlnet: Queued addition of ControlNet {controlnet_config.get('model_id', 'unknown')}")
+            return None
+    
+    def _add_controlnet_immediate(self, 
+                                controlnet_config: Dict[str, Any],
+                                control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None) -> int:
+        """Add a ControlNet to the pipeline immediately (for internal use during initialization)"""
         if not controlnet_config.get('enabled', True):
             return -1
         
@@ -104,37 +150,131 @@ class BaseControlNetPipeline:
             control_image = load_image(controlnet_config['control_image_path'])
             processed_image = self._prepare_control_image(control_image, preprocessor)
         
-        # Add to collections
-        self.controlnets.append(controlnet)
-        self.controlnet_images.append(processed_image)
-        self.controlnet_scales.append(controlnet_config.get('conditioning_scale', 1.0))
-        self.preprocessors.append(preprocessor)
-        
-        # Update feedback preprocessor cache
-        self._update_feedback_preprocessor_cache()
-        
-        # Patch the StreamDiffusion pipeline if this is the first ControlNet
-        if len(self.controlnets) == 1:
-            self._patch_stream_diffusion()
-        
-        return len(self.controlnets) - 1
-    
-    def remove_controlnet(self, index: int) -> None:
-        """Remove a ControlNet by index"""
-        if 0 <= index < len(self.controlnets):
-            self.controlnets.pop(index)
-            self.controlnet_images.pop(index)
-            self.controlnet_scales.pop(index)
-            self.preprocessors.pop(index)
+        # Thread-safe addition to collections
+        with self._collections_lock:
+            self.controlnets.append(controlnet)
+            self.controlnet_images.append(processed_image)
+            self.controlnet_scales.append(controlnet_config.get('conditioning_scale', 1.0))
+            self.preprocessors.append(preprocessor)
             
             # Update feedback preprocessor cache
             self._update_feedback_preprocessor_cache()
             
-            # Unpatch if no ControlNets remain
-            if len(self.controlnets) == 0:
-                self._unpatch_stream_diffusion()
+            # Use persistent patching - patch once and handle empty lists gracefully
+            if len(self.controlnets) == 1 and self._enable_persistent_patching and not self._is_patched:
+                self._patch_stream_diffusion()
+        
+        return len(self.controlnets) - 1
+    
+    def remove_controlnet(self, index: int, immediate: bool = False) -> None:
+        """Remove a ControlNet by index
+        
+        Args:
+            index: Index of ControlNet to remove
+            immediate: If True, remove immediately (blocking). If False, queue for deferred execution.
+        """
+        if immediate:
+            self._remove_controlnet_immediate(index)
         else:
-            raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
+            operation = {
+                'type': ControlNetOperation.REMOVE,
+                'index': index
+            }
+            self._operation_queue.put(operation)
+            logger.info(f"remove_controlnet: Queued removal of ControlNet at index {index}")
+    
+    def _remove_controlnet_immediate(self, index: int) -> None:
+        """Remove a ControlNet by index immediately (for internal use)"""
+        with self._collections_lock:
+            if 0 <= index < len(self.controlnets):
+                # Get controlnet reference for cleanup
+                controlnet_to_remove = self.controlnets[index]
+                
+                # Aggressive cleanup - move model to CPU and clear GPU memory
+                if controlnet_to_remove is not None:
+                    try:
+                        # Move model to CPU first to free GPU memory
+                        if hasattr(controlnet_to_remove, 'to'):
+                            controlnet_to_remove.to('cpu')
+                        
+                        # Clear module parameters
+                        if hasattr(controlnet_to_remove, '_modules'):
+                            for module_name, module in controlnet_to_remove._modules.items():
+                                if hasattr(module, 'to'):
+                                    module.to('cpu')
+                                if hasattr(module, '_parameters'):
+                                    for param_name, param in list(module._parameters.items()):
+                                        if param is not None:
+                                            param.data = param.data.cpu()
+                                            del param
+                                            module._parameters[param_name] = None
+                        
+                        # Clear TensorRT engine if present
+                        if hasattr(controlnet_to_remove, 'engine') and controlnet_to_remove.engine is not None:
+                            del controlnet_to_remove.engine
+                            controlnet_to_remove.engine = None
+                            
+                    except Exception:
+                        pass  # Continue cleanup even if some parts fail
+                
+                # Remove from collections
+                self.controlnets.pop(index)
+                self.controlnet_images.pop(index)
+                self.controlnet_scales.pop(index)
+                self.preprocessors.pop(index)
+                
+                # Update feedback preprocessor cache
+                self._update_feedback_preprocessor_cache()
+                
+                # With persistent patching, we don't unpatch when empty - just handle gracefully
+                if len(self.controlnets) == 0 and not self._enable_persistent_patching:
+                    self._unpatch_stream_diffusion()
+                
+                # Cleanup reference and force garbage collection
+                del controlnet_to_remove
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                
+            else:
+                raise IndexError(f"{self.model_type} ControlNet index {index} out of range")
+    
+    def _process_operations_worker(self) -> None:
+        """Background thread worker that processes ControlNet operations without blocking inference"""
+        logger.info("BaseControlNetPipeline: Background operations worker started")
+        
+        while not self._shutdown_event.is_set():
+            try:
+                # Wait for operation with timeout to allow checking shutdown event
+                operation = self._operation_queue.get(timeout=1.0)
+                
+                if operation['type'] == ControlNetOperation.ADD:
+                    self._add_controlnet_immediate(operation['config'], operation.get('control_image'))
+                    logger.info(f"Background worker: Applied ADD operation for {operation['config'].get('model_id', 'unknown')}")
+                elif operation['type'] == ControlNetOperation.REMOVE:
+                    self._remove_controlnet_immediate(operation['index'])
+                    logger.info(f"Background worker: Applied REMOVE operation for index {operation['index']}")
+                
+                # Mark task as done
+                self._operation_queue.task_done()
+                
+            except queue.Empty:
+                # Timeout occurred, check shutdown event and continue
+                continue
+            except Exception as e:
+                logger.error(f"Background worker: Failed to process operation: {e}")
+                # Mark task as done even if it failed
+                try:
+                    self._operation_queue.task_done()
+                except:
+                    pass
+        
+        logger.info("BaseControlNetPipeline: Background operations worker stopped")
+
+    
     
     def clear_controlnets(self) -> None:
         """Remove all ControlNets"""
@@ -159,15 +299,28 @@ class BaseControlNetPipeline:
         """Check if any preprocessor is a feedback preprocessor (cached result)"""
         return self._has_feedback_preprocessor_cached
         
-    def cleanup(self) -> None:
-        """Cleanup resources including thread pool"""
+    def cleanup_controlnets(self) -> None:
+        """Cleanup resources including thread pool and background worker"""
+        # Stop background operations worker
+        if hasattr(self, '_shutdown_event'):
+            logger.info("BaseControlNetPipeline: Stopping background operations worker...")
+            self._shutdown_event.set()
+            
+            if hasattr(self, '_background_thread') and self._background_thread.is_alive():
+                self._background_thread.join(timeout=5.0)
+                if self._background_thread.is_alive():
+                    logger.warning("BaseControlNetPipeline: Background thread did not stop within timeout")
+                else:
+                    logger.info("BaseControlNetPipeline: Background operations worker stopped")
+        
+        # Cleanup preprocessing orchestrator
         if hasattr(self, '_preprocessing_orchestrator'):
             self._preprocessing_orchestrator.cleanup()
             
     def __del__(self):
         """Cleanup on object destruction"""
         try:
-            self.cleanup()
+            self.cleanup_controlnets()
         except:
             pass  # Ignore errors during cleanup
     
@@ -233,19 +386,24 @@ class BaseControlNetPipeline:
             logger.info(f"Loading ControlNet {model_id} with TensorRT acceleration")
             logger.info(f"  Model type: {model_type}, is_sdxl: {is_sdxl}")
             
-            # Load PyTorch model for engine compilation if needed
-            pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
-            
             # Get batch size for engine compilation
             detected_batch_size = getattr(self.stream, 'trt_unet_batch_size', 1)
             
-            # Pool now handles all the complexity (model detection, validation, error handling)
-            return self.stream.controlnet_engine_pool.get_or_load_engine(
-                model_id=model_id,
-                pytorch_model=pytorch_controlnet,
-                model_type=model_type,
-                batch_size=detected_batch_size
-            )
+            try:
+                return self.stream.controlnet_engine_pool.load_engine(
+                    model_id=model_id,
+                    model_type=model_type,
+                    batch_size=detected_batch_size
+                )
+            except Exception as e:
+                pytorch_controlnet = self._load_pytorch_controlnet_model(model_id)
+                logger.error(f"Failed to load {self.model_type} ControlNet model '{model_id}': {e}")
+                return self.stream.controlnet_engine_pool.get_or_load_engine(
+                    model_id=model_id,
+                    pytorch_model=pytorch_controlnet,
+                    model_type=model_type,
+                    batch_size=detected_batch_size
+                )
         else:
             # Fallback to PyTorch only
             logger.info(f"Loading ControlNet {model_id} (PyTorch only - no TensorRT acceleration)")
@@ -365,19 +523,28 @@ class BaseControlNetPipeline:
                                    timestep: torch.Tensor,
                                    encoder_hidden_states: torch.Tensor,
                                    **kwargs) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
-        """Get ControlNet conditioning for the current latent and timestep"""
-        if not self.controlnets:
-            return None, None
+        """Get ControlNet conditioning with thread safety"""
+        # Operations are now processed in background thread - no blocking here
         
-        # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
-        active_indices = [
-            i for i, (controlnet, control_image, scale) in enumerate(
-                zip(self.controlnets, self.controlnet_images, self.controlnet_scales)
-            ) if controlnet is not None and control_image is not None and scale > 0
-        ]
-        
-        if not active_indices:
-            return None, None
+        # Thread-safe access to ControlNet collections
+        with self._collections_lock:
+            if not self.controlnets:
+                return None, None
+            
+            # Get active ControlNet indices (ControlNets with scale > 0 and valid images)
+            active_indices = [
+                i for i, (controlnet, control_image, scale) in enumerate(
+                    zip(self.controlnets, self.controlnet_images, self.controlnet_scales)
+                ) if controlnet is not None and control_image is not None and scale > 0
+            ]
+            
+            if not active_indices:
+                return None, None
+            
+            # Create working copies to avoid holding lock during inference
+            active_controlnets = [self.controlnets[i] for i in active_indices]
+            active_images = [self.controlnet_images[i] for i in active_indices]
+            active_scales = [self.controlnet_scales[i] for i in active_indices]
         
         # Prepare base kwargs for ControlNet calls
         main_batch_size = x_t_latent.shape[0]
@@ -392,11 +559,7 @@ class BaseControlNetPipeline:
         down_samples_list = []
         mid_samples_list = []
         
-        for i in active_indices:
-            controlnet = self.controlnets[i]
-            control_image = self.controlnet_images[i]
-            scale = self.controlnet_scales[i]
-            
+        for i, (controlnet, control_image, scale) in enumerate(zip(active_controlnets, active_images, active_scales)):
             # Optimize batch expansion - do once per ControlNet
             current_control_image = control_image
             if (hasattr(controlnet, 'engine') and controlnet.engine is not None and
@@ -407,8 +570,8 @@ class BaseControlNetPipeline:
                 else:
                     current_control_image = control_image.unsqueeze(0).repeat(main_batch_size, 1, 1, 1)
             
-            # Optimized kwargs - reuse base dict and only update specific values
-            controlnet_kwargs = base_kwargs
+            # Optimized kwargs - copy base dict and update specific values
+            controlnet_kwargs = base_kwargs.copy()
             controlnet_kwargs['controlnet_cond'] = current_control_image
             controlnet_kwargs['conditioning_scale'] = scale
             
@@ -419,8 +582,8 @@ class BaseControlNetPipeline:
                 down_samples_list.append(down_samples)
                 mid_samples_list.append(mid_sample)
             except Exception as e:
-                logger.error(f"ControlNetPipeline: ControlNet {i} failed: {e}")
-                logger.error(f"ControlNetPipeline: Full stack trace for ControlNet {i}:")
+                logger.error(f"_get_controlnet_conditioning: ControlNet {i} failed: {e}")
+                logger.error(f"_get_controlnet_conditioning: Full stack trace for ControlNet {i}:")
                 logger.error(traceback.format_exc())
                 continue
         

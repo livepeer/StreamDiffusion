@@ -102,32 +102,17 @@ class Pipeline:
             try:
                 self.config = load_config(args.controlnet_config)
                 self.use_config = True
-                print("__init__: Using configuration file mode")
-                
                 # Check mode from config
                 self.pipeline_mode = self.config.get('mode', 'img2img')
-                print(f"__init__: Pipeline mode set to {self.pipeline_mode}")
                 
                 # Check what features are enabled
                 self.has_controlnet = 'controlnets' in self.config and len(self.config['controlnets']) > 0
                 self.has_ipadapter = 'ipadapters' in self.config and len(self.config['ipadapters']) > 0
                 
-                print(f"__init__: Config keys: {list(self.config.keys())}")
-                print(f"__init__: Has 'ipadapters' key: {'ipadapters' in self.config}")
-                if 'ipadapters' in self.config:
-                    print(f"__init__: IPAdapters config: {self.config['ipadapters']}")
-                    print(f"__init__: IPAdapters length: {len(self.config['ipadapters'])}")
-                
-                if self.has_controlnet:
-                    print("__init__: ControlNet detected in configuration")
-                if self.has_ipadapter:
-                    print("__init__: IPAdapter detected in configuration")
-                else:
-                    print("__init__: IPAdapter NOT detected in configuration")
+
                 
             except Exception as e:
-                print(f"__init__: Failed to load config file {args.controlnet_config}: {e}")
-                print("__init__: Falling back to standard mode")
+                print(f"Failed to load config file {args.controlnet_config}: {e}")
                 self.use_config = False
 
         # Update input_mode based on pipeline mode
@@ -177,7 +162,6 @@ class Pipeline:
 
         else:
             # Create StreamDiffusionWrapper without config (original behavior)
-            print("__init__: Using standard mode (no config)")
             # Use passed width/height parameters
             params.width = width
             params.height = height
@@ -192,7 +176,7 @@ class Pipeline:
                 width=params.width,
                 height=params.height,
                 use_lcm_lora=False,
-                output_type="pil",
+                output_type="pt",
                 warmup=10,
                 vae_id=None,
                 acceleration=args.acceleration,
@@ -221,6 +205,9 @@ class Pipeline:
         self.guidance_scale = 1.1
         self.num_inference_steps = 50
         self.negative_prompt = default_negative_prompt
+        
+        # Store output type for frame conversion
+        self.output_type = "pt" if not self.use_config else self.config.get('output_type', 'pt')
 
         # Model and acceleration setup
 
@@ -248,75 +235,55 @@ class Pipeline:
                 # IPAdapter mode: use PIL image for img2img
                 output_image = self.stream(params.image)
             else:
-                # Standard mode: use original logic with preprocessed tensor
-                image_tensor = self.stream.preprocess_image(params.image)
-                output_image = self.stream(image=image_tensor)
+                # Standard mode: handle tensor inputs (always from bytes_to_pt)
+                if isinstance(params.image, torch.Tensor):
+                    # Direct tensor input - already preprocessed
+                    output_image = self.stream(image=params.image)
+                else:
+                    # Fallback for PIL input - needs preprocessing
+                    image_tensor = self.stream.preprocess_image(params.image)
+                    output_image = self.stream(image=image_tensor)
 
         return output_image
 
-    def update_ipadapter_scale(self, scale: float) -> bool:
+    def update_ipadapter_config(self, scale: float = None, style_image: Image.Image = None) -> bool:
         """
-        Update IPAdapter scale/strength in real-time
+        Update IPAdapter configuration in real-time using unified approach
         
         Args:
-            scale: New IPAdapter scale value
+            scale: New IPAdapter scale value (optional)
+            style_image: New style image (PIL Image, optional)
             
         Returns:
             bool: True if successful, False otherwise
         """
         if not self.has_ipadapter:
-            print("update_ipadapter_scale: IPAdapter not enabled")
             return False
             
+        if scale is None and style_image is None:
+            return False  # Nothing to update
+            
         try:
-            # Check if the stream has update_scale method (IPAdapterPipeline)
-            if hasattr(self.stream, 'update_scale'):
-                self.stream.update_scale(scale)
-                print(f"update_ipadapter_scale: Updated IPAdapter scale to {scale}")
-                return True
-            else:
-                print("update_ipadapter_scale: Stream does not support scale updates")
-                return False
+            # Build config dict with only the parameters that were provided
+            ipadapter_config = {}
+            if scale is not None:
+                ipadapter_config['scale'] = scale
+            if style_image is not None:
+                ipadapter_config['style_image'] = style_image
+                
+            # Use unified update_stream_params approach
+            self.stream.update_stream_params(ipadapter_config=ipadapter_config)
+            return True
         except Exception as e:
-            print(f"update_ipadapter_scale: Failed to update scale: {e}")
             return False
 
+    def update_ipadapter_scale(self, scale: float) -> bool:
+        """Legacy method - use update_ipadapter_config instead"""
+        return self.update_ipadapter_config(scale=scale)
+
     def update_ipadapter_style_image(self, style_image: Image.Image) -> bool:
-        """
-        Update IPAdapter style image in real-time
-        
-        Args:
-            style_image: New style image (PIL Image)
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        print(f"update_ipadapter_style_image: Called with image size: {style_image.size}")
-        print(f"update_ipadapter_style_image: has_ipadapter: {self.has_ipadapter}")
-        print(f"update_ipadapter_style_image: stream type: {type(self.stream)}")
-        
-        if not self.has_ipadapter:
-            print("update_ipadapter_style_image: IPAdapter not enabled")
-            return False
-            
-        try:
-            # Check if the stream has update_style_image method (IPAdapterPipeline)
-            print(f"update_ipadapter_style_image: Stream has update_style_image: {hasattr(self.stream, 'update_style_image')}")
-            
-            if hasattr(self.stream, 'update_style_image'):
-                print("update_ipadapter_style_image: Calling stream.update_style_image")
-                self.stream.update_style_image(style_image)
-                print("update_ipadapter_style_image: Updated IPAdapter style image successfully")
-                return True
-            else:
-                print("update_ipadapter_style_image: Stream does not support style image updates")
-                print(f"update_ipadapter_style_image: Available stream methods: {[method for method in dir(self.stream) if not method.startswith('_')]}")
-                return False
-        except Exception as e:
-            print(f"update_ipadapter_style_image: Failed to update style image: {type(e).__name__}: {e}")
-            import traceback
-            print(f"update_ipadapter_style_image: Traceback: {traceback.format_exc()}")
-            return False
+        """Legacy method - use update_ipadapter_config instead"""
+        return self.update_ipadapter_config(style_image=style_image)
 
     def get_ipadapter_info(self) -> dict:
         """
@@ -347,3 +314,13 @@ class Pipeline:
             info["scale"] = self.stream.ipadapter.scale
             
         return info
+
+    def update_stream_params(self, **kwargs):
+        """
+        Update streaming parameters using the consolidated API
+        
+        Args:
+            **kwargs: All parameters supported by StreamDiffusionWrapper.update_stream_params()
+                     including controlnet_config, guidance_scale, delta, etc.
+        """
+        return self.stream.update_stream_params(**kwargs)

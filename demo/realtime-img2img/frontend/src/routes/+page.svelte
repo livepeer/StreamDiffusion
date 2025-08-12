@@ -17,6 +17,7 @@
   import { getPipelineValues, deboucedPipelineValues, pipelineValues } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
+  import InputControl from '$lib/components/InputControl.svelte';
 
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
@@ -189,7 +190,7 @@
 
   async function handleTIndexListUpdate(newTIndexList: number[]) {
     try {
-      const response = await fetch('/api/update-t-index-list', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -700,6 +701,11 @@
                 </div>
               {/if}
             </div>
+
+            <!-- Input Control Section -->
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+              <InputControl />
+            </div>
           </div>
         </div>
 
@@ -785,7 +791,9 @@
             {numInferenceSteps}
             on:controlnetUpdated={handleControlNetUpdate}
             on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
+            on:controlnetConfigChanged={getSettings}
           ></ControlNetConfig>
+          
           <IPAdapterConfig
             {ipadapterInfo}
             currentScale={ipadapterScale}

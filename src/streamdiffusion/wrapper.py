@@ -267,6 +267,9 @@ class StreamDiffusionWrapper:
             ipadapter_config=ipadapter_config,
         )
 
+        # Set wrapper reference on parameter updater so it can access pipeline structure
+        self.stream._param_updater.wrapper = self
+
         # Store acceleration settings for ControlNet integration
         self._acceleration = acceleration
         self._engine_dir = engine_dir
@@ -336,7 +339,7 @@ class StreamDiffusionWrapper:
 
             # Apply seed blending if provided
             if seed_list is not None:
-                self.stream.update_stream_params(
+                self.update_stream_params(
                     seed_list=seed_list,
                     seed_interpolation_method=seed_interpolation_method,
                 )
@@ -357,7 +360,7 @@ class StreamDiffusionWrapper:
             )
 
             # Then apply prompt blending (and seed blending if provided)
-            self.stream.update_stream_params(
+            self.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
                 prompt_interpolation_method=prompt_interpolation_method,
@@ -425,7 +428,7 @@ class StreamDiffusionWrapper:
                 logger.warning("update_prompt: Switching from single prompt to prompt blending mode.")
 
             # Apply prompt blending
-            self.stream.update_stream_params(
+            self.update_stream_params(
                 prompt_list=prompt,
                 negative_prompt=negative_prompt,
                 prompt_interpolation_method=prompt_interpolation_method,
@@ -450,6 +453,10 @@ class StreamDiffusionWrapper:
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
+        # ControlNet configuration
+        controlnet_config: Optional[List[Dict[str, Any]]] = None,
+        # IPAdapter configuration
+        ipadapter_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -484,7 +491,15 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
+        controlnet_config : Optional[List[Dict[str, Any]]]
+            Complete ControlNet configuration list defining the desired state.
+            Each dict contains: model_id, preprocessor, conditioning_scale, enabled, 
+            preprocessor_params, etc. System will diff current vs desired state and 
+            perform minimal add/remove/update operations.
+        ipadapter_config : Optional[Dict[str, Any]]
+            IPAdapter configuration dict containing scale, style_image, etc.
         """
+        # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
@@ -498,6 +513,8 @@ class StreamDiffusionWrapper:
             seed_interpolation_method=seed_interpolation_method,
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
+            controlnet_config=controlnet_config,
+            ipadapter_config=ipadapter_config,
         )
 
     def get_normalize_prompt_weights(self) -> bool:
@@ -1467,6 +1484,10 @@ class StreamDiffusionWrapper:
             else:
                 stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
 
+        # Apply IPAdapter patch if needed (after ControlNet)
+        if use_ipadapter and ipadapter_config:
+            self._apply_ipadapter_patch(stream, ipadapter_config)
+
         return stream
 
     def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False, engine_manager = None, cuda_stream = None) -> Any:
@@ -1498,6 +1519,7 @@ class StreamDiffusionWrapper:
 
         # Initialize ControlNet engine management if using TensorRT acceleration
         if use_controlnet_tensorrt and engine_manager is not None:
+            from streamdiffusion.acceleration.tensorrt.engine_manager import EngineType
             # Use the same unified EngineManager for ControlNet engines
             # Create a ControlNet-specific subdirectory for organization
             controlnet_engine_dir = os.path.join(engine_dir, "controlnet")
@@ -1514,6 +1536,28 @@ class StreamDiffusionWrapper:
                     self.engine_manager = engine_manager
                     self.engine_dir = controlnet_engine_dir
                     self.cuda_stream = cuda_stream
+
+                def load_engine(self, model_id, model_type="sd15", batch_size=1):
+                    engine_path = self.engine_manager.get_engine_path(
+                        EngineType.CONTROLNET,
+                        model_id_or_path="",  # Not used for ControlNet
+                        max_batch=batch_size,
+                        min_batch_size=1,
+                        mode="",  # Not used for ControlNet
+                        use_lcm_lora=False,  # Not used for ControlNet
+                        use_tiny_vae=False,  # Not used for ControlNet
+                        controlnet_model_id=model_id
+                    )
+                    if not os.path.exists(engine_path):
+                        raise FileNotFoundError(f"ControlNet engine not found at {engine_path}")
+                    return self.engine_manager.load_engine(
+                        EngineType.CONTROLNET,
+                        engine_path,
+                        model_type=model_type,
+                        batch_size=batch_size,
+                        cuda_stream=self.cuda_stream,
+                        use_cuda_graph=True
+                    )
                 
                 def get_or_load_engine(self, model_id, pytorch_model, model_type="sd15", batch_size=1):
                     """get_or_load_engine: Compatibility wrapper for ControlNet pipeline"""
@@ -1559,8 +1603,8 @@ class StreamDiffusionWrapper:
                     'preprocessor_params': preprocessor_params or {}
                 }
 
-                # Add ControlNet with control image if provided
-                controlnet_pipeline.add_controlnet(cn_config, control_image)
+                # Add ControlNet with control image if provided (immediate during initialization)
+                controlnet_pipeline.add_controlnet(cn_config, control_image, immediate=True)
                 logger.info(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
             except Exception as e:
                 logger.error(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
@@ -1569,40 +1613,9 @@ class StreamDiffusionWrapper:
 
         return controlnet_pipeline
 
-    # ControlNet convenience methods
-    def add_controlnet(self,
-                       model_id: str,
-                       preprocessor: Optional[str] = None,
-                       conditioning_scale: float = 1.0,
-                       control_image: Optional[Union[str, Image.Image, np.ndarray, torch.Tensor]] = None,
-                       enabled: bool = True,
-                       preprocessor_params: Optional[Dict[str, Any]] = None) -> int:
-        """Forward add_controlnet call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("add_controlnet: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
-        cn_config = {
-            'model_id': model_id,
-            'preprocessor': preprocessor,
-            'conditioning_scale': conditioning_scale,
-            'enabled': enabled,
-            'preprocessor_params': preprocessor_params or {}
-        }
-        return self.stream.add_controlnet(cn_config, control_image)
+    
 
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
-        """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream.update_control_image_efficient(control_image, index=index)
-
-    def update_controlnet_scale(self, index: int, scale: float) -> None:
-        """Forward update_controlnet_scale call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_controlnet_scale: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream.update_controlnet_scale(index, scale)
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
@@ -1610,7 +1623,22 @@ class StreamDiffusionWrapper:
             raise RuntimeError("get_last_processed_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
         return self.stream.get_last_processed_image(index)
+    
+    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
+        """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
+        if not self.use_controlnet:
+            raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
+        return self.stream.update_control_image_efficient(control_image, index)
+    
+    
+    def cleanup_controlnets(self) -> None:
+        """Cleanup ControlNet resources including background threads and VRAM"""
+        if not self.use_controlnet:
+            return
+            
+        if hasattr(self, 'stream') and self.stream and hasattr(self.stream, 'cleanup'):
+            self.stream.cleanup_controlnets()
 
     def update_seed_blending(
         self,
@@ -2025,6 +2053,47 @@ class StreamDiffusionWrapper:
         """
         self.stream._param_updater.remove_seed_at_index(index, interpolation_method)
 
-
-
-
+    def _apply_ipadapter_patch(self, stream, ipadapter_config: Union[Dict[str, Any], List[Dict[str, Any]]]):
+        """
+        Apply IPAdapter functionality to existing stream (add attributes instead of wrapping)
+        
+        Args:
+            stream: Existing StreamDiffusion or ControlNet pipeline
+            ipadapter_config: IPAdapter configuration
+        """
+        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
+        
+        # Get the underlying StreamDiffusion object
+        underlying_stream = stream.stream if hasattr(stream, 'stream') else stream
+        
+        # Create IPAdapter pipeline for the functionality
+        ipadapter_pipeline = BaseIPAdapterPipeline(
+            stream_diffusion=underlying_stream,
+            device=self.device,
+            dtype=self.dtype
+        )
+        
+        # Add IPAdapter functionality to the existing stream by setting attributes
+        stream.ipadapter = None  # Will be set when configured
+        stream.update_scale = ipadapter_pipeline.update_scale
+        stream.update_style_image = ipadapter_pipeline.update_style_image
+        
+        # Configure the IPAdapter if config provided
+        if ipadapter_config:
+            if isinstance(ipadapter_config, list):
+                # Use first config if multiple provided
+                config = ipadapter_config[0]
+            else:
+                config = ipadapter_config
+                
+            if config.get('enabled', True):
+                ipadapter_pipeline.set_ipadapter(
+                    ipadapter_model_path=config['ipadapter_model_path'],
+                    image_encoder_path=config['image_encoder_path'],
+                    style_image=config.get('style_image'),
+                    scale=config.get('scale', 1.0)
+                )
+                # Copy the configured IPAdapter to the stream
+                stream.ipadapter = ipadapter_pipeline.ipadapter
+                stream.scale = ipadapter_pipeline.scale
+                stream.style_image = ipadapter_pipeline.style_image

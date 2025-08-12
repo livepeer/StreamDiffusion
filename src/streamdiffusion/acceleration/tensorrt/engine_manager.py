@@ -208,9 +208,9 @@ class EngineManager:
                 self._execute_compilation(compile_fn, engine_path, kwargs['model'], kwargs['model_config'], kwargs['batch_size'], kwargs)
         
         # Load and return using the appropriate loader
-        return self._load_engine(engine_type, engine_path, kwargs)
+        return self.load_engine(engine_type, engine_path, **kwargs)
     
-    def _load_engine(self, engine_type: EngineType, engine_path: Path, kwargs: Dict) -> Any:
+    def load_engine(self, engine_type: EngineType, engine_path: Path, **kwargs: Dict) -> Any:
         """Load engine with type-specific handling."""
         config = self._configs[engine_type]
         loader = config['loader']

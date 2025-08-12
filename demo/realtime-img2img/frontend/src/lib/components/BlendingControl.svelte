@@ -141,10 +141,10 @@
 
   async function updateNormalizePromptWeights(normalize: boolean) {
     try {
-      const response = await fetch('/api/update-normalize-prompt-weights', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ normalize })
+        body: JSON.stringify({ normalize_prompt_weights: normalize })
       });
 
       if (!response.ok) {
@@ -162,12 +162,12 @@
 
   async function updatePromptBlendingWithoutRefresh() {
     try {
-      const response = await fetch('/api/prompt-blending/update', {
+      const response = await fetch('/api/blending', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt_list: promptList,
-          interpolation_method: promptInterpolationMethod
+          prompt_interpolation_method: promptInterpolationMethod
         })
       });
 
@@ -220,10 +220,10 @@
 
   async function updateNormalizeSeedWeights(normalize: boolean) {
     try {
-      const response = await fetch('/api/update-normalize-seed-weights', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ normalize })
+        body: JSON.stringify({ normalize_seed_weights: normalize })
       });
 
       if (!response.ok) {
@@ -246,7 +246,7 @@
 
   async function updateSeedBlendingWithoutRefresh() {
     try {
-      const response = await fetch('/api/seed-blending/update', {
+      const response = await fetch('/api/blending', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

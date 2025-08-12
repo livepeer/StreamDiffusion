@@ -5,6 +5,7 @@
   import PreprocessorDocs from './PreprocessorDocs.svelte';
   import PreprocessorSelector from './PreprocessorSelector.svelte';
   import PreprocessorParams from './PreprocessorParams.svelte';
+  import ControlNetSelector from './ControlNetSelector.svelte';
 
   export let controlnetInfo: any = null;
   export let tIndexList: number[] = [35, 45];
@@ -49,17 +50,74 @@
     }
   }
 
+  function handleControlNetAdded(event: CustomEvent) {
+    console.log('ControlNetConfig: ControlNet added:', event.detail);
+    
+    // If the event includes updated controlnet info, use it immediately
+    if (event.detail.controlnet_info) {
+      controlnetInfo = event.detail.controlnet_info;
+      console.log('handleControlNetAdded: Updated local controlnetInfo:', controlnetInfo);
+    }
+    
+    // Trigger a refresh by dispatching an event to parent
+    dispatch('controlnetConfigChanged');
+  }
+
+  async function removeControlNet(index: number) {
+    try {
+      const response = await fetch('/api/controlnet/remove', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          index: index,
+        }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('removeControlNet: Failed to remove controlnet:', result.detail);
+        return false;
+      }
+      
+      const result = await response.json();
+      console.log('removeControlNet: Successfully removed ControlNet at index', index);
+      
+      // Update local state immediately with response data
+      if (result.controlnet_info) {
+        controlnetInfo = result.controlnet_info;
+        console.log('removeControlNet: Updated local controlnetInfo:', controlnetInfo);
+      }
+      
+      // Also trigger config refresh for parent component
+      dispatch('controlnetConfigChanged');
+      return true;
+    } catch (error) {
+      console.error('removeControlNet: Remove failed:', error);
+      return false;
+    }
+  }
+
   function handleStrengthChange(index: number, event: Event) {
     const target = event.target as HTMLInputElement;
     const strength = parseFloat(target.value);
     
-    // Update local state immediately for responsiveness
-    if (controlnetInfo && controlnetInfo.controlnets) {
-      controlnetInfo.controlnets[index].strength = strength;
-      controlnetInfo = { ...controlnetInfo }; // Trigger reactivity
+    // Validate that the ControlNet still exists at this index
+    if (!controlnetInfo || !controlnetInfo.controlnets || index >= controlnetInfo.controlnets.length) {
+      console.warn('handleStrengthChange: ControlNet at index', index, 'no longer exists, skipping update');
+      return;
     }
     
+    // Update local state immediately for responsiveness
+    controlnetInfo.controlnets[index].strength = strength;
+    controlnetInfo = { ...controlnetInfo }; // Trigger reactivity
+    
     updateControlNetStrength(index, strength);
+  }
+
+  function handleDeleteControlNet(index: number) {
+    removeControlNet(index);
   }
 
   function handleTIndexChange(index: number, event: Event) {
@@ -82,7 +140,7 @@
   async function updateGuidanceScale(value: number) {
     try {
       guidanceScale = value;
-      const response = await fetch('/api/update-guidance-scale', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ guidance_scale: value })
@@ -99,7 +157,7 @@
   async function updateDelta(value: number) {
     try {
       delta = value;
-      const response = await fetch('/api/update-delta', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ delta: value })
@@ -116,7 +174,7 @@
   async function updateNumInferenceSteps(value: number) {
     try {
       numInferenceSteps = value;
-      const response = await fetch('/api/update-num-inference-steps', {
+      const response = await fetch('/api/params', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ num_inference_steps: value })
@@ -203,8 +261,25 @@
     console.log('ControlNetConfig: Parameters updated:', { controlnet_index, parameters });
   }
   
+  // Clear preprocessor state when controlnet info changes (e.g., new YAML uploaded)
+  let lastControlNetSignature = '';
+  
   // Initialize preprocessor states when controlnet info is available
   $: if (controlnetInfo && controlnetInfo.controlnets) {
+    // Create a signature based on controlnet names and indices to detect changes
+    const currentSignature = controlnetInfo.controlnets.map((cn: any) => `${cn.index}:${cn.name}`).join(',');
+    
+    // If the signature changed, clear state (new YAML or reordering)
+    if (currentSignature !== lastControlNetSignature && lastControlNetSignature !== '') {
+      console.log('ControlNetConfig: ControlNet configuration changed, clearing preprocessor state');
+      console.log('ControlNetConfig: Old signature:', lastControlNetSignature);
+      console.log('ControlNetConfig: New signature:', currentSignature);
+      currentPreprocessors = {};
+      preprocessorInfos = {};
+      preprocessorParams = {};
+    }
+    lastControlNetSignature = currentSignature;
+    
     controlnetInfo.controlnets.forEach(async (controlnet: any, index: number) => {
       if (controlnet.preprocessor && !currentPreprocessors[index]) {
         currentPreprocessors[index] = controlnet.preprocessor;
@@ -263,16 +338,29 @@
         <!-- ControlNet Strength Controls -->
         {#if controlnetInfo?.enabled && controlnetInfo?.controlnets?.length > 0}
           <div class="space-y-3">
-            <h5 class="text-sm font-medium">ControlNet Configuration</h5>
+            <div class="flex items-center justify-between">
+              <h5 class="text-sm font-medium">ControlNet Configuration</h5>
+              <ControlNetSelector on:controlnetAdded={handleControlNetAdded} />
+            </div>
             {#each controlnetInfo.controlnets as controlnet}
               <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 space-y-3">
                 <div class="flex items-center justify-between">
-                  <span class="text-sm font-semibold truncate">
-                    {controlnet.name}
-                  </span>
-                  <span class="text-xs text-gray-600 dark:text-gray-400">
-                    Index: {controlnet.index}
-                  </span>
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-semibold truncate">
+                      {controlnet.name}
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs text-gray-600 dark:text-gray-400">
+                      Index: {controlnet.index}
+                    </span>
+                    <Button 
+                      on:click={() => handleDeleteControlNet(controlnet.index)}
+                      classList="text-xs px-2 py-1 bg-red-500 hover:bg-red-600 text-white"
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </div>
                 
                 <!-- Strength Control -->
@@ -316,13 +404,19 @@
             {/each}
           </div>
         {:else if controlnetInfo?.enabled}
-          <p class="text-xs text-gray-600 dark:text-gray-400">
-            ControlNet enabled but no networks found.
-          </p>
+          <div class="space-y-3">
+            <p class="text-xs text-gray-600 dark:text-gray-400">
+              No ControlNets active. Add one to get started:
+            </p>
+            <ControlNetSelector on:controlnetAdded={handleControlNetAdded} />
+          </div>
         {:else}
-          <p class="text-xs text-gray-600 dark:text-gray-400">
-            Load pipeline configuration to enable ControlNet.
-          </p>
+          <div class="space-y-3">
+            <p class="text-xs text-gray-600 dark:text-gray-400">
+              Load pipeline configuration to enable ControlNet.
+            </p>
+            <ControlNetSelector on:controlnetAdded={handleControlNetAdded} />
+          </div>
         {/if}
       </div>
     {/if}
@@ -453,16 +547,6 @@
 <PreprocessorDocs bind:visible={showDocs} />
 
 <style>
-  .controlnet-config {
-    border: 1px solid #e5e7eb;
-    border-radius: 0.375rem;
-    padding: 0.75rem;
-  }
-  
-  .dark .controlnet-config {
-    border-color: #374151;
-  }
-
   /* Compact range slider styling */
   input[type="range"]::-webkit-slider-thumb {
     appearance: none;
@@ -496,13 +580,5 @@
     border-radius: 4px;
     background: #e5e7eb;
     border: none;
-  }
-
-  .dark input[type="range"]::-webkit-slider-track {
-    background: #4b5563;
-  }
-
-  .dark input[type="range"]::-moz-range-track {
-    background: #4b5563;
   }
 </style> 
