@@ -11,15 +11,15 @@ class ControlNetTRT(BaseModel):
     def __init__(self, 
                  fp16: bool = True,
                  device: str = "cuda",
-                 max_batch: int = 2,
                  min_batch_size: int = 1,
+                 max_batch_size: int = 4,
                  embedding_dim: int = 768,
                  unet_dim: int = 4,
                  **kwargs):
         super().__init__(
             fp16=fp16,
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=embedding_dim,
             **kwargs

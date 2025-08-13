@@ -121,6 +121,9 @@ class StreamParameterUpdater:
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
+        if t_index_list is not None:
+            self._recalculate_timestep_dependent_params(t_index_list)
+
         if num_inference_steps is not None:
             self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
             self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
@@ -159,9 +162,6 @@ class StreamParameterUpdater:
         # Handle seed blending if seed_list is provided
         if seed_list is not None:
             self._update_blended_seeds(seed_list=seed_list, interpolation_method=seed_interpolation_method)
-
-        if t_index_list is not None:
-            self._recalculate_timestep_dependent_params(t_index_list)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -471,6 +471,46 @@ class StreamParameterUpdater:
     def _recalculate_timestep_dependent_params(self, t_index_list: List[int]) -> None:
         """Recalculate all parameters that depend on t_index_list."""
         self.stream.t_list = t_index_list
+        self.stream.denoising_steps_num = len(self.stream.t_list)
+
+        if self.stream.use_denoising_batch:
+            self.stream.batch_size = self.stream.denoising_steps_num * self.stream.frame_bff_size
+            if self.stream.cfg_type == "initialize":
+                self.stream.trt_unet_batch_size = (
+                    self.stream.denoising_steps_num + 1
+                ) * self.stream.frame_bff_size
+            elif self.stream.cfg_type == "full":
+                self.stream.trt_unet_batch_size = (
+                    2 * self.stream.denoising_steps_num * self.stream.frame_bff_size
+                )
+            else:
+                self.stream.trt_unet_batch_size = self.stream.denoising_steps_num * self.stream.frame_bff_size
+        else:
+            self.stream.trt_unet_batch_size = self.stream.frame_bff_size
+            self.stream.batch_size = self.stream.frame_bff_size
+        self.stream.denoising_steps_num = len(self.stream.t_list)
+
+        if self.stream.denoising_steps_num > 1:
+            self.stream.x_t_latent_buffer = torch.zeros(
+                (
+                    (self.stream.denoising_steps_num - 1) * self.stream.frame_bff_size,
+                    4,
+                    self.stream.latent_height,
+                    self.stream.latent_width,
+                ),
+                dtype=self.stream.dtype,
+                device=self.stream.device,
+            )
+        else:
+            self.stream.x_t_latent_buffer = None
+
+        self.stream.init_noise = torch.randn(
+            (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
+            generator=self.stream.generator,
+        ).to(device=self.stream.device, dtype=self.stream.dtype)
+
+        self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+        self.stream.prompt_embeds = self.stream.prompt_embeds[0].repeat(self.stream.batch_size, 1, 1)
 
         self.stream.sub_timesteps = []
         for t in self.stream.t_list:

@@ -73,6 +73,8 @@ class StreamDiffusionWrapper:
         self,
         model_id_or_path: str,
         t_index_list: List[int],
+        min_batch_size: int = 1,
+        max_batch_size: int = 4,
         lora_dict: Optional[Dict[str, float]] = None,
         mode: Literal["img2img", "txt2img"] = "img2img",
         output_type: Literal["pil", "pt", "np", "latent"] = "pil",
@@ -214,6 +216,8 @@ class StreamDiffusionWrapper:
             if use_denoising_batch
             else frame_buffer_size
         )
+        self.min_batch_size = min_batch_size
+        self.max_batch_size = max_batch_size
 
         self.use_denoising_batch = use_denoising_batch
         self.use_safety_checker = use_safety_checker
@@ -904,7 +908,7 @@ class StreamDiffusionWrapper:
 
                 def create_prefix(
                     model_id_or_path: str,
-                    max_batch: int,
+                    max_batch_size: int,
                     min_batch_size: int,
                     width: int,
                     height: int,
@@ -913,9 +917,9 @@ class StreamDiffusionWrapper:
                     # Use dynamic engine naming to distinguish from static engines
                     dynamic_suffix = "dyn-384-1024"
                     if maybe_path.exists():
-                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
+                        return f"{maybe_path.stem}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
                     else:
-                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
+                        return f"{model_id_or_path}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch_size}--min_batch-{min_batch_size}--mode-{self.mode}--{dynamic_suffix}"
 
                 # Always enable ControlNet TensorRT support to create universal engines
                 use_controlnet_trt = False
@@ -938,8 +942,8 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
+                        max_batch_size=self.max_batch_size,
+                        min_batch_size=self.min_batch_size,
                         width=self.width,
                         height=self.height,
                     ),
@@ -949,7 +953,7 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch=self.batch_size
+                        max_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -964,7 +968,7 @@ class StreamDiffusionWrapper:
                     engine_dir,
                     create_prefix(
                         model_id_or_path=model_id_or_path,
-                        max_batch=self.batch_size
+                        max_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -1009,8 +1013,8 @@ class StreamDiffusionWrapper:
                     unet_model = UNet(
                         fp16=True,
                         device=stream.device,
-                        max_batch=stream.trt_unet_batch_size,
-                        min_batch_size=stream.trt_unet_batch_size,
+                        max_batch_size=self.max_batch_size,
+                        min_batch_size=self.min_batch_size,
                         embedding_dim=stream.text_encoder.config.hidden_size,
                         unet_dim=stream.unet.config.in_channels,
                         use_control=use_controlnet_trt,
@@ -1061,7 +1065,7 @@ class StreamDiffusionWrapper:
                     stream.vae.forward = stream.vae.decode
                     vae_decoder_model = VAE(
                         device=stream.device,
-                        max_batch=self.batch_size
+                        max_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -1092,7 +1096,7 @@ class StreamDiffusionWrapper:
                     vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
                     vae_encoder_model = VAEEncoder(
                         device=stream.device,
-                        max_batch=self.batch_size
+                        max_batch_size=self.batch_size
                         if self.mode == "txt2img"
                         else stream.frame_bff_size,
                         min_batch_size=self.batch_size
@@ -1230,7 +1234,7 @@ class StreamDiffusionWrapper:
 
             # Create engine pool with same engine directory structure as UNet
             stream_cuda = cuda.Stream()
-            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height)
+            controlnet_pool = ControlNetEnginePool(engine_dir, stream_cuda, self.width, self.height, self.min_batch_size, self.max_batch_size)
 
             # Store pool on the pipeline for later use
             controlnet_pipeline._controlnet_pool = controlnet_pool
