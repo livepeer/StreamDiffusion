@@ -49,7 +49,6 @@ class ControlNetModule(OrchestratorUser):
 
         self._stream = None  # set in install
         # Per-frame prepared tensor cache to avoid per-step device/dtype alignment and batch repeats
-
         self._prepared_tensors: List[Optional[torch.Tensor]] = []
         self._prepared_device: Optional[torch.device] = None
         self._prepared_dtype: Optional[torch.dtype] = None
@@ -70,7 +69,6 @@ class ControlNetModule(OrchestratorUser):
         setattr(stream, 'controlnets', self.controlnets)
         setattr(stream, 'controlnet_scales', self.controlnet_scales)
         setattr(stream, 'preprocessors', self.preprocessors)
-
         # Reset prepared tensors on install
         self._prepared_tensors = []
         self._prepared_device = None
@@ -128,7 +126,6 @@ class ControlNetModule(OrchestratorUser):
             self.controlnet_scales.append(float(cfg.conditioning_scale))
             self.preprocessors.append(preproc)
             self.enabled_list.append(bool(cfg.enabled))
-
             # Invalidate prepared tensors and bump version when graph changes
             self._prepared_tensors = []
             self._images_version += 1
@@ -163,7 +160,6 @@ class ControlNetModule(OrchestratorUser):
             with self._collections_lock:
                 if processed is not None and index < len(self.controlnet_images):
                     self.controlnet_images[index] = processed
-
                     # Invalidate prepared tensors and bump version for per-frame reuse
                     self._prepared_tensors = []
                     self._images_version += 1
@@ -192,7 +188,6 @@ class ControlNetModule(OrchestratorUser):
                 if img is not None and i < len(self.controlnet_images):
                     self.controlnet_images[i] = img
             # Invalidate prepared cache and bump version after bulk update
-
             self._prepared_tensors = []
             self._images_version += 1
             # Pre-prepare tensors if we know the target specs
@@ -278,7 +273,6 @@ class ControlNetModule(OrchestratorUser):
                     'enabled': (self.enabled_list[i] if i < len(self.enabled_list) else True),
                 })
         return cfg
-
 
     def prepare_frame_tensors(self, device: torch.device, dtype: torch.dtype, batch_size: int) -> None:
         """Prepare control image tensors for the current frame.
@@ -411,7 +405,6 @@ class ControlNetModule(OrchestratorUser):
                         # Swapped to TRT engine
                 except Exception:
                     pass
-
                 # Use pre-prepared tensor
                 current_img = prepared_images[idx_i] if idx_i < len(prepared_images) else img
                 if current_img is None:
