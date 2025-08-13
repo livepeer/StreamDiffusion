@@ -55,6 +55,18 @@ class ControlNetModule(OrchestratorUser):
         self._prepared_batch: Optional[int] = None
         self._images_version: int = 0
 
+        # Pre-allocated CUDA streams for PyTorch ControlNets (indexed to controlnets)
+        self._pt_cn_streams: List[Optional[torch.cuda.Stream]] = []
+        # Cache max parallel setting once
+        try:
+            import os
+            self._max_parallel_controlnets = int(os.getenv('STREAMDIFFUSION_CN_MAX_PAR', '0'))
+        except Exception:
+            self._max_parallel_controlnets = 0
+        # Persistent thread pool to avoid per-step creation cost
+        self._executor = None
+        self._executor_workers = 0
+
     # ---------- Public API (used by wrapper in a later step) ----------
     def install(self, stream) -> None:
         self._stream = stream
@@ -74,6 +86,8 @@ class ControlNetModule(OrchestratorUser):
         self._prepared_device = None
         self._prepared_dtype = None
         self._prepared_batch = None
+        # Reset PT CN streams on install
+        self._pt_cn_streams = []
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         model = self._load_pytorch_controlnet_model(cfg.model_id)
@@ -129,6 +143,19 @@ class ControlNetModule(OrchestratorUser):
             # Invalidate prepared tensors and bump version when graph changes
             self._prepared_tensors = []
             self._images_version += 1
+            # Maintain stream slots for PyTorch ControlNets
+            self._pt_cn_streams.append(None)
+            # Initialize/update engine map if present
+            try:
+                if hasattr(self._stream, 'controlnet_engines'):
+                    for eng in list(getattr(self._stream, 'controlnet_engines') or []):
+                        if not hasattr(eng, 'model_id'):
+                            try:
+                                setattr(eng, 'model_id', cfg.model_id)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
 
     def update_control_image_efficient(self, control_image: Union[str, Any, torch.Tensor], index: Optional[int] = None) -> None:
         if self._preprocessing_orchestrator is None:
@@ -220,6 +247,8 @@ class ControlNetModule(OrchestratorUser):
                 # Invalidate prepared tensors and bump version
                 self._prepared_tensors = []
                 self._images_version += 1
+                if index < len(self._pt_cn_streams):
+                    del self._pt_cn_streams[index]
 
     def reorder_controlnets_by_model_ids(self, desired_model_ids: List[str]) -> None:
         """Reorder internal collections to match the desired model_id order.
@@ -386,70 +415,266 @@ class ControlNetModule(OrchestratorUser):
             down_samples_list: List[List[torch.Tensor]] = []
             mid_samples_list: List[torch.Tensor] = []
 
-            # Ensure tensors are prepared for this frame
-            # This should have been called earlier, but we call it here as a safety net
-            if (self._prepared_device != x_t.device or 
-                self._prepared_dtype != x_t.dtype or 
-                self._prepared_batch != x_t.shape[0]):
-                self.prepare_frame_tensors(x_t.device, x_t.dtype, x_t.shape[0])
-            
-            # Use pre-prepared tensors
-            prepared_images = self._prepared_tensors
+            # Optionally prepare tensors for this frame (used by other code paths)
+            try:
+                if (self._prepared_device != x_t.device or
+                    self._prepared_dtype != x_t.dtype or
+                    self._prepared_batch != x_t.shape[0]):
+                    self.prepare_frame_tensors(x_t.device, x_t.dtype, x_t.shape[0])
+            except Exception:
+                pass
 
-            for cn, img, scale, idx_i in zip(active_controlnets, active_images, active_scales, active_indices):
-                # Swap to TRT engine if compiled and available for this model_id
+            # Helper: run sequentially (baseline, safest for PyTorch/xformers)
+            def run_sequential():
+                local_down: List[List[torch.Tensor]] = []
+                local_mid: List[torch.Tensor] = []
+                for cn, img, scale in zip(active_controlnets, active_images, active_scales):
+                    # Swap to TRT engine if compiled and available for this model_id
+                    try:
+                        model_id = getattr(cn, 'model_id', None)
+                        if model_id and model_id in engines_by_id:
+                            cn = engines_by_id[model_id]
+                    except Exception:
+                        pass
+                    current_img = img
+                    if current_img is None:
+                        continue
+                    try:
+                        main_batch = x_t.shape[0]
+                        if current_img.dim() == 4 and current_img.shape[0] != main_batch:
+                            if current_img.shape[0] == 1:
+                                current_img = current_img.repeat(main_batch, 1, 1, 1)
+                            else:
+                                repeat_factor = max(1, main_batch // current_img.shape[0])
+                                current_img = current_img.repeat(repeat_factor, 1, 1, 1)
+                        current_img = current_img.to(device=x_t.device, dtype=x_t.dtype)
+                    except Exception:
+                        pass
+                    kwargs = base_kwargs.copy()
+                    kwargs['controlnet_cond'] = current_img
+                    kwargs['conditioning_scale'] = float(scale)
+                    try:
+                        if getattr(self._stream, 'is_sdxl', False) and ctx.sdxl_cond is not None:
+                            kwargs['added_cond_kwargs'] = ctx.sdxl_cond
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(cn, 'engine') and hasattr(cn, 'stream'):
+                            ds, ms = cn(
+                                sample=kwargs['sample'],
+                                timestep=kwargs['timestep'],
+                                encoder_hidden_states=kwargs['encoder_hidden_states'],
+                                controlnet_cond=kwargs['controlnet_cond'],
+                                conditioning_scale=float(scale),
+                                **({} if 'added_cond_kwargs' not in kwargs else kwargs['added_cond_kwargs'])
+                            )
+                        else:
+                            ds, ms = cn(**kwargs)
+                        local_down.append(ds)
+                        local_mid.append(ms)
+                    except Exception:
+                        continue
+                return local_down, local_mid
+
+            # Bounded parallelism for ControlNet forwards
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            # Cap parallel CN based on cached env override or count
+            max_par = self._max_parallel_controlnets if self._max_parallel_controlnets > 0 else len(active_controlnets)
+
+            # Fast path: single active ControlNet → run inline, no thread pool or extra CUDA stream creation
+            if len(active_controlnets) == 1:
+                cn = active_controlnets[0]
+                current_img = active_images[0]
+                scale = active_scales[0]
                 try:
                     model_id = getattr(cn, 'model_id', None)
                     if model_id and model_id in engines_by_id:
                         cn = engines_by_id[model_id]
-                        # Swapped to TRT engine
                 except Exception:
                     pass
-                # Use pre-prepared tensor
-                current_img = prepared_images[idx_i] if idx_i < len(prepared_images) else img
-                if current_img is None:
-                    continue
-                kwargs = base_kwargs.copy()
-                kwargs['controlnet_cond'] = current_img
-                kwargs['conditioning_scale'] = float(scale)
-                # For SDXL ControlNet, pass added_cond_kwargs (text_embeds, time_ids)
-                try:
-                    if getattr(self._stream, 'is_sdxl', False) and ctx.sdxl_cond is not None:
-                        kwargs['added_cond_kwargs'] = ctx.sdxl_cond
-                except Exception:
-                    pass
-                # For SDXL, preparing CN forward
-                # Route to TensorRT engine if this ControlNet is an engine wrapper
-                try:
-                    if hasattr(cn, 'engine') and hasattr(cn, 'stream'):
-                        # Using TRT ControlNet engine
-                        # Engine expects positional args and scalar conditioning_scale
-                        down_samples, mid_sample = cn(
-                            sample=kwargs['sample'],
-                            timestep=kwargs['timestep'],
-                            encoder_hidden_states=kwargs['encoder_hidden_states'],
-                            controlnet_cond=kwargs['controlnet_cond'],
-                            conditioning_scale=float(scale),
-                            **({} if 'added_cond_kwargs' not in kwargs else kwargs['added_cond_kwargs'])
-                        )
-                    else:
-                        down_samples, mid_sample = cn(**kwargs)
-                except Exception as e:
-                    import traceback
-                    __import__('logging').getLogger(__name__).error("ControlNetModule: controlnet forward failed: %s", e)
+                if current_img is not None:
                     try:
-                        __import__('logging').getLogger(__name__).error("ControlNetModule: kwargs_summary: keys=%s, cond_shape=%s, img_shape=%s, scale=%s, is_sdxl=%s",
-                                     list(kwargs.keys()),
-                                     (tuple(kwargs.get('encoder_hidden_states').shape) if isinstance(kwargs.get('encoder_hidden_states'), torch.Tensor) else None),
-                                     (tuple(current_img.shape) if isinstance(current_img, torch.Tensor) else None),
-                                     scale,
-                                     getattr(self._stream, 'is_sdxl', False))
+                        main_batch = x_t.shape[0]
+                        if current_img.dim() == 4 and current_img.shape[0] != main_batch:
+                            if current_img.shape[0] == 1:
+                                current_img = current_img.repeat(main_batch, 1, 1, 1)
+                            else:
+                                repeat_factor = max(1, main_batch // current_img.shape[0])
+                                current_img = current_img.repeat(repeat_factor, 1, 1, 1)
+                        current_img = current_img.to(device=x_t.device, dtype=x_t.dtype)
                     except Exception:
                         pass
+                    kwargs = base_kwargs.copy()
+                    kwargs['controlnet_cond'] = current_img
+                    kwargs['conditioning_scale'] = float(scale)
+                    try:
+                        if getattr(self._stream, 'is_sdxl', False) and ctx.sdxl_cond is not None:
+                            kwargs['added_cond_kwargs'] = ctx.sdxl_cond
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(cn, 'engine') and hasattr(cn, 'stream'):
+                            ds, ms = cn(
+                                sample=kwargs['sample'],
+                                timestep=kwargs['timestep'],
+                                encoder_hidden_states=kwargs['encoder_hidden_states'],
+                                controlnet_cond=kwargs['controlnet_cond'],
+                                conditioning_scale=float(scale),
+                                **({} if 'added_cond_kwargs' not in kwargs else kwargs['added_cond_kwargs'])
+                            )
+                        else:
+                            ds, ms = cn(**kwargs)
+                        down_samples_list.append(ds)
+                        mid_samples_list.append(ms)
+                    except Exception:
+                        pass
+                # Build delta (handles empty gracefully below)
+                if not down_samples_list:
+                    return UnetKwargsDelta()
+                return UnetKwargsDelta(
+                    down_block_additional_residuals=down_samples_list[0],
+                    mid_block_additional_residual=mid_samples_list[0],
+                )
+
+            # If any active CN is PyTorch (no engine.stream), prefer sequential for correctness on xformers
+            try:
+                all_trt = True
+                for cn in active_controlnets:
+                    mid = getattr(cn, 'model_id', None)
+                    if mid and mid in engines_by_id:
+                        cn = engines_by_id[mid]
+                    if not (hasattr(cn, 'engine') and hasattr(cn, 'stream')):
+                        all_trt = False
+                        break
+            except Exception:
+                all_trt = False
+
+            if not all_trt:
+                seq_down, seq_mid = run_sequential()
+                down_samples_list.extend(seq_down)
+                mid_samples_list.extend(seq_mid)
+                if not down_samples_list:
+                    return UnetKwargsDelta()
+                if len(down_samples_list) == 1:
+                    return UnetKwargsDelta(
+                        down_block_additional_residuals=down_samples_list[0],
+                        mid_block_additional_residual=mid_samples_list[0],
+                    )
+                merged_down = down_samples_list[0]
+                merged_mid = mid_samples_list[0]
+                for ds, ms in zip(down_samples_list[1:], mid_samples_list[1:]):
+                    for j in range(len(merged_down)):
+                        merged_down[j] = merged_down[j] + ds[j]
+                    merged_mid = merged_mid + ms
+                return UnetKwargsDelta(
+                    down_block_additional_residuals=merged_down,
+                    mid_block_additional_residual=merged_mid,
+                )
+
+            tasks = []
+            results: List[Tuple[int, Optional[List[torch.Tensor]], Optional[torch.Tensor], Optional[torch.cuda.Stream]]] = []
+
+            def run_one(idx: int, global_idx: int, cn_model: Any, img_tensor: torch.Tensor, scale_val: float):
+                cn_local = cn_model
+                # Swap to TRT engine if compiled and available for this model_id
+                try:
+                    model_id_local = getattr(cn_local, 'model_id', None)
+                    if model_id_local and model_id_local in engines_by_id:
+                        cn_local = engines_by_id[model_id_local]
+                except Exception:
+                    pass
+
+                current_img_local = img_tensor
+                if current_img_local is None:
+                    return (idx, None, None)
+
+                # Ensure control image batch matches latent batch; match device/dtype
+                try:
+                    main_batch = x_t.shape[0]
+                    if current_img_local.dim() == 4 and current_img_local.shape[0] != main_batch:
+                        if current_img_local.shape[0] == 1:
+                            current_img_local = current_img_local.repeat(main_batch, 1, 1, 1)
+                        else:
+                            repeat_factor = max(1, main_batch // current_img_local.shape[0])
+                            current_img_local = current_img_local.repeat(repeat_factor, 1, 1, 1)
+                    current_img_local = current_img_local.to(device=x_t.device, dtype=x_t.dtype)
+                except Exception:
+                    pass
+
+                local_kwargs = base_kwargs.copy()
+                local_kwargs['controlnet_cond'] = current_img_local
+                local_kwargs['conditioning_scale'] = float(scale_val)
+                try:
+                    if getattr(self._stream, 'is_sdxl', False) and ctx.sdxl_cond is not None:
+                        local_kwargs['added_cond_kwargs'] = ctx.sdxl_cond
+                except Exception:
+                    pass
+
+                try:
+                    if hasattr(cn_local, 'engine') and hasattr(cn_local, 'stream'):
+                        # TRT engine path: engine has its own CUDA stream; just call
+                        down_s, mid_s = cn_local(
+                            sample=local_kwargs['sample'],
+                            timestep=local_kwargs['timestep'],
+                            encoder_hidden_states=local_kwargs['encoder_hidden_states'],
+                            controlnet_cond=local_kwargs['controlnet_cond'],
+                            conditioning_scale=float(scale_val),
+                            **({} if 'added_cond_kwargs' not in local_kwargs else local_kwargs['added_cond_kwargs'])
+                        )
+                        # Engine call synchronizes internally; no stream to wait on
+                        return (idx, down_s, mid_s, None)
+                    else:
+                        # PyTorch path: use a per-call CUDA stream for concurrency
+                        # Lazily create/reuse a dedicated stream for this controlnet index
+                        stream_obj = self._pt_cn_streams[global_idx]
+                        if stream_obj is None:
+                            stream_obj = torch.cuda.Stream(device=x_t.device)
+                            self._pt_cn_streams[global_idx] = stream_obj
+                        with torch.cuda.stream(stream_obj):
+                            down_s, mid_s = cn_local(**local_kwargs)
+                        # Do not synchronize here; main thread will wait on stream before use
+                        return (idx, down_s, mid_s, stream_obj)
+                except Exception as e:
+                    import traceback
+                    __import__('logging').getLogger(__name__).error("ControlNetModule: run_one forward failed: %s", e)
                     __import__('logging').getLogger(__name__).error(traceback.format_exc())
-                    continue
-                down_samples_list.append(down_samples)
-                mid_samples_list.append(mid_sample)
+                    return (idx, None, None, None)
+
+            # Submit tasks in bounded thread pool
+            desired_workers = max(1, min(max_par, len(active_controlnets)))
+            # (Re)create persistent executor only when worker count changes
+            if self._executor is None or self._executor_workers != desired_workers:
+                if self._executor is not None:
+                    try:
+                        self._executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+                self._executor = ThreadPoolExecutor(max_workers=desired_workers)
+                self._executor_workers = desired_workers
+
+            ex = self._executor
+            # Map active sub-index to global controlnet index to reuse per-cn streams
+            for sub_i, (cn_i, img_i, sc_i) in enumerate(zip(active_controlnets, active_images, active_scales)):
+                global_i = active_indices[sub_i]
+                tasks.append(ex.submit(run_one, sub_i, global_i, cn_i, img_i, sc_i))
+            for fut in as_completed(tasks):
+                idx, ds, ms, s = fut.result()
+                if ds is not None and ms is not None:
+                    results.append((idx, ds, ms, s))
+
+            if not results:
+                return UnetKwargsDelta()
+
+            # Restore original order
+            results.sort(key=lambda x: x[0])
+            # Ensure default stream waits on any per-CN PyTorch streams before using tensors
+            default_stream = torch.cuda.current_stream(device=x_t.device)
+            for _, ds, ms, s in results:
+                if isinstance(s, torch.cuda.Stream):
+                    default_stream.wait_stream(s)
+                down_samples_list.append(ds)  # type: ignore[arg-type]
+                mid_samples_list.append(ms)   # type: ignore[arg-type]
 
             if not down_samples_list:
                 return UnetKwargsDelta()

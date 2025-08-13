@@ -124,6 +124,9 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
         'normalize_seed_weights': config.get('normalize_seed_weights', True),
         'enable_pytorch_fallback': config.get('enable_pytorch_fallback', False),
+        # Concurrency options
+        'controlnet_max_parallel': config.get('controlnet_max_parallel'),
+        'controlnet_block_add_when_parallel': config.get('controlnet_block_add_when_parallel', True),
     }
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
