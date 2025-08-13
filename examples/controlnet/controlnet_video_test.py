@@ -229,7 +229,9 @@ def main():
         print("main: Video processing completed successfully!")
         return 0
     except Exception as e:
+        import traceback
         print(f"main: Error during processing: {e}")
+        print(f"main: Traceback:\n{''.join(traceback.format_tb(e.__traceback__))}")
         return 1
 
 

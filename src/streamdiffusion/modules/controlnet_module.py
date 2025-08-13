@@ -49,7 +49,10 @@ class ControlNetModule(OrchestratorUser):
 
         self._stream = None  # set in install
         # Per-frame prepared tensor cache to avoid per-step device/dtype alignment and batch repeats
-        self._prepared_cache: Optional[Dict[str, Any]] = None
+        self._prepared_tensors: List[Optional[torch.Tensor]] = []
+        self._prepared_device: Optional[torch.device] = None
+        self._prepared_dtype: Optional[torch.dtype] = None
+        self._prepared_batch: Optional[int] = None
         self._images_version: int = 0
 
     # ---------- Public API (used by wrapper in a later step) ----------
@@ -66,8 +69,11 @@ class ControlNetModule(OrchestratorUser):
         setattr(stream, 'controlnets', self.controlnets)
         setattr(stream, 'controlnet_scales', self.controlnet_scales)
         setattr(stream, 'preprocessors', self.preprocessors)
-        # Reset caches on install
-        self._prepared_cache = None
+        # Reset prepared tensors on install
+        self._prepared_tensors = []
+        self._prepared_device = None
+        self._prepared_dtype = None
+        self._prepared_batch = None
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         model = self._load_pytorch_controlnet_model(cfg.model_id)
@@ -120,8 +126,8 @@ class ControlNetModule(OrchestratorUser):
             self.controlnet_scales.append(float(cfg.conditioning_scale))
             self.preprocessors.append(preproc)
             self.enabled_list.append(bool(cfg.enabled))
-            # Invalidate prepared cache and bump version when graph changes
-            self._prepared_cache = None
+            # Invalidate prepared tensors and bump version when graph changes
+            self._prepared_tensors = []
             self._images_version += 1
 
     def update_control_image_efficient(self, control_image: Union[str, Any, torch.Tensor], index: Optional[int] = None) -> None:
@@ -154,9 +160,13 @@ class ControlNetModule(OrchestratorUser):
             with self._collections_lock:
                 if processed is not None and index < len(self.controlnet_images):
                     self.controlnet_images[index] = processed
-                    # Invalidate prepared cache and bump version for per-frame reuse
-                    self._prepared_cache = None
+                    # Invalidate prepared tensors and bump version for per-frame reuse
+                    self._prepared_tensors = []
                     self._images_version += 1
+                    # Pre-prepare tensors if we know the target specs
+                    if self._stream and hasattr(self._stream, 'device') and hasattr(self._stream, 'dtype'):
+                        # Use default batch size of 1 for now, will be adjusted on first use
+                        self.prepare_frame_tensors(self._stream.device, self._stream.dtype, 1)
             return
 
         # Use intelligent pipelining (automatically detects feedback preprocessors and switches to sync)
@@ -178,8 +188,12 @@ class ControlNetModule(OrchestratorUser):
                 if img is not None and i < len(self.controlnet_images):
                     self.controlnet_images[i] = img
             # Invalidate prepared cache and bump version after bulk update
-            self._prepared_cache = None
+            self._prepared_tensors = []
             self._images_version += 1
+            # Pre-prepare tensors if we know the target specs
+            if self._stream and hasattr(self._stream, 'device') and hasattr(self._stream, 'dtype'):
+                # Use default batch size of 1 for now, will be adjusted on first use
+                self.prepare_frame_tensors(self._stream.device, self._stream.dtype, 1)
 
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         with self._collections_lock:
@@ -203,8 +217,8 @@ class ControlNetModule(OrchestratorUser):
                     del self.preprocessors[index]
                 if index < len(self.enabled_list):
                     del self.enabled_list[index]
-                # Invalidate prepared cache and bump version
-                self._prepared_cache = None
+                # Invalidate prepared tensors and bump version
+                self._prepared_tensors = []
                 self._images_version += 1
 
     def reorder_controlnets_by_model_ids(self, desired_model_ids: List[str]) -> None:
@@ -259,6 +273,54 @@ class ControlNetModule(OrchestratorUser):
                     'enabled': (self.enabled_list[i] if i < len(self.enabled_list) else True),
                 })
         return cfg
+
+    def prepare_frame_tensors(self, device: torch.device, dtype: torch.dtype, batch_size: int) -> None:
+        """Prepare control image tensors for the current frame.
+        
+        This method is called once per frame to prepare all control images with the correct
+        device, dtype, and batch size. This avoids redundant operations during each denoising step.
+        
+        Args:
+            device: Target device for tensors
+            dtype: Target dtype for tensors
+            batch_size: Target batch size
+        """
+        with self._collections_lock:
+            # Check if we need to re-prepare tensors
+            cache_valid = (
+                self._prepared_device == device and
+                self._prepared_dtype == dtype and
+                self._prepared_batch == batch_size and
+                len(self._prepared_tensors) == len(self.controlnet_images)
+            )
+            
+            if cache_valid:
+                return
+            
+            # Prepare tensors for current frame
+            self._prepared_tensors = []
+            for img in self.controlnet_images:
+                if img is None:
+                    self._prepared_tensors.append(None)
+                    continue
+                
+                # Prepare tensor with correct batch size
+                prepared = img
+                if prepared.dim() == 4 and prepared.shape[0] != batch_size:
+                    if prepared.shape[0] == 1:
+                        prepared = prepared.repeat(batch_size, 1, 1, 1)
+                    else:
+                        repeat_factor = max(1, batch_size // prepared.shape[0])
+                        prepared = prepared.repeat(repeat_factor, 1, 1, 1)[:batch_size]
+                
+                # Move to correct device and dtype
+                prepared = prepared.to(device=device, dtype=dtype)
+                self._prepared_tensors.append(prepared)
+            
+            # Update cache state
+            self._prepared_device = device
+            self._prepared_dtype = dtype
+            self._prepared_batch = batch_size
 
     # ---------- Internal helpers ----------
     def build_unet_hook(self) -> UnetHook:
@@ -324,40 +386,15 @@ class ControlNetModule(OrchestratorUser):
             down_samples_list: List[List[torch.Tensor]] = []
             mid_samples_list: List[torch.Tensor] = []
 
-            # Prepare control images once per frame for current device/dtype/batch
-            try:
-                main_batch = x_t.shape[0]
-                cache_ok = (
-                    isinstance(self._prepared_cache, dict)
-                    and self._prepared_cache.get('device') == x_t.device
-                    and self._prepared_cache.get('dtype') == x_t.dtype
-                    and self._prepared_cache.get('batch') == main_batch
-                    and self._prepared_cache.get('version') == self._images_version
-                )
-                if not cache_ok:
-                    prepared: List[Optional[torch.Tensor]] = [None] * len(self.controlnet_images)
-                    for i, base_img in enumerate(self.controlnet_images):
-                        if base_img is None:
-                            continue
-                        cur = base_img
-                        if cur.dim() == 4 and cur.shape[0] != main_batch:
-                            if cur.shape[0] == 1:
-                                cur = cur.repeat(main_batch, 1, 1, 1)
-                            else:
-                                repeat_factor = max(1, main_batch // cur.shape[0])
-                                cur = cur.repeat(repeat_factor, 1, 1, 1)
-                        cur = cur.to(device=x_t.device, dtype=x_t.dtype)
-                        prepared[i] = cur
-                    self._prepared_cache = {
-                        'device': x_t.device,
-                        'dtype': x_t.dtype,
-                        'batch': main_batch,
-                        'version': self._images_version,
-                        'prepared': prepared,
-                    }
-                prepared_images: List[Optional[torch.Tensor]] = self._prepared_cache['prepared'] if self._prepared_cache else [None] * len(self.controlnet_images)
-            except Exception:
-                prepared_images = active_images  # Fallback to per-step path if cache prep fails
+            # Ensure tensors are prepared for this frame
+            # This should have been called earlier, but we call it here as a safety net
+            if (self._prepared_device != x_t.device or 
+                self._prepared_dtype != x_t.dtype or 
+                self._prepared_batch != x_t.shape[0]):
+                self.prepare_frame_tensors(x_t.device, x_t.dtype, x_t.shape[0])
+            
+            # Use pre-prepared tensors
+            prepared_images = self._prepared_tensors
 
             for cn, img, scale, idx_i in zip(active_controlnets, active_images, active_scales, active_indices):
                 # Swap to TRT engine if compiled and available for this model_id
@@ -368,8 +405,8 @@ class ControlNetModule(OrchestratorUser):
                         # Swapped to TRT engine
                 except Exception:
                     pass
-                # Pull from prepared cache if available
-                current_img = prepared_images[idx_i] if 'prepared_images' in locals() and prepared_images and idx_i < len(prepared_images) and prepared_images[idx_i] is not None else img
+                # Use pre-prepared tensor
+                current_img = prepared_images[idx_i] if idx_i < len(prepared_images) else img
                 if current_img is None:
                     continue
                 kwargs = base_kwargs.copy()
