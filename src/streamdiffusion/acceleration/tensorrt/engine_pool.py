@@ -18,7 +18,7 @@ class ControlNetEnginePool:
     """Manages multiple ControlNet TensorRT engines"""
     
     def __init__(self, engine_dir: str, stream: Optional[cuda.Stream] = None, 
-                 image_width: int = 512, image_height: int = 512, max_batch_size: int = 1, min_batch_size: int = 1):
+                 image_width: int = 512, image_height: int = 512, min_batch_size: int = 1, max_batch_size: int = 4):
         """Initialize ControlNet engine pool"""
         self.engine_dir = Path(engine_dir)
         self.engine_dir.mkdir(parents=True, exist_ok=True)
@@ -46,7 +46,7 @@ class ControlNetEnginePool:
                     # Check for new dynamic naming convention first (preferred)
                     if "--dyn-384-1024" in dir_name:
                         # Extract model_id from dynamic format
-                        model_part = dir_name.split("--batch-")[0] if "--batch-" in dir_name else dir_name.split("--dyn-")[0]
+                        model_part = dir_name.split("--min_batch-")[0] if "--min_batch-" in dir_name else dir_name.split("--dyn-")[0]
                         model_id = model_part.replace("controlnet_", "").replace("_", "/")
                         
                         self.compiled_models.add(model_id)
@@ -55,7 +55,7 @@ class ControlNetEnginePool:
                     # Check for legacy static naming format with width/height
                     elif "--width-" in dir_name and "--height-" in dir_name:
                         # Extract model_id from the legacy format
-                        model_part = dir_name.split("--batch-")[0] if "--batch-" in dir_name else dir_name.split("--width-")[0]
+                        model_part = dir_name.split("--min_batch-")[0] if "--min_batch-" in dir_name else dir_name.split("--width-")[0]
                         model_id = model_part.replace("controlnet_", "").replace("_", "/")
                         
                         # Extract dimensions to check compatibility
@@ -76,8 +76,8 @@ class ControlNetEnginePool:
                     # Legacy format without dimensions - assume 512x512
                     else:
                         if self.image_width == 512 and self.image_height == 512:
-                            if "--batch-" in dir_name:
-                                model_part = dir_name.split("--batch-")[0]
+                            if "--min_batch-" in dir_name:
+                                model_part = dir_name.split("--min_batch-")[0]
                                 model_id = model_part.replace("controlnet_", "").replace("_", "/")
                             else:
                                 model_id = dir_name.replace("controlnet_", "").replace("_", "/")
@@ -100,7 +100,7 @@ class ControlNetEnginePool:
             return self.engines[cache_key]
         
         # Use dynamic engine directory (no longer depends on specific width/height)
-        model_engine_dir = self._get_model_engine_dir(model_id, self.min_batch_size, self.max_batch_size, self.image_width, self.image_height)
+        model_engine_dir = self._get_model_engine_dir(model_id)
         engine_path = model_engine_dir / "cnet.engine"
         
         if not engine_path.exists():
@@ -272,14 +272,14 @@ class ControlNetEnginePool:
         """Cleanup on destruction"""
         self.cleanup()
 
-    def _get_model_engine_dir(self, model_id: str, min_batch_size: int = 1, max_batch_size: int = 1, width: int = 512, height: int = 512) -> Path:
+    def _get_model_engine_dir(self, model_id: str) -> Path:
         """Get the engine directory for a specific ControlNet model with resolution-specific naming"""
         safe_name = model_id.replace("/", "_").replace("\\", "_").replace(":", "_")
         
         # Use dynamic naming convention to match main UNet engines
         # This allows ControlNet engines to support 384-1024 resolution range
         dynamic_suffix = "dyn-384-1024"
-        safe_name = f"controlnet_{safe_name}--min_batch-{min_batch_size}--max_batch-{max_batch_size}--{dynamic_suffix}"
+        safe_name = f"controlnet_{safe_name}--min_batch-{self.min_batch_size}--max_batch-{self.max_batch_size}--{dynamic_suffix}"
         
         model_dir = Path(self.engine_dir) / safe_name
         model_dir.mkdir(parents=True, exist_ok=True)
