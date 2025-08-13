@@ -66,6 +66,18 @@
   let leftPanelCollapsed: boolean = false;
   let rightPanelCollapsed: boolean = false;
 
+  // Column resizing
+  let leftColumnWidth: number = 25; // Percentage
+  let rightColumnWidth: number = 25; // Percentage
+  let isDragging: boolean = false;
+  let dragTarget: 'left' | 'right' | null = null;
+
+  // Floating video input state
+  let floatingVideoPosition = { x: 20, y: 100 };
+  let isDraggingVideo = false;
+  let videoOffsetX = 0;
+  let videoOffsetY = 0;
+
   // FPS tracking
   let fps = 0;
   let fpsInterval: number | null = null;
@@ -468,6 +480,89 @@
   function selectFile() {
     fileInput.click();
   }
+
+  // Column resizing functions
+  function startDrag(event: MouseEvent, target: 'left' | 'right') {
+    isDragging = true;
+    dragTarget = target;
+    event.preventDefault();
+    
+    document.addEventListener('mousemove', handleDrag);
+    document.addEventListener('mouseup', stopDrag);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }
+
+  function handleDrag(event: MouseEvent) {
+    if (!isDragging || !dragTarget) return;
+    
+    const containerWidth = document.querySelector('.main-grid')?.clientWidth || 1200;
+    const mouseX = event.clientX;
+    const containerRect = document.querySelector('.main-grid')?.getBoundingClientRect();
+    
+    if (containerRect) {
+      const relativeX = mouseX - containerRect.left;
+      const percentage = (relativeX / containerWidth) * 100;
+      
+      if (dragTarget === 'left') {
+        leftColumnWidth = Math.max(15, Math.min(40, percentage));
+      } else if (dragTarget === 'right') {
+        const rightPercentage = 100 - percentage;
+        rightColumnWidth = Math.max(15, Math.min(40, rightPercentage));
+      }
+    }
+  }
+
+  function stopDrag() {
+    isDragging = false;
+    dragTarget = null;
+    document.removeEventListener('mousemove', handleDrag);
+    document.removeEventListener('mouseup', stopDrag);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+
+  // Calculate center column width
+  $: centerColumnWidth = 100 - (leftPanelCollapsed ? 0 : leftColumnWidth) - (rightPanelCollapsed ? 0 : rightColumnWidth);
+
+  // Floating video input drag functions
+  function startVideoDrag(event: MouseEvent) {
+    isDraggingVideo = true;
+    const target = event.currentTarget as HTMLElement;
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      videoOffsetX = event.clientX - rect.left;
+      videoOffsetY = event.clientY - rect.top;
+    }
+    
+    document.addEventListener('mousemove', handleVideoDrag);
+    document.addEventListener('mouseup', stopVideoDrag);
+    document.body.style.userSelect = 'none';
+    event.preventDefault();
+  }
+
+  function handleVideoDrag(event: MouseEvent) {
+    if (!isDraggingVideo) return;
+    
+    const newX = event.clientX - videoOffsetX;
+    const newY = event.clientY - videoOffsetY;
+    
+    // Keep within viewport bounds
+    const maxX = window.innerWidth - 320; // Assuming 300px width + some margin
+    const maxY = window.innerHeight - 240; // Assuming 200px height + some margin
+    
+    floatingVideoPosition = {
+      x: Math.max(0, Math.min(maxX, newX)),
+      y: Math.max(0, Math.min(maxY, newY))
+    };
+  }
+
+  function stopVideoDrag() {
+    isDraggingVideo = false;
+    document.removeEventListener('mousemove', handleVideoDrag);
+    document.removeEventListener('mouseup', stopVideoDrag);
+    document.body.style.userSelect = '';
+  }
 </script>
 
 <svelte:head>
@@ -480,36 +575,33 @@
   <Warning bind:message={warningMessage}></Warning>
   
   <!-- Header Section -->
-  <header class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-4 flex-shrink-0">
+  <header class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex-shrink-0">
     <div class="flex items-center justify-between">
       <div class="flex-1">
         {#if pageContent}
-          <div class="text-center">
+          <div class="text-left">
             {@html pageContent}
           </div>
         {/if}
         {#if maxQueueSize > 0}
-          <p class="text-sm text-center mt-2">
-            There are <span id="queue_size" class="font-bold">{currentQueueSize}</span>
-            user(s) sharing the same GPU, affecting real-time performance. Maximum queue size is {maxQueueSize}.
+          <p class="text-xs text-center mt-1">
+            <span id="queue_size" class="font-bold">{currentQueueSize}</span> users sharing GPU.
             <a
               href="https://huggingface.co/spaces/radames/Real-Time-Latent-Consistency-Model?duplicate=true"
               target="_blank"
               class="text-blue-500 underline hover:no-underline">Duplicate</a
-            > and run it on your own GPU.
+            > to run on your own GPU.
           </p>
         {/if}
       </div>
-      
+
       <!-- Pipeline Configuration and Main Controls -->
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2">
         <!-- Pipeline Configuration -->
-        <div class="flex items-center gap-2">
-          <Button on:click={selectFile} disabled={uploading} classList="text-sm px-3 py-2">
-            {uploading ? 'Uploading...' : 'Load YAML Config'}
-          </Button>
-        </div>
-        
+        <Button on:click={selectFile} disabled={uploading} classList={'text-sm px-4 py-2 font-semibold'}>
+          {uploading ? 'Uploading...' : 'Load YAML Config'}
+        </Button>
+
         <input
           bind:this={fileInput}
           type="file"
@@ -519,7 +611,7 @@
         />
         
         <!-- Main Control Button -->
-        <Button on:click={toggleLcmLive} {disabled} classList={'text-lg px-6 py-3 font-semibold'}>
+        <Button on:click={toggleLcmLive} {disabled} classList={'text-sm px-4 py-2 font-semibold'}>
           {#if isLCMRunning}
             Stop Stream
           {:else}
@@ -528,10 +620,10 @@
         </Button>
       </div>
     </div>
-    
+      
     {#if uploadStatus}
-      <div class="mt-2 text-center">
-        <p class="text-sm {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
+      <div class="mt-1 text-center">
+        <p class="text-xs {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
           {uploadStatus}
         </p>
       </div>
@@ -539,23 +631,27 @@
   </header>
 
   {#if pipelineParams}
-    <!-- Main Content Grid -->
-    <div class="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
+    <!-- Main Content Grid with Resizable Columns -->
+    <div class="flex-1 flex p-4 overflow-hidden main-grid" style="gap: 0;">
       
       <!-- Left Panel - Input and Basic Controls -->
-      <div class="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-hidden">
-        <!-- Panel Header -->
-        <div class="flex items-center justify-between flex-shrink-0">
-          <h2 class="text-lg font-semibold">Input & Controls</h2>
-          <button 
-            on:click={() => leftPanelCollapsed = !leftPanelCollapsed}
-            class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
-          >
-            {leftPanelCollapsed ? '→' : '←'}
-          </button>
-        </div>
-        
-        {#if !leftPanelCollapsed}
+      {#if !leftPanelCollapsed}
+        <div
+          class="flex flex-col gap-4 overflow-hidden pr-2"
+          style="width: {leftColumnWidth}%; min-width: 250px;"
+        >
+          <!-- Panel Header -->
+          <div class="flex items-center justify-between flex-shrink-0">
+            <h2 class="text-lg font-semibold">Input & Controls</h2>
+            <button
+              on:click={() => leftPanelCollapsed = !leftPanelCollapsed}
+              class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+              title="Collapse panel"
+            >
+              ←
+            </button>
+          </div>
+          
           <!-- Fixed Video Input Section (Image Mode Only) -->
           {#if isImageMode}
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex-shrink-0">
@@ -572,7 +668,7 @@
           <div class="flex-1 overflow-y-auto space-y-4">
             <!-- Resolution Picker -->
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-              <button 
+              <button
                 on:click={() => showResolutionPicker = !showResolutionPicker}
                 class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
               >
@@ -597,10 +693,10 @@
               </button>
               {#if showPromptBlending}
                 <div class="p-4 pt-0">
-                  <BlendingControl 
-                    {promptBlendingConfig} 
+                  <BlendingControl
+                    {promptBlendingConfig}
                     {seedBlendingConfig}
-                    {normalizePromptWeights} 
+                    {normalizePromptWeights}
                     {normalizeSeedWeights}
                     currentPrompt={$pipelineValues.prompt}
                   />
@@ -613,11 +709,36 @@
               <InputControl />
             </div>
           </div>
-        {/if}
-      </div>
+        </div>
+
+        <!-- Left Resizer -->
+        <button
+          type="button"
+          class="w-1 bg-gray-300 dark:bg-gray-600 hover:bg-blue-500 cursor-col-resize flex-shrink-0 transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize left panel"
+          on:mousedown={(e) => startDrag(e, 'left')}
+          title="Drag to resize"
+        ></button>
+      {:else}
+        <!-- Collapsed Left Panel Toggle -->
+        <div class="flex flex-col items-center py-4 pr-2">
+          <button
+            on:click={() => leftPanelCollapsed = !leftPanelCollapsed}
+            class="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700 writing-mode-vertical"
+            title="Expand Input & Controls"
+          >
+            →
+          </button>
+        </div>
+      {/if}
 
       <!-- Center Panel - Main Image Output -->
-      <div class="col-span-12 lg:col-span-6 flex flex-col">
+      <div
+        class="flex flex-col px-2"
+        style="width: {centerColumnWidth}%; min-width: 300px;"
+      >
         <div class="flex-1 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex flex-col">
           <div class="flex items-center justify-between mb-4">
             <h2 class="text-lg font-semibold">Generated Output</h2>
@@ -644,37 +765,63 @@
       </div>
 
       <!-- Right Panel - Advanced Controls -->
-      <div class="col-span-12 lg:col-span-3 flex flex-col gap-4 overflow-y-auto">
-        <!-- Panel Header -->
-        <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold">Advanced Settings</h2>
-          <button 
-            on:click={() => rightPanelCollapsed = !rightPanelCollapsed}
-            class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
-          >
-            {rightPanelCollapsed ? '←' : '→'}
-          </button>
-        </div>
-        
-        {#if !rightPanelCollapsed}
-                  <ControlNetConfig 
-          {controlnetInfo} 
-          {tIndexList} 
-          {guidanceScale}
-          {delta}
-          {numInferenceSteps}
-          on:controlnetUpdated={handleControlNetUpdate}
-          on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
-          on:controlnetConfigChanged={getSettings}
-        ></ControlNetConfig>
+      {#if !rightPanelCollapsed}
+        <!-- Right Resizer -->
+        <button
+          type="button"
+          class="w-1 bg-gray-300 dark:bg-gray-600 hover:bg-blue-500 cursor-col-resize flex-shrink-0 transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize right panel"
+          on:mousedown={(e) => startDrag(e, 'right')}
+          title="Drag to resize"
+        ></button>
+
+        <div
+          class="flex flex-col gap-4 overflow-y-auto pl-2"
+          style="width: {rightColumnWidth}%; min-width: 250px;"
+        >
+          <!-- Panel Header -->
+          <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Advanced Settings</h2>
+            <button
+              on:click={() => rightPanelCollapsed = !rightPanelCollapsed}
+              class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+              title="Collapse panel"
+            >
+              →
+            </button>
+          </div>
+          
+          <ControlNetConfig 
+            {controlnetInfo} 
+            {tIndexList} 
+            {guidanceScale}
+            {delta}
+            {numInferenceSteps}
+            on:controlnetUpdated={handleControlNetUpdate}
+            on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
+            on:controlnetConfigChanged={getSettings}
+          ></ControlNetConfig>
           
           <IPAdapterConfig 
             {ipadapterInfo} 
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}
           ></IPAdapterConfig>
-        {/if}
-      </div>
+        </div>
+      {:else}
+        <!-- Collapsed Right Panel Toggle -->
+        <div class="flex flex-col items-center py-4 pl-2">
+          <button
+            on:click={() => rightPanelCollapsed = !rightPanelCollapsed}
+            class="p-2 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+            title="Expand Advanced Settings"
+          >
+            ←
+          </button>
+        </div>
+      {/if}
     </div>
   {:else if apiError}
     <!-- API Error -->
@@ -707,6 +854,37 @@
       </div>
     </div>
   {/if}
+
+  <!-- Floating Video Input (when left panel is collapsed and in image mode) -->
+  {#if leftPanelCollapsed && isImageMode && pipelineParams}
+    <div
+      class="fixed z-50 bg-white dark:bg-gray-800 rounded-lg border-2 border-gray-300 dark:border-gray-600 shadow-lg"
+      style="left: {floatingVideoPosition.x}px; top: {floatingVideoPosition.y}px; width: 320px;"
+    >
+      <!-- Drag Handle -->
+      <div
+        class="bg-gray-100 dark:bg-gray-700 px-3 py-2 rounded-t-lg cursor-move border-b border-gray-200 dark:border-gray-600 flex items-center justify-between"
+        role="button"
+        tabindex="0"
+        on:mousedown={startVideoDrag}
+      >
+        <div class="flex items-center gap-2 text-sm font-medium">
+          <span>📹</span>
+          <span>Video Input</span>
+        </div>
+        <span class="text-xs text-gray-500 dark:text-gray-400">Drag to move</span>
+      </div>
+      
+      <!-- Video Input Content -->
+      <div class="p-3">
+        <VideoInput
+          width={Number(pipelineParams.width.default)}
+          height={Number(pipelineParams.height.default)}
+          {currentResolution}
+        />
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style lang="postcss">
@@ -732,4 +910,17 @@
   :global(.overflow-y-auto::-webkit-scrollbar-thumb:hover) {
     @apply bg-gray-400 dark:bg-gray-500;
   }
+
+  /* Resizer styling */
+  .main-grid {
+    position: relative;
+  }
+
+  /* Prevent text selection during drag */
+  :global(body.dragging) {
+    user-select: none;
+    cursor: col-resize !important;
+  }
+
+  /* Removed unused .resizer:hover selector */
 </style>

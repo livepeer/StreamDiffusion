@@ -12,7 +12,7 @@ _deps = [
     "accelerate",
     "fire",
     "omegaconf",
-    "cuda-python",
+    "cuda-python==12.9.0",
     "onnx>=1.15.0",
     "onnxruntime>=1.16.3",
     "protobuf>=3.20.2",
