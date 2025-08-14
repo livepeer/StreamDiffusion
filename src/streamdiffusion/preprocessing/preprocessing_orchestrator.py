@@ -45,11 +45,29 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         except:
             pass
     
-    def _should_use_sync_processing(self, 
-                                  preprocessors: List[Optional[Any]], 
-                                  *args, **kwargs) -> bool:
+    def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
-        _check_feedback_cached: Efficiently check for feedback preprocessors using caching
+        Check for feedback preprocessors that require sync processing.
+        
+        Feedback preprocessors need synchronous processing to avoid temporal artifacts.
+        
+        Args:
+            *args: Arguments from process_pipelined call (preprocessors, scales, stream_width, stream_height)
+            **kwargs: Keyword arguments
+            
+        Returns:
+            True if feedback preprocessors detected, False otherwise
+        """
+        # Extract preprocessors from args - they're the first argument after control_image
+        if len(args) < 1:
+            return False
+        
+        preprocessors = args[0]  # preprocessors is first arg after control_image
+        return self._check_feedback_cached(preprocessors)
+    
+    def _check_feedback_cached(self, preprocessors: List[Optional[Any]]) -> bool:
+        """
+        Efficiently check for feedback preprocessors using caching
         
         Only performs expensive isinstance checks when preprocessor list actually changes.
         """
@@ -262,15 +280,10 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         # Prepare input variants for processing
         control_variants = self._prepare_input_variants(input_image, stream_width, stream_height)
         
-        # Process in parallel if multiple preprocessors, otherwise process directly
-        if len(embedding_preprocessors) > 1:
-            results = self._process_embedding_preprocessors_parallel(
-                embedding_preprocessors, control_variants, stream_width, stream_height
-            )
-        else:
-            results = self._process_embedding_preprocessors_sequential(
-                embedding_preprocessors, control_variants, stream_width, stream_height
-            )
+        # Process using parallel logic (efficient for 1 or many items)
+        results = self._process_embedding_preprocessors_parallel(
+            embedding_preprocessors, control_variants, stream_width, stream_height
+        )
         
         return results
     
@@ -326,20 +339,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         
         return results
     
-    def _process_embedding_preprocessors_sequential(self,
-                                                  embedding_preprocessors: List[Any],
-                                                  control_variants: Dict[str, Any],
-                                                  stream_width: int,
-                                                  stream_height: int) -> List[Tuple[torch.Tensor, torch.Tensor]]:
-        """Process single embedding preprocessor directly"""
-        result = self._process_single_embedding_preprocessor(
-            0, embedding_preprocessors[0], control_variants, stream_width, stream_height
-        )
-        
-        if result and result['embeddings'] is not None:
-            return [result['embeddings']]
-        else:
-            return [None]
+
     
     def _process_single_embedding_preprocessor(self,
                                              index: int,
@@ -427,15 +427,10 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         if not preprocessor_groups:
             return [None] * len(preprocessors)
         
-        # Process groups in parallel if multiple, otherwise process directly
-        if len(preprocessor_groups) > 1:
-            return self._process_groups_parallel(
-                preprocessor_groups, control_variants, stream_width, stream_height, preprocessors
-            )
-        else:
-            return self._process_groups_sequential(
-                preprocessor_groups, control_variants, stream_width, stream_height, preprocessors
-            )
+        # Process groups using parallel logic (efficient for 1 or many items)
+        return self._process_groups_parallel(
+            preprocessor_groups, control_variants, stream_width, stream_height, preprocessors
+        )
     
     def _prepare_input_variants(self,
                               control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
@@ -530,31 +525,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         
         return processed_images
     
-    def _process_groups_sequential(self,
-                                 preprocessor_groups: Dict[str, Dict[str, Any]],
-                                 control_variants: Dict[str, Any],
-                                 stream_width: int,
-                                 stream_height: int,
-                                 preprocessors: List[Optional[Any]]) -> List[Optional[torch.Tensor]]:
-        """Process single preprocessor group directly"""
-        prep_key, group = next(iter(preprocessor_groups.items()))
-        result = self._process_single_preprocessor_group(
-            prep_key, group, control_variants, stream_width, stream_height
-        )
-        
-        processed_images = [None] * len(preprocessors)
-        
-        if result and result['processed_image'] is not None:
-            processed_image = result['processed_image']
-            indices = result['indices']
-            
-            # Cache and assign
-            cache_key = f"prep_{prep_key}"
-            self._preprocessed_cache[cache_key] = processed_image
-            for index in indices:
-                processed_images[index] = processed_image
-        
-        return processed_images
+
     
     def _process_single_preprocessor_group(self,
                                          prep_key: str,
@@ -712,28 +683,18 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         try:
             processed_cache = {}
             
-            if len(preprocessor_groups) > 1:
-                # Parallel processing for multiple preprocessors
-                futures = []
-                for prep_key, group in preprocessor_groups.items():
-                    future = self._executor.submit(
-                        self._process_single_preprocessor_threadsafe,
-                        prep_key, group, control_variants, stream_width, stream_height
-                    )
-                    futures.append((future, prep_key, group))
-                
-                # Collect results
-                for future, prep_key, group in futures:
-                    result = future.result()
-                    if result and result[2] is not None:
-                        cache_key = f"prep_{prep_key}"
-                        processed_cache[cache_key] = result[2]
-            else:
-                # Single preprocessor - direct processing
-                prep_key, group = next(iter(preprocessor_groups.items()))
-                result = self._process_single_preprocessor_threadsafe(
+            # Process all preprocessor groups using parallel logic (efficient for 1 or many)
+            futures = []
+            for prep_key, group in preprocessor_groups.items():
+                future = self._executor.submit(
+                    self._process_single_preprocessor_threadsafe,
                     prep_key, group, control_variants, stream_width, stream_height
                 )
+                futures.append((future, prep_key, group))
+            
+            # Collect results
+            for future, prep_key, group in futures:
+                result = future.result()
                 if result and result[2] is not None:
                     cache_key = f"prep_{prep_key}"
                     processed_cache[cache_key] = result[2]
@@ -830,28 +791,21 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         """Background embedding preprocessing in separate thread"""
         try:
             
-            if len(embedding_preprocessors) > 1:
-                # Parallel processing for multiple preprocessors
-                futures = []
-                for i, preprocessor in enumerate(embedding_preprocessors):
-                    future = self._executor.submit(
-                        self._process_single_embedding_preprocessor,
-                        i, preprocessor, control_variants, stream_width, stream_height
-                    )
-                    futures.append((future, i))
-                
-                # Collect results
-                results = [None] * len(embedding_preprocessors)
-                for future, index in futures:
-                    result = future.result()
-                    if result and result['embeddings'] is not None:
-                        results[index] = result['embeddings']
-            else:
-                # Single preprocessor - direct processing
-                result = self._process_single_embedding_preprocessor(
-                    0, embedding_preprocessors[0], control_variants, stream_width, stream_height
+            # Process all embedding preprocessors using parallel logic (efficient for 1 or many)
+            futures = []
+            for i, preprocessor in enumerate(embedding_preprocessors):
+                future = self._executor.submit(
+                    self._process_single_embedding_preprocessor,
+                    i, preprocessor, control_variants, stream_width, stream_height
                 )
-                results = [result['embeddings'] if result and result['embeddings'] is not None else None]
+                futures.append((future, i))
+            
+            # Collect results
+            results = [None] * len(embedding_preprocessors)
+            for future, index in futures:
+                result = future.result()
+                if result and result['embeddings'] is not None:
+                    results[index] = result['embeddings']
             
             return {
                 'results': results,
