@@ -1549,7 +1549,7 @@ class App:
         async def get_preprocessors_info():
             """Get preprocessor information using metadata from preprocessor classes"""
             try:
-                from src.streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
                 
                 available_preprocessors = list_preprocessors()
                 preprocessors_info = {}
@@ -1611,7 +1611,7 @@ class App:
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
                 # Create new preprocessor instance
-                from src.streamdiffusion.preprocessing.processors import get_preprocessor
+                from src.streamdiffusion.processing.processors import get_preprocessor
                 new_preprocessor_instance = get_preprocessor(new_preprocessor)
 
                 # Resolve stream object and preprocessor list regardless of module or stream facade

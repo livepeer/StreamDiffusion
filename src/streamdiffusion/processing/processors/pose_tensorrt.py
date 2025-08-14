@@ -261,7 +261,7 @@ class YoloNasPoseTensorrtPreprocessor(BasePreprocessor):
             if engine_path is None:
                 raise ValueError(
                     "engine_path is required for TensorRT pose preprocessing. "
-                    "Please provide it in the preprocessor_params config."
+                    "Please provide it in the processor_params config."
                 )
             
             if not os.path.exists(engine_path):

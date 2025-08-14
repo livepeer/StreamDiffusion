@@ -499,13 +499,13 @@ class StreamDiffusionWrapper:
         controlnet_config : Optional[List[Dict[str, Any]]]
             Complete ControlNet configuration list defining the desired state.
             Each dict contains: model_id, preprocessor, conditioning_scale, enabled, 
-            preprocessor_params, etc. System will diff current vs desired state and 
+            processor_params, etc. System will diff current vs desired state and 
             perform minimal add/remove/update operations.
         ipadapter_config : Optional[Dict[str, Any]]
             IPAdapter configuration dict containing scale, style_image, etc.
         postprocessing_config : Optional[List[Dict[str, Any]]]
             List of postprocessor configurations defining the desired state.
-            Each dict contains: name, enabled, scale, preprocessor_params, etc.
+            Each dict contains: name, enabled, scale, processor_params, etc.
         skip_diffusion : Optional[bool]
             Whether to skip diffusion entirely and process input directly.
         """
@@ -1593,7 +1593,7 @@ class StreamDiffusionWrapper:
                         preprocessor=cfg.get('preprocessor'),
                         conditioning_scale=cfg.get('conditioning_scale', 1.0),
                         enabled=cfg.get('enabled', True),
-                        preprocessor_params=cfg.get('preprocessor_params'),
+                        processor_params=cfg.get('processor_params'),
                     )
                     cn_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
                 # Expose for later updates if needed by caller code
@@ -1673,8 +1673,8 @@ class StreamDiffusionWrapper:
         # Initialize postprocessing
         if use_postprocessing and postprocessing_config:
             try:
-                from .preprocessing.postprocessing_orchestrator import PostprocessingOrchestrator
-                from .preprocessing.processors import get_preprocessor
+                from .processing.postprocessing_orchestrator import PostprocessingOrchestrator
+                from .processing.processors import get_preprocessor
                 
                 self._postprocessing_orchestrator = PostprocessingOrchestrator(
                     device=self.device, 
@@ -1700,9 +1700,9 @@ class StreamDiffusionWrapper:
                         except Exception:
                             pass
                         
-                        # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
-                        if proc_config.get('preprocessor_params'):
-                            params = proc_config['preprocessor_params']
+                        # Configure processor with processor_params if provided (same pattern as ControlNet)
+                        if proc_config.get('processor_params'):
+                            params = proc_config['processor_params']
                             # If the processor exposes a 'params' dict, update it
                             if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
                                 processor.params.update(params)

@@ -6,7 +6,7 @@ import gc
 
 import logging
 logger = logging.getLogger(__name__)
-from .preprocessing.orchestrator_user import OrchestratorUser
+from .processing.orchestrator_user import OrchestratorUser
 
 class CacheStats:
     """Helper class to track cache statistics"""
@@ -1020,7 +1020,7 @@ class StreamParameterUpdater(OrchestratorUser):
                             preprocessor=desired_cfg.get('preprocessor'),
                             conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
                             enabled=desired_cfg.get('enabled', True),
-                            preprocessor_params=desired_cfg.get('preprocessor_params'),
+                            processor_params=desired_cfg.get('processor_params'),
                         )
                         controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
                     except Exception:
@@ -1044,10 +1044,10 @@ class StreamParameterUpdater(OrchestratorUser):
                     if 0 <= existing_index < len(controlnet_pipeline.enabled_list):
                         controlnet_pipeline.enabled_list[existing_index] = bool(desired_cfg['enabled'])
 
-                if 'preprocessor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
+                if 'processor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
                     preprocessor = controlnet_pipeline.preprocessors[existing_index]
-                    preprocessor.params.update(desired_cfg['preprocessor_params'])
-                    for param_name, param_value in desired_cfg['preprocessor_params'].items():
+                    preprocessor.params.update(desired_cfg['processor_params'])
+                    for param_name, param_value in desired_cfg['processor_params'].items():
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
 
@@ -1112,7 +1112,7 @@ class StreamParameterUpdater(OrchestratorUser):
             config = {
                 'model_id': model_id,
                 'conditioning_scale': scale,
-                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
+                'processor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
                 'enabled': enabled_val,
             }
             current_config.append(config)
@@ -1230,7 +1230,7 @@ class StreamParameterUpdater(OrchestratorUser):
         
         Args:
             postprocessing_config: List of postprocessor configurations defining the desired state.
-                                 Each dict contains: name, enabled, scale, preprocessor_params, etc.
+                                 Each dict contains: name, enabled, scale, processor_params, etc.
         """
         # Check if wrapper has postprocessing enabled
         if not hasattr(self.wrapper, 'use_postprocessing') or not self.wrapper.use_postprocessing:
@@ -1243,7 +1243,7 @@ class StreamParameterUpdater(OrchestratorUser):
         
         try:
             # Import here to avoid circular dependencies
-            from streamdiffusion.preprocessing.processors import get_preprocessor
+            from streamdiffusion.processing.processors import get_preprocessor
             
             # Rebuild postprocessor instances
             self.wrapper._postprocessor_instances = []
@@ -1263,9 +1263,9 @@ class StreamParameterUpdater(OrchestratorUser):
                     except Exception:
                         pass
                     
-                    # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
-                    if proc_config.get('preprocessor_params'):
-                        params = proc_config['preprocessor_params']
+                    # Configure processor with processor_params if provided (same pattern as ControlNet)
+                    if proc_config.get('processor_params'):
+                        params = proc_config['processor_params']
                         # If the processor exposes a 'params' dict, update it
                         if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
                             processor.params.update(params)

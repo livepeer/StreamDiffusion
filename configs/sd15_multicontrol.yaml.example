@@ -58,7 +58,7 @@ controlnets:
   - model_id: "lllyasviel/control_v11f1p_sd15_depth"
     conditioning_scale: 0.3
     preprocessor: "depth_tensorrt"
-    preprocessor_params:
+    processor_params:
       engine_path: "C:\\_dev\\models\\tensorrt\\depth_anything_v2_vits-fp16.engine"  # REQUIRED: Path to TensorRT engine
       detect_resolution: 518    # Must match engine input size
       image_resolution: 512
@@ -68,7 +68,7 @@ controlnets:
   - model_id: "lllyasviel/control_v11f1e_sd15_tile"
     conditioning_scale: 0.2
     preprocessor: "feedback"
-    preprocessor_params:
+    processor_params:
       image_resolution: 512
       feedback_strength: 0.15   # Controls temporal feedback intensity
     enabled: true

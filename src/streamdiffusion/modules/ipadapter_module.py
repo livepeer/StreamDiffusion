@@ -6,7 +6,7 @@ import torch
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
-from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+from streamdiffusion.processing.orchestrator_user import OrchestratorUser
 
 
 @dataclass
@@ -116,7 +116,7 @@ class IPAdapterModule(OrchestratorUser):
             logger.error(f"IPAdapterModule.install: Failed to import IPAdapter: {e}")
             raise
         try:
-            from streamdiffusion.preprocessing.processors.ipadapter_embedding import IPAdapterEmbeddingPreprocessor
+            from streamdiffusion.processing.processors.ipadapter_embedding import IPAdapterEmbeddingPreprocessor
         except Exception as e:
             logger.error(f"IPAdapterModule.install: Failed to import IPAdapterEmbeddingPreprocessor: {e}")
             raise
@@ -149,7 +149,7 @@ class IPAdapterModule(OrchestratorUser):
             use_faceid_preproc = False
         if use_faceid_preproc:
             try:
-                from streamdiffusion.preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
+                from streamdiffusion.processing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
                 embedding_preprocessor = FaceIDEmbeddingPreprocessor(
                     ipadapter=ipadapter,
                     device=stream.device,

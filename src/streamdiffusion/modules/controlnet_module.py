@@ -9,10 +9,10 @@ from diffusers.models import ControlNetModel
 import logging
 
 from streamdiffusion.hooks import StepCtx, UnetKwargsDelta, UnetHook
-from streamdiffusion.preprocessing.preprocessing_orchestrator import (
+from streamdiffusion.processing.preprocessing_orchestrator import (
     PreprocessingOrchestrator,
 )
-from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+from streamdiffusion.processing.orchestrator_user import OrchestratorUser
 
 
 @dataclass
@@ -21,7 +21,7 @@ class ControlNetConfig:
     preprocessor: Optional[str] = None
     conditioning_scale: float = 1.0
     enabled: bool = True
-    preprocessor_params: Optional[Dict[str, Any]] = None
+    processor_params: Optional[Dict[str, Any]] = None
 
 
 class ControlNetModule(OrchestratorUser):
@@ -81,11 +81,11 @@ class ControlNetModule(OrchestratorUser):
 
         preproc = None
         if cfg.preprocessor:
-            from streamdiffusion.preprocessing.processors import get_preprocessor
+            from streamdiffusion.processing.processors import get_preprocessor
             preproc = get_preprocessor(cfg.preprocessor)
             # Apply provided parameters to the preprocessor instance
-            if cfg.preprocessor_params:
-                params = cfg.preprocessor_params or {}
+            if cfg.processor_params:
+                params = cfg.processor_params or {}
                 # If the preprocessor exposes a 'params' dict, update it
                 if hasattr(preproc, 'params') and isinstance(getattr(preproc, 'params'), dict):
                     preproc.params.update(params)
@@ -269,7 +269,7 @@ class ControlNetModule(OrchestratorUser):
                 cfg.append({
                     'model_id': model_id,
                     'conditioning_scale': scale,
-                    'preprocessor_params': preproc_params,
+                    'processor_params': preproc_params,
                     'enabled': (self.enabled_list[i] if i < len(self.enabled_list) else True),
                 })
         return cfg

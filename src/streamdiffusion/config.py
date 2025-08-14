@@ -192,7 +192,7 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             'preprocessor': cn_config.get('preprocessor', 'passthrough'),
             'conditioning_scale': cn_config.get('conditioning_scale', 1.0),
             'enabled': cn_config.get('enabled', True),
-            'preprocessor_params': cn_config.get('preprocessor_params'),
+            'processor_params': cn_config.get('processor_params'),
             'pipeline_type': pipeline_type,
             'control_guidance_start': cn_config.get('control_guidance_start', 0.0),
             'control_guidance_end': cn_config.get('control_guidance_end', 1.0),
@@ -231,7 +231,7 @@ def _prepare_postprocessing_configs(config: Dict[str, Any]) -> List[Dict[str, An
             'name': proc_config['name'],
             'enabled': proc_config.get('enabled', True),
             'scale': proc_config.get('scale', 1.0),
-            'preprocessor_params': proc_config.get('preprocessor_params', {}),
+            'processor_params': proc_config.get('processor_params', {}),
         }
         postprocessing_configs.append(postprocessing_config)
     
@@ -356,8 +356,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
                 if 'name' not in processor:
                     raise ValueError(f"_validate_config: Postprocessor {i} missing required 'name'")
                 
-                if 'preprocessor_params' in processor and not isinstance(processor['preprocessor_params'], dict):
-                    raise ValueError(f"_validate_config: Postprocessor {i} 'preprocessor_params' must be a dictionary")
+                if 'processor_params' in processor and not isinstance(processor['processor_params'], dict):
+                    raise ValueError(f"_validate_config: Postprocessor {i} 'processor_params' must be a dictionary")
 
     # Validate prompt blending configuration if present
     if 'prompt_blending' in config:
