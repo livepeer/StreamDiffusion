@@ -16,6 +16,7 @@
   $: console.log('ImagePlayer: isLCMRunning', isLCMRunning);
   let imageEl: HTMLImageElement;
   let localResolution: ResolutionInfo;
+  let actualOutputResolution: ResolutionInfo | null = null;
 
   // Reactive resolution parsing
   $: {
@@ -65,6 +66,30 @@
     isFullscreen = !!document.fullscreenElement;
   }
 
+  function updateActualResolutionFromImage() {
+    if (imageEl && imageEl.naturalWidth && imageEl.naturalHeight) {
+      const width = imageEl.naturalWidth;
+      const height = imageEl.naturalHeight;
+      
+      // Calculate GCD for aspect ratio
+      function gcd(a: number, b: number): number {
+        return b === 0 ? a : gcd(b, a % b);
+      }
+      
+      const gcdValue = gcd(width, height);
+      actualOutputResolution = {
+        width,
+        height,
+        aspectRatio: width / height,
+        aspectRatioString: `${width / gcdValue}:${height / gcdValue}`
+      };
+    }
+  }
+
+  function handleImageLoad() {
+    updateActualResolutionFromImage();
+  }
+
   // Listen for fullscreen changes
   if (typeof window !== 'undefined') {
     document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -88,10 +113,15 @@
       class="max-w-full max-h-full object-contain rounded-lg"
       src={'/api/stream/' + $streamId}
       alt="Generated output stream"
+      on:load={handleImageLoad}
     />
     
     <!-- Resolution indicator -->
-    {#if localResolution}
+    {#if actualOutputResolution}
+      <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
+        Output: {actualOutputResolution.width}×{actualOutputResolution.height} ({actualOutputResolution.aspectRatioString})
+      </div>
+    {:else if localResolution}
       <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
         Output: {localResolution.width}×{localResolution.height} ({localResolution.aspectRatioString})
       </div>
