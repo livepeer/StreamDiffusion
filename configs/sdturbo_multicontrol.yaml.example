@@ -39,7 +39,7 @@ controlnets:
   - model_id: "thibaud/controlnet-sd21-canny-diffusers"
     conditioning_scale: 0.5
     preprocessor: "canny"
-    preprocessor_params:
+    processor_params:
       low_threshold: 100
       high_threshold: 200
     enabled: true
@@ -48,7 +48,7 @@ controlnets:
   - model_id: "thibaud/controlnet-sd21-hed-diffusers" 
     conditioning_scale: 0.3
     preprocessor: "soft_edge"
-    preprocessor_params:
+    processor_params:
       image_resolution: 512
       strength: 1.0
       soft_threshold: 0.5

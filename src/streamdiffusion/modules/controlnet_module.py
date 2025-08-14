@@ -9,13 +9,11 @@ import logging
 from pydantic import BaseModel, Field
 
 from streamdiffusion.hooks import StepCtx, UnetKwargsDelta, UnetHook
-from streamdiffusion.preprocessing.preprocessing_orchestrator import (
+from streamdiffusion.processing.preprocessing_orchestrator import (
     PreprocessingOrchestrator,
 )
-from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+from streamdiffusion.processing.orchestrator_user import OrchestratorUser
 from streamdiffusion.config_types import ControlNetConfig
-
-
 
 
 class ControlNetModule(OrchestratorUser):
@@ -93,7 +91,7 @@ class ControlNetModule(OrchestratorUser):
 
         preproc = None
         if cfg.preprocessor:
-            from streamdiffusion.preprocessing.processors import get_preprocessor
+            from streamdiffusion.processing.processors import get_preprocessor
             preproc = get_preprocessor(cfg.preprocessor)
             # Apply provided parameters to the preprocessor instance
             if cfg.preprocessor_params:

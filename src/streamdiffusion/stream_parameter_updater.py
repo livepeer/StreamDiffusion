@@ -6,7 +6,7 @@ import gc
 
 import logging
 logger = logging.getLogger(__name__)
-from .preprocessing.orchestrator_user import OrchestratorUser
+from .processing.orchestrator_user import OrchestratorUser
 from .config_types import ControlNetConfig, IPAdapterConfig
 
 class CacheStats:
@@ -1015,11 +1015,9 @@ class StreamParameterUpdater(OrchestratorUser):
                 try:
                     # desired_cfg is already a ControlNetConfig pydantic model
                     controlnet_pipeline.add_controlnet(desired_cfg, None)
-                except Exception:
-                    # No fallback
-                    raise
                 except Exception as e:
                     logger.error(f"_update_controlnet_config: add_controlnet failed for {model_id}: {e}")
+                    raise
             else:
                 # Update existing controlnet
                 current_scale = current_config[existing_index].conditioning_scale
@@ -1209,7 +1207,7 @@ class StreamParameterUpdater(OrchestratorUser):
         
         Args:
             postprocessing_config: List of postprocessor configurations defining the desired state.
-                                 Each dict contains: name, enabled, scale, preprocessor_params, etc.
+                                 Each dict contains: name, enabled, scale, processor_params, etc.
         """
         # Check if wrapper has postprocessing enabled
         if not hasattr(self.wrapper, 'use_postprocessing') or not self.wrapper.use_postprocessing:
@@ -1222,7 +1220,7 @@ class StreamParameterUpdater(OrchestratorUser):
         
         try:
             # Import here to avoid circular dependencies
-            from streamdiffusion.preprocessing.processors import get_preprocessor
+            from streamdiffusion.processing.processors import get_preprocessor
             
             # Rebuild postprocessor instances
             self.wrapper._postprocessor_instances = []
@@ -1242,9 +1240,9 @@ class StreamParameterUpdater(OrchestratorUser):
                     except Exception:
                         pass
                     
-                    # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
-                    if proc_config.get('preprocessor_params'):
-                        params = proc_config['preprocessor_params']
+                    # Configure processor with processor_params if provided (same pattern as ControlNet)
+                    if proc_config.get('processor_params'):
+                        params = proc_config['processor_params']
                         # If the processor exposes a 'params' dict, update it
                         if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
                             processor.params.update(params)

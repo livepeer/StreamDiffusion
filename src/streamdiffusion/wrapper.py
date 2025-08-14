@@ -188,7 +188,9 @@ class StreamDiffusionWrapper:
         controlnet_config : Optional[Union[ControlNetConfig, List[ControlNetConfig]]], optional
             ControlNet configuration(s), by default None.
             Can be a single ControlNetConfig or list of ControlNetConfigs for multiple ControlNets.
-            Each config contains: model_id, preprocessor, conditioning_scale, enabled, preprocessor_params.
+            Each config contains: model_id, preprocessor, conditioning_scale, enabled, 
+            preprocessor_params. System will diff current vs desired state and 
+            perform minimal add/remove/update operations.
         enable_pytorch_fallback : bool, optional
             Whether to enable PyTorch fallback when acceleration fails, by default False.
             When True, falls back to PyTorch inference if TensorRT/xformers acceleration fails.
@@ -507,7 +509,7 @@ class StreamDiffusionWrapper:
             IPAdapter configuration containing scale, style_image_key, etc.
         postprocessing_config : Optional[List[Dict[str, Any]]]
             List of postprocessor configurations defining the desired state.
-            Each dict contains: name, enabled, scale, preprocessor_params, etc.
+            Each dict contains: name, enabled, scale, processor_params, etc.
         skip_diffusion : Optional[bool]
             Whether to skip diffusion entirely and process input directly.
         """
@@ -1598,26 +1600,26 @@ class StreamDiffusionWrapper:
                     try:
                         compiled_cn_engines = []
                         for cfg, cn_model in zip(configs, cn_module.controlnets):
-                            if not cfg or not cfg.get('model_id') or cn_model is None:
+                            if not cfg or not cfg.model_id or cn_model is None:
                                 continue
                             try:
                                 engine = engine_manager.get_or_load_controlnet_engine(
-                                    model_id=cfg['model_id'],
+                                    model_id=cfg.model_id,
                                     pytorch_model=cn_model,
                                     model_type=model_type,
                                     batch_size=stream.trt_unet_batch_size,
                                     cuda_stream=cuda_stream,
                                     use_cuda_graph=False,
                                     unet=None,
-                                    model_path=cfg['model_id']
+                                    model_path=cfg.model_id
                                 )
                                 try:
-                                    setattr(engine, 'model_id', cfg['model_id'])
+                                    setattr(engine, 'model_id', cfg.model_id)
                                 except Exception:
                                     pass
                                 compiled_cn_engines.append(engine)
                             except Exception as e:
-                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}")
+                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.model_id}: {e}")
                         if compiled_cn_engines:
                             setattr(stream, 'controlnet_engines', compiled_cn_engines)
                             try:
@@ -1651,8 +1653,8 @@ class StreamDiffusionWrapper:
         # Initialize postprocessing
         if use_postprocessing and postprocessing_config:
             try:
-                from .preprocessing.postprocessing_orchestrator import PostprocessingOrchestrator
-                from .preprocessing.processors import get_preprocessor
+                from .processing.postprocessing_orchestrator import PostprocessingOrchestrator
+                from .processing.processors import get_preprocessor
                 
                 self._postprocessing_orchestrator = PostprocessingOrchestrator(
                     device=self.device, 
@@ -1678,9 +1680,9 @@ class StreamDiffusionWrapper:
                         except Exception:
                             pass
                         
-                        # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
-                        if proc_config.get('preprocessor_params'):
-                            params = proc_config['preprocessor_params']
+                        # Configure processor with processor_params if provided (same pattern as ControlNet)
+                        if proc_config.get('processor_params'):
+                            params = proc_config['processor_params']
                             # If the processor exposes a 'params' dict, update it
                             if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
                                 processor.params.update(params)

@@ -59,7 +59,7 @@ controlnets:
   - model_id: "thibaud/controlnet-openpose-sdxl-1.0"
     conditioning_scale: 0.4
     preprocessor: "pose_tensorrt"
-    preprocessor_params:
+    processor_params:
       engine_path: "C:\\_dev\\models\\tensorrt\\yolo_nas_pose_l_0.8-fp16.engine"  # REQUIRED: Path to TensorRT engine
       detect_resolution: 640    # Must match engine input size
       image_resolution: 512
@@ -69,7 +69,7 @@ controlnets:
   - model_id: "diffusers/controlnet-canny-sdxl-1.0" 
     conditioning_scale: 0.3
     preprocessor: "canny"
-    preprocessor_params:
+    processor_params:
       low_threshold: 100
       high_threshold: 200
     enabled: true
