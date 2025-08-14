@@ -1687,6 +1687,19 @@ class StreamDiffusionWrapper:
                 for proc_config in postprocessing_config:
                     if proc_config.get('enabled', True):
                         processor = get_preprocessor(proc_config['name'])
+                        
+                        # Set system parameters (same pattern as ControlNet)
+                        try:
+                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                                processor.params['image_width'] = int(width)
+                                processor.params['image_height'] = int(height)
+                            if hasattr(processor, 'image_width'):
+                                setattr(processor, 'image_width', int(width))
+                            if hasattr(processor, 'image_height'):
+                                setattr(processor, 'image_height', int(height))
+                        except Exception:
+                            pass
+                        
                         # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
                         if proc_config.get('preprocessor_params'):
                             params = proc_config['preprocessor_params']

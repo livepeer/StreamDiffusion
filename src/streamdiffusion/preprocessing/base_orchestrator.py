@@ -24,9 +24,10 @@ class BaseOrchestrator(Generic[T, R], ABC):
         R: Result type returned from processing operations
     """
     
-    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
+    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, timeout_ms: float = 10.0):
         self.device = device
         self.dtype = dtype
+        self.timeout_ms = timeout_ms
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         
         # Pipeline state for pipelined processing
@@ -125,11 +126,11 @@ class BaseOrchestrator(Generic[T, R], ABC):
         )
     
     def _wait_for_previous_processing(self) -> None:
-        """Wait for previous frame processing with optimized timeout"""
+        """Wait for previous frame processing with configurable timeout"""
         if hasattr(self, '_next_frame_future') and self._next_frame_future is not None:
             try:
-                # Reduced timeout: 10ms for lower latency in real-time
-                self._next_frame_result = self._next_frame_future.result(timeout=0.01)
+                # Use configurable timeout based on orchestrator type
+                self._next_frame_result = self._next_frame_future.result(timeout=self.timeout_ms / 1000.0)
             except concurrent.futures.TimeoutError:
                 # Non-blocking: skip applying results this frame
                 self._next_frame_result = None
