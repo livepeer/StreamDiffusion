@@ -222,24 +222,4 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         self._last_input_tensor = None
         self._last_processed_result = None
     
-    def process_postprocessors_pipelined(self,
-                                       input_tensor: torch.Tensor,
-                                       postprocessors: List[Any]) -> torch.Tensor:
-        """
-        Process postprocessors with inter-frame pipelining.
-        
-        Frame N+1 postprocessing runs during frame N display for maximum performance.
-        
-        Args:
-            input_tensor: Input tensor to postprocess
-            postprocessors: List of postprocessor instances
-            
-        Returns:
-            Postprocessed tensor
-        """
-        # Store current input tensor for fallback use
-        self._current_input_tensor = input_tensor.clone()
-        self._current_postprocessors = postprocessors
-        
-        return self.process_pipelined(input_tensor, postprocessors)
 

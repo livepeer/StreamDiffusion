@@ -747,7 +747,7 @@ class StreamDiffusionWrapper:
                     normalized_tensor, self._postprocessor_instances
                 )
             else:
-                processed_tensor = self._postprocessing_orchestrator.process_postprocessors_pipelined(
+                processed_tensor = self._postprocessing_orchestrator.process_pipelined(
                     normalized_tensor, self._postprocessor_instances
                 )
             
