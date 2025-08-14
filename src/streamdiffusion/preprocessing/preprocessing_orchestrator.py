@@ -144,10 +144,10 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             return {'status': 'success', 'results': [None] * len(preprocessors)}
         
         # Optimize input preparation
-        control_variants = self._prepare_input_variants_optimized(control_image)
+        control_variants = self._prepare_input_variants(control_image, thread_safe=True)
         
         # Process using the existing optimized logic
-        return self._process_frame_preprocessing_optimized(
+        return self._execute_background_processing(
             preprocessor_groups,
             control_variants,
             active_indices,
@@ -700,38 +700,15 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
     
     # Pipelined processing methods (now handled by BaseOrchestrator)
     
-    def _prepare_input_variants_optimized(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> Dict[str, Any]:
-        """Prepare input variants optimized for pipelined processing"""
-        if isinstance(control_image, torch.Tensor):
-            return {
-                'image_safe': None,
-                'tensor': control_image  # Direct reference, no clone
-            }
-        elif isinstance(control_image, Image.Image):
-            image_safe = control_image.copy()
-            return {
-                'image_safe': image_safe,
-                'tensor': self._to_tensor_safe(image_safe)
-            }
-        elif isinstance(control_image, str):
-            image_safe = load_image(control_image)
-            return {
-                'image_safe': image_safe,
-                'tensor': self._to_tensor_safe(image_safe)
-            }
-        else:
-            return {
-                'image_safe': control_image,
-                'tensor': None
-            }
+
     
-    def _process_frame_preprocessing_optimized(self,
-                                             preprocessor_groups: Dict[str, Dict[str, Any]],
-                                             control_variants: Dict[str, Any],
-                                             active_indices: List[int],
-                                             stream_width: int,
-                                             stream_height: int) -> Dict[str, Any]:
-        """Optimized preprocessing in background thread"""
+    def _execute_background_processing(self,
+                                     preprocessor_groups: Dict[str, Dict[str, Any]],
+                                     control_variants: Dict[str, Any],
+                                     active_indices: List[int],
+                                     stream_width: int,
+                                     stream_height: int) -> Dict[str, Any]:
+        """Execute preprocessing in background thread with parallel processing"""
         try:
             processed_cache = {}
             
@@ -740,7 +717,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
                 futures = []
                 for prep_key, group in preprocessor_groups.items():
                     future = self._executor.submit(
-                        self._process_single_preprocessor_optimized,
+                        self._process_single_preprocessor_threadsafe,
                         prep_key, group, control_variants, stream_width, stream_height
                     )
                     futures.append((future, prep_key, group))
@@ -754,7 +731,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             else:
                 # Single preprocessor - direct processing
                 prep_key, group = next(iter(preprocessor_groups.items()))
-                result = self._process_single_preprocessor_optimized(
+                result = self._process_single_preprocessor_threadsafe(
                     prep_key, group, control_variants, stream_width, stream_height
                 )
                 if result and result[2] is not None:
@@ -774,13 +751,13 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
                 'status': 'error'
             }
     
-    def _process_single_preprocessor_optimized(self,
-                                             preprocessor_key: str,
-                                             group: Dict[str, Any],
-                                             control_variants: Dict[str, Any],
-                                             stream_width: int,
-                                             stream_height: int) -> Optional[Tuple[str, List[int], torch.Tensor]]:
-        """Optimized thread-safe preprocessor logic"""
+    def _process_single_preprocessor_threadsafe(self,
+                                               preprocessor_key: str,
+                                               group: Dict[str, Any],
+                                               control_variants: Dict[str, Any],
+                                               stream_width: int,
+                                               stream_height: int) -> Optional[Tuple[str, List[int], torch.Tensor]]:
+        """Thread-safe preprocessor logic for background processing"""
         try:
             preprocessor = group['preprocessor']
             
@@ -797,9 +774,10 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
                     pass  # Fall through to PIL processing
             
             # PIL processing fallback
-            if control_variants['image_safe'] is not None:
+            image_key = 'image_safe' if 'image_safe' in control_variants else 'image'
+            if control_variants[image_key] is not None:
                 processed_image = self.prepare_control_image(
-                    control_variants['image_safe'], preprocessor, stream_width, stream_height
+                    control_variants[image_key], preprocessor, stream_width, stream_height
                 )
                 return preprocessor_key, group['indices'], processed_image
             
@@ -833,7 +811,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             return
         
         # Prepare processing data
-        control_variants = self._prepare_input_variants_optimized(input_image)
+        control_variants = self._prepare_input_variants(input_image, thread_safe=True)
         
         # Submit optimized background processing
         self._next_embedding_future = self._executor.submit(
