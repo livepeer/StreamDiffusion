@@ -6,20 +6,22 @@ import concurrent.futures
 import logging
 from diffusers.utils import load_image
 import torchvision.transforms as transforms
+from .base_orchestrator import BaseOrchestrator
 
 logger = logging.getLogger(__name__)
 
+# Type alias for control image input
+ControlImage = Union[str, Image.Image, np.ndarray, torch.Tensor]
 
-class PreprocessingOrchestrator:
+
+class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[torch.Tensor]]]):
     """
     Orchestrates ControlNet preprocessing with parallelization, caching, and optimization.
     Handles image format conversion, preprocessor execution, and result caching.
     """
     
     def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
-        self.device = device
-        self.dtype = dtype
-        self._preprocessor_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        super().__init__(device, dtype, max_workers)
         
         # Caching
         self._preprocessed_cache: Dict[str, torch.Tensor] = {}
@@ -28,22 +30,13 @@ class PreprocessingOrchestrator:
         # Optimized transforms
         self._cached_transform = transforms.ToTensor()
         
-        # Pipeline state for pipelined processing
-        self._next_frame_future = None
-        self._next_frame_result = None
-        
-        # Pipeline state for embedding preprocessing
-        self._next_embedding_future = None
-        self._next_embedding_result = None
-        
         # Cache pipelining decision to avoid hot path checks
         self._preprocessors_cache_key = None
         self._has_feedback_cache = False
     
     def cleanup(self) -> None:
         """Cleanup thread pool resources"""
-        if hasattr(self, '_preprocessor_executor'):
-            self._preprocessor_executor.shutdown(wait=True)
+        super().cleanup()
     
     def __del__(self):
         """Cleanup on destruction"""
@@ -51,6 +44,54 @@ class PreprocessingOrchestrator:
             self.cleanup()
         except:
             pass
+    
+    def _should_use_sync_processing(self, 
+                                  preprocessors: List[Optional[Any]], 
+                                  *args, **kwargs) -> bool:
+        """
+        _should_use_sync_processing: Check for feedback preprocessors that require sync processing
+        
+        Feedback preprocessors need synchronous processing to avoid temporal artifacts.
+        
+        Args:
+            preprocessors: List of preprocessor instances
+            
+        Returns:
+            True if feedback preprocessors detected, False otherwise
+        """
+        return self._check_feedback_cached(preprocessors)
+    
+    def process_sync(self, 
+                   control_image: ControlImage,
+                   preprocessors: List[Optional[Any]],
+                   scales: List[float],
+                   stream_width: int,
+                   stream_height: int,
+                   index: Optional[int] = None) -> List[Optional[torch.Tensor]]:
+        """
+        Process control images synchronously for all ControlNets.
+        
+        Implementation of BaseOrchestrator.process_sync for ControlNet preprocessing.
+        
+        Args:
+            control_image: Input image to process
+            preprocessors: List of preprocessor instances
+            scales: List of conditioning scales
+            stream_width: Target width for processing
+            stream_height: Target height for processing
+            index: If specified, only process this single ControlNet index
+            
+        Returns:
+            List of processed tensors for each ControlNet
+        """
+        if index is not None:
+            return self._process_single_controlnet(
+                control_image, preprocessors, scales, stream_width, stream_height, index
+            )
+        
+        return self._process_multiple_controlnets_sync(
+            control_image, preprocessors, scales, stream_width, stream_height
+        )
     
     def process_control_images_sync(self, 
                                   control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
@@ -73,14 +114,7 @@ class PreprocessingOrchestrator:
         Returns:
             List of processed tensors for each ControlNet
         """
-        if index is not None:
-            return self._process_single_controlnet(
-                control_image, preprocessors, scales, stream_width, stream_height, index
-            )
-        
-        return self._process_multiple_controlnets_sync(
-            control_image, preprocessors, scales, stream_width, stream_height
-        )
+        return self.process_sync(control_image, preprocessors, scales, stream_width, stream_height, index)
     
     def process_control_images_pipelined(self,
                                        control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
@@ -97,24 +131,95 @@ class PreprocessingOrchestrator:
         Returns:
             List of processed tensors for each ControlNet
         """
-        # Check for feedback preprocessors that require sync processing (cached)
-        has_feedback = self._check_feedback_cached(preprocessors)
-        if has_feedback:
-            return self.process_control_images_sync(
-                control_image, preprocessors, scales, stream_width, stream_height
-            )
+        return self.process_pipelined(control_image, preprocessors, scales, stream_width, stream_height)
+    
+    def _process_frame_background(self, 
+                                control_image: ControlImage,
+                                preprocessors: List[Optional[Any]],
+                                scales: List[float],
+                                stream_width: int,
+                                stream_height: int) -> Dict[str, Any]:
+        """
+        Process a frame in the background thread.
         
-        # No feedback preprocessors detected - use pipelined processing
-        # Wait for previous frame preprocessing; non-blocking with short timeout
-        self._wait_for_previous_preprocessing()
+        Implementation of BaseOrchestrator._process_frame_background for ControlNet preprocessing.
         
-        # Start next frame preprocessing in background using intraframe parallelism
-        self._start_next_frame_preprocessing(
-            control_image, preprocessors, scales, stream_width, stream_height
+        Returns:
+            Dictionary containing processing results and status
+        """
+        # Check if any processing is needed
+        if not any(scale > 0 for scale in scales):
+            return {'status': 'success', 'results': [None] * len(preprocessors)}
+        
+        if (self._last_input_frame is not None and 
+            isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
+            control_image is self._last_input_frame):
+            return {'status': 'success', 'results': []}  # Signal no update needed
+        
+        self._last_input_frame = control_image
+        
+        # Prepare processing data
+        preprocessor_groups = self._group_preprocessors(preprocessors, scales)
+        active_indices = [i for i, scale in enumerate(scales) if scale > 0]
+        
+        if not active_indices:
+            return {'status': 'success', 'results': [None] * len(preprocessors)}
+        
+        # Optimize input preparation
+        control_variants = self._prepare_input_variants_optimized(control_image)
+        
+        # Process using the existing optimized logic
+        return self._process_frame_preprocessing_optimized(
+            preprocessor_groups,
+            control_variants,
+            active_indices,
+            stream_width,
+            stream_height
         )
+    
+    def _apply_current_frame_processing(self, 
+                                      preprocessors: List[Optional[Any]],
+                                      scales: List[float]) -> List[Optional[torch.Tensor]]:
+        """
+        Apply processing results from previous iteration.
         
-        # Apply current frame preprocessing results if available; otherwise signal no update
-        return self._apply_current_frame_preprocessing(preprocessors, scales)
+        Implementation of BaseOrchestrator._apply_current_frame_processing for ControlNet preprocessing.
+        
+        Returns:
+            List of processed tensors, or empty list to signal no update needed
+        """
+        if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
+            # Return empty list to signal no update needed
+            return []
+        
+        processed_images = [None] * len(preprocessors)
+        
+        result = self._next_frame_result
+        if result['status'] != 'success':
+            # Return empty list to signal no update needed on error
+            return []
+        
+        # Handle case where no update is needed (cached input)
+        if 'results' in result and len(result['results']) == 0:
+            return []
+        
+        # Apply results to pipeline state
+        processed_cache = result.get('processed_cache', {})
+        preprocessor_groups = result.get('preprocessor_groups', {})
+        
+        # Update processed_images with processed results
+        for prep_key, group in preprocessor_groups.items():
+            cache_key = f"prep_{prep_key}"
+            if cache_key in processed_cache:
+                processed_image = processed_cache[cache_key]
+                for index in group['indices']:
+                    processed_images[index] = processed_image
+        
+        # Update internal cache
+        self._preprocessed_cache.clear()
+        self._preprocessed_cache.update(processed_cache)
+        
+        return processed_images
     
     def prepare_control_image(self,
                             control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
@@ -225,7 +330,7 @@ class PreprocessingOrchestrator:
                                                 stream_height: int) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         """Process multiple embedding preprocessors in parallel"""
         futures = [
-            self._preprocessor_executor.submit(
+            self._executor.submit(
                 self._process_single_embedding_preprocessor,
                 i, preprocessor, control_variants, stream_width, stream_height
             )
@@ -404,7 +509,7 @@ class PreprocessingOrchestrator:
                                preprocessors: List[Optional[Any]]) -> List[Optional[torch.Tensor]]:
         """Process preprocessor groups in parallel"""
         futures = [
-            self._preprocessor_executor.submit(
+            self._executor.submit(
                 self._process_single_preprocessor_group,
                 prep_key, group, control_variants, stream_width, stream_height
             )
@@ -596,47 +701,7 @@ class PreprocessingOrchestrator:
     
 
     
-    # Pipelined processing methods
-    
-    def _start_next_frame_preprocessing(self,
-                                      control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
-                                      preprocessors: List[Optional[Any]],
-                                      scales: List[float],
-                                      stream_width: int,
-                                      stream_height: int) -> None:
-        """Start preprocessing for next frame in background thread"""
-        if not any(scale > 0 for scale in scales):
-            self._next_frame_future = None
-            return
-        
-        if (self._last_input_frame is not None and 
-            isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
-            control_image is self._last_input_frame):
-            self._next_frame_future = None
-            return
-        
-        self._last_input_frame = control_image
-        
-        # Prepare processing data
-        preprocessor_groups = self._group_preprocessors(preprocessors, scales)
-        active_indices = [i for i, scale in enumerate(scales) if scale > 0]
-        
-        if not active_indices:
-            self._next_frame_future = None
-            return
-        
-        # Optimize input preparation
-        control_variants = self._prepare_input_variants_optimized(control_image)
-        
-        # Submit optimized background processing
-        self._next_frame_future = self._preprocessor_executor.submit(
-            self._process_frame_preprocessing_optimized,
-            preprocessor_groups,
-            control_variants,
-            active_indices,
-            stream_width,
-            stream_height
-        )
+    # Pipelined processing methods (now handled by BaseOrchestrator)
     
     def _prepare_input_variants_optimized(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor]) -> Dict[str, Any]:
         """Prepare input variants optimized for pipelined processing"""
@@ -677,7 +742,7 @@ class PreprocessingOrchestrator:
                 # Parallel processing for multiple preprocessors
                 futures = []
                 for prep_key, group in preprocessor_groups.items():
-                    future = self._preprocessor_executor.submit(
+                    future = self._executor.submit(
                         self._process_single_preprocessor_optimized,
                         prep_key, group, control_variants, stream_width, stream_height
                     )
@@ -786,53 +851,7 @@ class PreprocessingOrchestrator:
         
         return self._has_feedback_cache
 
-    def _wait_for_previous_preprocessing(self) -> None:
-        """Wait for previous frame preprocessing with optimized timeout"""
-        if hasattr(self, '_next_frame_future') and self._next_frame_future is not None:
-            try:
-                # Reduced timeout: 10ms for lower latency in real-time
-                self._next_frame_result = self._next_frame_future.result(timeout=0.01)
-            except concurrent.futures.TimeoutError:
-                # Non-blocking: skip applying results this frame
-                self._next_frame_result = None
-            except Exception as e:
-                logger.error(f"PreprocessingOrchestrator: Preprocessing error: {e}")
-                self._next_frame_result = None
-        else:
-            self._next_frame_result = None
-    
-    def _apply_current_frame_preprocessing(self,
-                                         preprocessors: List[Optional[Any]],
-                                         scales: List[float]) -> List[Optional[torch.Tensor]]:
-        """Apply preprocessing results from previous iteration"""
-        if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
-            # Return empty list to signal no update needed
-            return []
-        
-        processed_images = [None] * len(preprocessors)
-        
-        result = self._next_frame_result
-        if result['status'] != 'success':
-            # Return empty list to signal no update needed on error
-            return []
-        
-        # Apply results to pipeline state
-        processed_cache = result['processed_cache']
-        preprocessor_groups = result['preprocessor_groups']
-        
-        # Update processed_images with processed results
-        for prep_key, group in preprocessor_groups.items():
-            cache_key = f"prep_{prep_key}"
-            if cache_key in processed_cache:
-                processed_image = processed_cache[cache_key]
-                for index in group['indices']:
-                    processed_images[index] = processed_image
-        
-        # Update internal cache
-        self._preprocessed_cache.clear()
-        self._preprocessed_cache.update(processed_cache)
-        
-        return processed_images
+
     
     # Embedding pipelining methods
     
@@ -850,7 +869,7 @@ class PreprocessingOrchestrator:
         control_variants = self._prepare_input_variants_optimized(input_image)
         
         # Submit optimized background processing
-        self._next_embedding_future = self._preprocessor_executor.submit(
+        self._next_embedding_future = self._executor.submit(
             self._process_embedding_preprocessors_background,
             embedding_preprocessors,
             control_variants,
@@ -870,7 +889,7 @@ class PreprocessingOrchestrator:
                 # Parallel processing for multiple preprocessors
                 futures = []
                 for i, preprocessor in enumerate(embedding_preprocessors):
-                    future = self._preprocessor_executor.submit(
+                    future = self._executor.submit(
                         self._process_single_embedding_preprocessor,
                         i, preprocessor, control_variants, stream_width, stream_height
                     )
