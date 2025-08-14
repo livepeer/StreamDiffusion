@@ -110,6 +110,10 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # Postprocessing options
+        use_postprocessing: bool = False,
+        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        skip_diffusion: bool = False,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -198,6 +202,9 @@ class StreamDiffusionWrapper:
         self.enable_pytorch_fallback = enable_pytorch_fallback
         self.use_ipadapter = use_ipadapter
         self.ipadapter_config = ipadapter_config
+        self.use_postprocessing = use_postprocessing
+        self.postprocessing_config = postprocessing_config
+        self.skip_diffusion = skip_diffusion
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -256,6 +263,8 @@ class StreamDiffusionWrapper:
             enable_pytorch_fallback=enable_pytorch_fallback,
             use_ipadapter=use_ipadapter,
             ipadapter_config=ipadapter_config,
+            use_postprocessing=use_postprocessing,
+            postprocessing_config=postprocessing_config,
         )
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
@@ -450,6 +459,9 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        # Postprocessing configuration
+        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        skip_diffusion: Optional[bool] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -491,8 +503,17 @@ class StreamDiffusionWrapper:
             perform minimal add/remove/update operations.
         ipadapter_config : Optional[Dict[str, Any]]
             IPAdapter configuration dict containing scale, style_image, etc.
+        postprocessing_config : Optional[List[Dict[str, Any]]]
+            List of postprocessor configurations defining the desired state.
+            Each dict contains: name, enabled, scale, preprocessor_params, etc.
+        skip_diffusion : Optional[bool]
+            Whether to skip diffusion entirely and process input directly.
         """
-        # Handle all parameters via parameter updater (including ControlNet)
+        # Handle wrapper-level state
+        if skip_diffusion is not None:
+            self.skip_diffusion = skip_diffusion
+        
+        # Handle all stream parameters via parameter updater (including postprocessing)
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
@@ -508,6 +529,7 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
+            postprocessing_config=postprocessing_config,
         )
 
     def __call__(
@@ -530,10 +552,51 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The generated image.
         """
+        if self.skip_diffusion:
+            return self._process_skip_diffusion(image, prompt)
+        
         if self.mode == "img2img":
             return self.img2img(image, prompt)
         else:
             return self.txt2img(prompt)
+
+    def _process_skip_diffusion(
+        self, 
+        image: Optional[Union[str, Image.Image, torch.Tensor]] = None, 
+        prompt: Optional[str] = None
+    ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
+        """
+        Process input directly without diffusion.
+        
+        Parameters
+        ----------
+        image : Optional[Union[str, Image.Image, torch.Tensor]]
+            The image to process directly.
+        prompt : Optional[str]
+            Prompt (ignored in skip mode, but kept for API consistency).
+            
+        Returns
+        -------
+        Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]
+            The processed image.
+        """
+        if self.mode == "txt2img":
+            logger.warning("_process_skip_diffusion: skip_diffusion mode not applicable for txt2img - no input image")
+            return self.txt2img(prompt)
+        
+        if image is None:
+            raise ValueError("_process_skip_diffusion: image required for skip diffusion mode")
+        
+        # Handle input tensor normalization
+        if isinstance(image, str) or isinstance(image, Image.Image):
+            image = self.preprocess_image(image)
+        elif isinstance(image, torch.Tensor):
+            # Check if tensor is in [0,1] range and needs normalization to [-1,1]
+            if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                image = image * 2.0 - 1.0
+        
+        # Process with postprocessing if enabled, otherwise return input directly
+        return self.postprocess_image(image, output_type=self.output_type)
 
     def txt2img(
         self, prompt: Optional[str] = None
@@ -554,11 +617,12 @@ class StreamDiffusionWrapper:
         """
         if prompt is not None:
             self.update_prompt(prompt, warn_about_conflicts=True)
-
+        
         if self.sd_turbo:
             image_tensor = self.stream.txt2img_sd_turbo(self.batch_size)
         else:
             image_tensor = self.stream.txt2img(self.frame_buffer_size)
+        
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
@@ -602,8 +666,14 @@ class StreamDiffusionWrapper:
 
         if isinstance(image, str) or isinstance(image, Image.Image):
             image = self.preprocess_image(image)
+        elif isinstance(image, torch.Tensor):
+            # Check if tensor is in [0,1] range (from bytes_to_pt) and needs normalization to [-1,1]
+            if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                image = image * 2.0 - 1.0  # Convert [0,1] to [-1,1]
 
+        # Normal diffusion pipeline
         image_tensor = self.stream(image)
+        
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
@@ -666,6 +736,24 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The postprocessed image.
         """
+        # Apply postprocessing first if enabled
+        if self.use_postprocessing:
+            # Convert from [-1,1] to [0,1] range for postprocessors
+            normalized_tensor = self._denormalize_on_gpu(image_tensor)
+            
+            # Use synchronous processing for skip diffusion, pipelined for normal diffusion
+            if self.skip_diffusion:
+                processed_tensor = self._postprocessing_orchestrator.process_postprocessors_sync(
+                    normalized_tensor, self._postprocessor_instances
+                )
+            else:
+                processed_tensor = self._postprocessing_orchestrator.process_postprocessors_pipelined(
+                    normalized_tensor, self._postprocessor_instances
+                )
+            
+            # Convert back to [-1,1] range for output format handling
+            image_tensor = self._denormalize_from_processors(processed_tensor)
+        
         # Fast paths for non-PIL outputs (avoid unnecessary conversions)
         if output_type == "latent":
             return image_tensor
@@ -705,6 +793,10 @@ class StreamDiffusionWrapper:
             Denormalized tensor on GPU, clamped to [0,1]
         """
         return (image_tensor / 2 + 0.5).clamp(0, 1)
+
+    def _denormalize_from_processors(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert tensor from [0,1] (processor range) back to [-1,1] (diffusion range)"""
+        return (image_tensor * 2 - 1).clamp(-1, 1)
 
     def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
         """
@@ -778,6 +870,8 @@ class StreamDiffusionWrapper:
         enable_pytorch_fallback: bool = False,
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        use_postprocessing: bool = False,
+        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -1576,6 +1670,43 @@ class StreamDiffusionWrapper:
                 logger.error("Failed to install IPAdapterModule")
                 raise
 
+        # Initialize postprocessing
+        if use_postprocessing and postprocessing_config:
+            try:
+                from .preprocessing.postprocessing_orchestrator import PostprocessingOrchestrator
+                from .preprocessing.processors import get_preprocessor
+                
+                self._postprocessing_orchestrator = PostprocessingOrchestrator(
+                    device=self.device, 
+                    dtype=self.dtype, 
+                    max_workers=4
+                )
+                
+                # Build postprocessor instances using existing registry
+                self._postprocessor_instances = []
+                for proc_config in postprocessing_config:
+                    if proc_config.get('enabled', True):
+                        processor = get_preprocessor(proc_config['name'])
+                        # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
+                        if proc_config.get('preprocessor_params'):
+                            params = proc_config['preprocessor_params']
+                            # If the processor exposes a 'params' dict, update it
+                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                                processor.params.update(params)
+                            # Also set individual attributes
+                            for param_name, param_value in params.items():
+                                if hasattr(processor, param_name):
+                                    setattr(processor, param_name, param_value)
+                        self._postprocessor_instances.append(processor)
+                
+                logger.info(f"_load_model: Postprocessing initialized with {len(self._postprocessor_instances)} processors")
+            except Exception as e:
+                logger.error(f"_load_model: Postprocessing initialization failed: {e}")
+                raise RuntimeError(f"Postprocessing setup failed: {e}")
+        else:
+            self._postprocessing_orchestrator = None
+            self._postprocessor_instances = []
+
         return stream
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
@@ -1593,9 +1724,13 @@ class StreamDiffusionWrapper:
         if hasattr(self, 'stream') and self.stream and hasattr(self.stream, 'cleanup'):
             self.stream.cleanup_controlnets()
 
+
+
     def clear_caches(self) -> None:
         """Clear all cached prompt embeddings and seed noise tensors."""
         self.stream._param_updater.clear_caches()
+        if self._postprocessing_orchestrator:
+            self._postprocessing_orchestrator.clear_cache()
 
     def get_stream_state(self, include_caches: bool = False) -> Dict[str, Any]:
         """Get a unified snapshot of the current stream state.
@@ -1678,6 +1813,25 @@ class StreamDiffusionWrapper:
             'ipadapter_config': ipadapter_config,
         })
 
+        # Postprocessing state
+        postprocessing_state = {
+            'enabled': self.use_postprocessing,
+            'skip_diffusion': self.skip_diffusion,
+            'processors': []
+        }
+        if self.use_postprocessing and self._postprocessor_instances:
+            for i, processor in enumerate(self._postprocessor_instances):
+                proc_state = {
+                    'name': processor.__class__.__name__.replace('Preprocessor', '').lower(),
+                    'enabled': True,
+                    'type': processor.__class__.__name__
+                }
+                postprocessing_state['processors'].append(proc_state)
+        
+        state.update({
+            'postprocessing': postprocessing_state,
+        })
+
         # Optional caches
         if include_caches:
             try:
@@ -1699,6 +1853,14 @@ class StreamDiffusionWrapper:
             try:
                 self.stream._param_updater.clear_caches()
                 logger.info("   Cleared prompt caches")
+            except:
+                pass
+        
+        # Clear postprocessing caches
+        if hasattr(self, '_postprocessing_orchestrator') and self._postprocessing_orchestrator:
+            try:
+                self._postprocessing_orchestrator.clear_cache()
+                logger.info("   Cleared postprocessing caches")
             except:
                 pass
         

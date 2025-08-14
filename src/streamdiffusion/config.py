@@ -124,6 +124,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
         'normalize_seed_weights': config.get('normalize_seed_weights', True),
         'enable_pytorch_fallback': config.get('enable_pytorch_fallback', False),
+        'skip_diffusion': config.get('skip_diffusion', False),
     }
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
@@ -139,6 +140,14 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
+    
+    # Set postprocessing usage if postprocessors are configured
+    if 'postprocessing' in config and config['postprocessing'].get('enabled', False):
+        param_map['use_postprocessing'] = True
+        param_map['postprocessing_config'] = _prepare_postprocessing_configs(config)
+    else:
+        param_map['use_postprocessing'] = config.get('use_postprocessing', False)
+        param_map['postprocessing_config'] = config.get('postprocessing_config')
     
     return {k: v for k, v in param_map.items() if v is not None}
 
@@ -211,6 +220,22 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         ipadapter_configs.append(ipadapter_config)
     
     return ipadapter_configs
+
+
+def _prepare_postprocessing_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Prepare postprocessing configurations for wrapper"""
+    postprocessing_configs = []
+    
+    for proc_config in config['postprocessing']['processors']:
+        postprocessing_config = {
+            'name': proc_config['name'],
+            'enabled': proc_config.get('enabled', True),
+            'scale': proc_config.get('scale', 1.0),
+            'preprocessor_params': proc_config.get('preprocessor_params', {}),
+        }
+        postprocessing_configs.append(postprocessing_config)
+    
+    return postprocessing_configs
 
 
 def create_prompt_blending_config(
@@ -310,6 +335,30 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if 'image_encoder_path' not in ipadapter:
                 raise ValueError(f"_validate_config: IPAdapter {i} missing required 'image_encoder_path'")
 
+    # Validate postprocessing if present
+    if 'postprocessing' in config:
+        postproc_config = config['postprocessing']
+        if not isinstance(postproc_config, dict):
+            raise ValueError("_validate_config: 'postprocessing' must be a dictionary")
+        
+        if 'enabled' in postproc_config and not isinstance(postproc_config['enabled'], bool):
+            raise ValueError("_validate_config: postprocessing 'enabled' must be a boolean")
+        
+        if 'processors' in postproc_config:
+            processors = postproc_config['processors']
+            if not isinstance(processors, list):
+                raise ValueError("_validate_config: postprocessing 'processors' must be a list")
+            
+            for i, processor in enumerate(processors):
+                if not isinstance(processor, dict):
+                    raise ValueError(f"_validate_config: Postprocessor {i} must be a dictionary")
+                
+                if 'name' not in processor:
+                    raise ValueError(f"_validate_config: Postprocessor {i} missing required 'name'")
+                
+                if 'preprocessor_params' in processor and not isinstance(processor['preprocessor_params'], dict):
+                    raise ValueError(f"_validate_config: Postprocessor {i} 'preprocessor_params' must be a dictionary")
+
     # Validate prompt blending configuration if present
     if 'prompt_blending' in config:
         blend_config = config['prompt_blending']
@@ -377,3 +426,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
         enable_pytorch_fallback = config['enable_pytorch_fallback']
         if not isinstance(enable_pytorch_fallback, bool):
             raise ValueError("_validate_config: 'enable_pytorch_fallback' must be a boolean value")
+    
+    if 'skip_diffusion' in config:
+        skip_diffusion = config['skip_diffusion']
+        if not isinstance(skip_diffusion, bool):
+            raise ValueError("_validate_config: 'skip_diffusion' must be a boolean value")

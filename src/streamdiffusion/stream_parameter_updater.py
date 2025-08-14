@@ -245,6 +245,7 @@ class StreamParameterUpdater(OrchestratorUser):
         normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -303,6 +304,11 @@ class StreamParameterUpdater(OrchestratorUser):
             if ipadapter_config is not None:
                 logger.info(f"update_stream_params: Updating IPAdapter configuration")
                 self._update_ipadapter_config(ipadapter_config)
+            
+            # Handle postprocessing configuration updates
+            if postprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating postprocessing configuration")
+                self._update_postprocessing_config(postprocessing_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -1217,6 +1223,52 @@ class StreamParameterUpdater(OrchestratorUser):
                 return self.wrapper.stream.stream
         
         return None
+
+    def _update_postprocessing_config(self, postprocessing_config: List[Dict[str, Any]]) -> None:
+        """
+        Update postprocessing configuration.
+        
+        Args:
+            postprocessing_config: List of postprocessor configurations defining the desired state.
+                                 Each dict contains: name, enabled, scale, preprocessor_params, etc.
+        """
+        # Check if wrapper has postprocessing enabled
+        if not hasattr(self.wrapper, 'use_postprocessing') or not self.wrapper.use_postprocessing:
+            logger.warning("_update_postprocessing_config: Postprocessing not enabled on wrapper")
+            return
+        
+        if not hasattr(self.wrapper, '_postprocessing_orchestrator') or not self.wrapper._postprocessing_orchestrator:
+            logger.warning("_update_postprocessing_config: Postprocessing orchestrator not initialized")
+            return
+        
+        try:
+            # Import here to avoid circular dependencies
+            from streamdiffusion.preprocessing.processors import get_preprocessor
+            
+            # Rebuild postprocessor instances
+            self.wrapper._postprocessor_instances = []
+            for proc_config in postprocessing_config:
+                if proc_config.get('enabled', True):
+                    processor = get_preprocessor(proc_config['name'])
+                    # Configure processor with preprocessor_params if provided (same pattern as ControlNet)
+                    if proc_config.get('preprocessor_params'):
+                        params = proc_config['preprocessor_params']
+                        # If the processor exposes a 'params' dict, update it
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params.update(params)
+                        # Also set individual attributes
+                        for param_name, param_value in params.items():
+                            if hasattr(processor, param_name):
+                                setattr(processor, param_name, param_value)
+                    self.wrapper._postprocessor_instances.append(processor)
+            
+            # Clear orchestrator cache since processors changed
+            self.wrapper._postprocessing_orchestrator.clear_cache()
+            
+            logger.info(f"_update_postprocessing_config: Updated to {len(self.wrapper._postprocessor_instances)} processors")
+        except Exception as e:
+            logger.error(f"_update_postprocessing_config: Failed to update postprocessing config: {e}")
+            raise RuntimeError(f"Postprocessing config update failed: {e}")
 
     def _get_current_ipadapter_config(self) -> Optional[Dict[str, Any]]:
         """
