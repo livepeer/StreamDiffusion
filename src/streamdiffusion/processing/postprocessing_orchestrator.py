@@ -20,6 +20,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         
         # Postprocessing-specific state
         self._last_input_tensor = None
+        self._last_processed_result = None
         self._postprocessor_cache: Dict[str, torch.Tensor] = {}
     
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
@@ -82,9 +83,10 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
             
             # Check for cache hit (same input tensor)
             if (self._last_input_tensor is not None and 
-                torch.equal(input_tensor, self._last_input_tensor)):
+                torch.equal(input_tensor, self._last_input_tensor) and
+                self._last_processed_result is not None):
                 return {
-                    'result': input_tensor,  # Return original if same input
+                    'result': self._last_processed_result,  # Return previously processed result
                     'status': 'success',
                     'cache_hit': True
                 }
@@ -96,6 +98,9 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
                 result = self._process_postprocessors_parallel(input_tensor, postprocessors)
             else:
                 result = self._apply_single_postprocessor(input_tensor, postprocessors[0])
+            
+            # Cache the processed result for future cache hits
+            self._last_processed_result = result
             
             return {
                 'result': result,
@@ -122,7 +127,6 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
             # First frame or no background results - process current input synchronously
             if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                logger.debug("PostprocessingOrchestrator: No background results available, processing current input synchronously")
                 if postprocessors:
                     return self.process_sync(self._current_input_tensor, postprocessors)
                 else:
@@ -216,6 +220,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         """Clear postprocessing cache"""
         self._postprocessor_cache.clear()
         self._last_input_tensor = None
+        self._last_processed_result = None
     
     def process_postprocessors_pipelined(self,
                                        input_tensor: torch.Tensor,
