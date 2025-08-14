@@ -49,17 +49,35 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
                                   preprocessors: List[Optional[Any]], 
                                   *args, **kwargs) -> bool:
         """
-        _should_use_sync_processing: Check for feedback preprocessors that require sync processing
+        _check_feedback_cached: Efficiently check for feedback preprocessors using caching
         
-        Feedback preprocessors need synchronous processing to avoid temporal artifacts.
-        
-        Args:
-            preprocessors: List of preprocessor instances
-            
-        Returns:
-            True if feedback preprocessors detected, False otherwise
+        Only performs expensive isinstance checks when preprocessor list actually changes.
         """
-        return self._check_feedback_cached(preprocessors)
+        # Create cache key from preprocessor identities
+        cache_key = tuple(id(p) for p in preprocessors)
+        
+        # Return cached result if preprocessors haven't changed
+        if cache_key == self._preprocessors_cache_key:
+            return self._has_feedback_cache
+        
+        # Preprocessors changed - recompute and cache
+        self._preprocessors_cache_key = cache_key
+        self._has_feedback_cache = False
+        
+        try:
+            from .processors.feedback import FeedbackPreprocessor
+            for prep in preprocessors:
+                if isinstance(prep, FeedbackPreprocessor):
+                    self._has_feedback_cache = True
+                    break
+        except Exception:
+            # Fallback on class name check without importing
+            for prep in preprocessors:
+                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
+                    self._has_feedback_cache = True
+                    break
+        
+        return self._has_feedback_cache
     
     def process_sync(self, 
                    control_image: ControlImage,
@@ -92,46 +110,6 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         return self._process_multiple_controlnets_sync(
             control_image, preprocessors, scales, stream_width, stream_height
         )
-    
-    def process_control_images_sync(self, 
-                                  control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
-                                  preprocessors: List[Optional[Any]],
-                                  scales: List[float],
-                                  stream_width: int,
-                                  stream_height: int,
-                                  index: Optional[int] = None) -> List[Optional[torch.Tensor]]:
-        """
-        Synchronously process control images for all ControlNets.
-        
-        Args:
-            control_image: Input image to process
-            preprocessors: List of preprocessor instances
-            scales: List of conditioning scales
-            stream_width: Target width for processing
-            stream_height: Target height for processing
-            index: If specified, only process this single ControlNet index
-            
-        Returns:
-            List of processed tensors for each ControlNet
-        """
-        return self.process_sync(control_image, preprocessors, scales, stream_width, stream_height, index)
-    
-    def process_control_images_pipelined(self,
-                                       control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
-                                       preprocessors: List[Optional[Any]],
-                                       scales: List[float],
-                                       stream_width: int,
-                                       stream_height: int) -> List[Optional[torch.Tensor]]:
-        """
-        Process control images with intelligent pipelining.
-        
-        Automatically falls back to sync processing when feedback preprocessors are detected
-        to avoid temporal artifacts, otherwise uses pipelined processing for performance.
-        
-        Returns:
-            List of processed tensors for each ControlNet
-        """
-        return self.process_pipelined(control_image, preprocessors, scales, stream_width, stream_height)
     
     def _process_frame_background(self, 
                                 control_image: ControlImage,
@@ -461,25 +439,44 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
     
     def _prepare_input_variants(self,
                               control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
-                              stream_width: int,
-                              stream_height: int) -> Dict[str, Any]:
-        """Prepare optimized input variants for different processing paths"""
-        variants = {}
+                              stream_width: int = None,
+                              stream_height: int = None,
+                              thread_safe: bool = False) -> Dict[str, Any]:
+        """Prepare optimized input variants for different processing paths
+        
+        Args:
+            control_image: Input image in various formats
+            stream_width: Target width (unused, kept for backward compatibility)
+            stream_height: Target height (unused, kept for backward compatibility)
+            thread_safe: If True, use thread-safe key naming for background processing
+            
+        Returns:
+            Dictionary with 'tensor' and 'image'/'image_safe' keys
+        """
+        image_key = 'image_safe' if thread_safe else 'image'
         
         if isinstance(control_image, torch.Tensor):
-            variants['tensor'] = control_image
-            variants['image'] = None  # Will create if needed
+            return {
+                'tensor': control_image,
+                image_key: None  # Will create if needed
+            }
         elif isinstance(control_image, Image.Image):
-            variants['image'] = control_image.copy()
-            variants['tensor'] = self._to_tensor_safe(variants['image'])
+            image_copy = control_image.copy()
+            return {
+                image_key: image_copy,
+                'tensor': self._to_tensor_safe(image_copy)
+            }
         elif isinstance(control_image, str):
-            variants['image'] = load_image(control_image)
-            variants['tensor'] = self._to_tensor_safe(variants['image'])
+            image_loaded = load_image(control_image)
+            return {
+                image_key: image_loaded,
+                'tensor': self._to_tensor_safe(image_loaded)
+            }
         else:
-            variants['image'] = control_image
-            variants['tensor'] = None
-        
-        return variants
+            return {
+                image_key: control_image,
+                'tensor': None
+            }
     
     def _group_preprocessors(self,
                            preprocessors: List[Optional[Any]],
@@ -819,37 +816,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             logger.error(f"PreprocessingOrchestrator: Preprocessor {preprocessor_key} failed: {e}")
             return None
     
-    def _check_feedback_cached(self, preprocessors: List[Optional[Any]]) -> bool:
-        """
-        _check_feedback_cached: Efficiently check for feedback preprocessors using caching
         
-        Only performs expensive isinstance checks when preprocessor list actually changes.
-        """
-        # Create cache key from preprocessor identities
-        cache_key = tuple(id(p) for p in preprocessors)
-        
-        # Return cached result if preprocessors haven't changed
-        if cache_key == self._preprocessors_cache_key:
-            return self._has_feedback_cache
-        
-        # Preprocessors changed - recompute and cache
-        self._preprocessors_cache_key = cache_key
-        self._has_feedback_cache = False
-        
-        try:
-            from .processors.feedback import FeedbackPreprocessor
-            for prep in preprocessors:
-                if isinstance(prep, FeedbackPreprocessor):
-                    self._has_feedback_cache = True
-                    break
-        except Exception:
-            # Fallback on class name check without importing
-            for prep in preprocessors:
-                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
-                    self._has_feedback_cache = True
-                    break
-        
-        return self._has_feedback_cache
 
 
     

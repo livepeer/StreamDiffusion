@@ -148,13 +148,13 @@ class ControlNetModule(OrchestratorUser):
 
         # Single-index fast path
         if index is not None:
-            results = self._preprocessing_orchestrator.process_control_images_sync(
-                control_image=control_image,
-                preprocessors=preprocessors,
-                scales=scales,
-                stream_width=self._stream.width,
-                stream_height=self._stream.height,
-                index=index,
+            results = self._preprocessing_orchestrator.process_sync(
+                control_image,
+                preprocessors,
+                scales,
+                self._stream.width,
+                self._stream.height,
+                index
             )
             processed = results[index] if results and len(results) > index else None
             with self._collections_lock:
@@ -170,12 +170,12 @@ class ControlNetModule(OrchestratorUser):
             return
 
         # Use intelligent pipelining (automatically detects feedback preprocessors and switches to sync)
-        processed_images = self._preprocessing_orchestrator.process_control_images_pipelined(
-            control_image=control_image,
-            preprocessors=preprocessors,
-            scales=scales,
-            stream_width=self._stream.width,
-            stream_height=self._stream.height,
+        processed_images = self._preprocessing_orchestrator.process_pipelined(
+            control_image,
+            preprocessors,
+            scales,
+            self._stream.width,
+            self._stream.height
         )
 
         # If orchestrator returns empty list, it indicates no update needed for this frame
@@ -479,13 +479,13 @@ class ControlNetModule(OrchestratorUser):
         if self._preprocessing_orchestrator is None:
             raise RuntimeError("ControlNetModule: preprocessing orchestrator is not initialized")
         # Reuse orchestrator API used by BaseControlNetPipeline
-        images = self._preprocessing_orchestrator.process_control_images_sync(
-            control_image=control_image,
-            preprocessors=[preprocessor],
-            scales=[1.0],
-            stream_width=self._stream.width,
-            stream_height=self._stream.height,
-            index=0,
+        images = self._preprocessing_orchestrator.process_sync(
+            control_image,
+            [preprocessor],
+            [1.0],
+            self._stream.width,
+            self._stream.height,
+            0
         )
         # API returns a list; pick first if present
         return images[0] if images else None
