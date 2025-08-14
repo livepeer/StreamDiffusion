@@ -242,18 +242,4 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         self._current_postprocessors = postprocessors
         
         return self.process_pipelined(input_tensor, postprocessors)
-    
-    def process_postprocessors_sync(self,
-                                  input_tensor: torch.Tensor,
-                                  postprocessors: List[Any]) -> torch.Tensor:
-        """
-        Process postprocessors synchronously.
-        
-        Args:
-            input_tensor: Input tensor to postprocess
-            postprocessors: List of postprocessor instances
-            
-        Returns:
-            Postprocessed tensor
-        """
-        return self.process_sync(input_tensor, postprocessors)
+

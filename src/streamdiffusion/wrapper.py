@@ -743,7 +743,7 @@ class StreamDiffusionWrapper:
             
             # Use synchronous processing for skip diffusion, pipelined for normal diffusion
             if self.skip_diffusion:
-                processed_tensor = self._postprocessing_orchestrator.process_postprocessors_sync(
+                processed_tensor = self._postprocessing_orchestrator.process_sync(
                     normalized_tensor, self._postprocessor_instances
                 )
             else:
