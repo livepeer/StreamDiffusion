@@ -15,7 +15,8 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
     """
     
     def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
-        super().__init__(device, dtype, max_workers)
+        # Postprocessing: 50ms timeout for quality-critical operations like upscaling
+        super().__init__(device, dtype, max_workers, timeout_ms=50.0)
         
         # Postprocessing-specific state
         self._last_input_tensor = None
@@ -109,20 +110,23 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
                 'status': 'error'
             }
     
-    def _apply_current_frame_processing(self, *args, **kwargs) -> torch.Tensor:
+    def _apply_current_frame_processing(self, postprocessors: List[Any] = None, *args, **kwargs) -> torch.Tensor:
         """
         Apply processing results from previous iteration.
         
         Implementation of BaseOrchestrator._apply_current_frame_processing for postprocessing.
         
         Returns:
-            Processed tensor, or original tensor if no results available
+            Processed tensor, or processed current input if no results available
         """
         if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
-            # First frame or no background results - return the stored current input
+            # First frame or no background results - process current input synchronously
             if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                logger.debug("PostprocessingOrchestrator: No background results available, returning original input")
-                return self._current_input_tensor
+                logger.debug("PostprocessingOrchestrator: No background results available, processing current input synchronously")
+                if postprocessors:
+                    return self.process_sync(self._current_input_tensor, postprocessors)
+                else:
+                    return self._current_input_tensor
             
             # If we don't have the current input stored, we have an issue
             logger.error("PostprocessingOrchestrator: No background results and no current input tensor available")
@@ -131,9 +135,12 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         result = self._next_frame_result
         if result['status'] != 'success':
             logger.warning(f"PostprocessingOrchestrator: Background processing failed: {result.get('error', 'Unknown error')}")
-            # Return original input on error
+            # Process current input synchronously on error
             if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                return self._current_input_tensor
+                if postprocessors:
+                    return self.process_sync(self._current_input_tensor, postprocessors)
+                else:
+                    return self._current_input_tensor
             raise RuntimeError("PostprocessingOrchestrator: Background processing failed and no fallback available")
         
         return result['result']
@@ -227,6 +234,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         """
         # Store current input tensor for fallback use
         self._current_input_tensor = input_tensor.clone()
+        self._current_postprocessors = postprocessors
         
         return self.process_pipelined(input_tensor, postprocessors)
     

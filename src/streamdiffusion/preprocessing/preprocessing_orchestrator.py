@@ -21,7 +21,8 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
     """
     
     def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
-        super().__init__(device, dtype, max_workers)
+        # Preprocessing: 10ms timeout for fast frame-skipping behavior
+        super().__init__(device, dtype, max_workers, timeout_ms=10.0)
         
         # Caching
         self._preprocessed_cache: Dict[str, torch.Tensor] = {}
@@ -174,8 +175,9 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         )
     
     def _apply_current_frame_processing(self, 
-                                      preprocessors: List[Optional[Any]],
-                                      scales: List[float]) -> List[Optional[torch.Tensor]]:
+                                      preprocessors: List[Optional[Any]] = None,
+                                      scales: List[float] = None, 
+                                      *args, **kwargs) -> List[Optional[torch.Tensor]]:
         """
         Apply processing results from previous iteration.
         
@@ -186,6 +188,10 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         """
         if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
             # Return empty list to signal no update needed
+            return []
+        
+        # Handle case where preprocessors is None
+        if preprocessors is None:
             return []
         
         processed_images = [None] * len(preprocessors)
