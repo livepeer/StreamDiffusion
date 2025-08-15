@@ -1959,6 +1959,26 @@ class StreamDiffusionWrapper:
             'postprocessing': postprocessing_state,
         })
 
+        # Postprocessing config for API CRUD operations
+        try:
+            postprocessing_config = self.postprocessing_config or []
+        except Exception:
+            postprocessing_config = []
+        
+        state.update({
+            'postprocessing_config': postprocessing_config,
+        })
+
+        # Pipeline preprocessing state with full config
+        try:
+            pipeline_preprocessing_config = self.pipeline_preprocessing_config or []
+        except Exception:
+            pipeline_preprocessing_config = []
+        
+        state.update({
+            'pipeline_preprocessing_config': pipeline_preprocessing_config,
+        })
+
         # Optional caches
         if include_caches:
             try:
