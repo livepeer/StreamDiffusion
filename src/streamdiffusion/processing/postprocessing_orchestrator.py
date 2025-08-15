@@ -21,7 +21,6 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         # Postprocessing-specific state
         self._last_input_tensor = None
         self._last_processed_result = None
-        self._postprocessor_cache: Dict[str, torch.Tensor] = {}
     
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
@@ -218,7 +217,6 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
     
     def clear_cache(self) -> None:
         """Clear postprocessing cache"""
-        self._postprocessor_cache.clear()
         self._last_input_tensor = None
         self._last_processed_result = None
     

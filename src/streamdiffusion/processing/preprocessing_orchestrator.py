@@ -147,7 +147,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         # Check if any processing is needed
         if not any(scale > 0 for scale in scales):
             return {'status': 'success', 'results': [None] * len(preprocessors)}
-        
+        #TODO: can we reuse similarity filter here?
         if (self._last_input_frame is not None and 
             isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
             control_image is self._last_input_frame):
@@ -414,6 +414,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         if not any(scale > 0 for scale in scales):
             return [None] * len(preprocessors)
         
+        #TODO: can we reuse similarity filter here?
         # Check cache for same input - return early without changing anything
         if (self._last_input_frame is not None and 
             isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
