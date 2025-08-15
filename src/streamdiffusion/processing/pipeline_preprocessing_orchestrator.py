@@ -22,7 +22,7 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
         super().__init__(device, dtype, max_workers, timeout_ms=10.0)
         
         # Pipeline preprocessing specific state
-        self._processor_cache: Dict[str, torch.Tensor] = {}
+        pass
     
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
@@ -179,4 +179,4 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
     
     def clear_cache(self) -> None:
         """Clear preprocessing cache"""
-        self._processor_cache.clear()
+        pass
