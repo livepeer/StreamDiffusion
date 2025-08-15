@@ -140,14 +140,43 @@ class BaseOrchestrator(Generic[T, R], ABC):
         else:
             self._next_frame_result = None
     
-    @abstractmethod
-    def _apply_current_frame_processing(self, *args, **kwargs) -> R:
+    def _apply_current_frame_processing(self, processors=None, *args, **kwargs) -> R:
         """
         Apply processing results from previous iteration.
         
-        Subclasses implement how to handle and return the processed results.
+        Default implementation provides common fallback logic for tensor-to-tensor orchestrators.
+        Subclasses can override this method for specialized behavior.
         
+        Args:
+            processors: List of processors/postprocessors to apply (parameter name varies by subclass)
+            *args, **kwargs: Additional arguments
+            
         Returns:
-            Processing results, or appropriate "no update" signal
+            Processing results, or processed current input if no results available
         """
-        pass
+        if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
+            # First frame or no background results - process current input synchronously
+            if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
+                if processors:
+                    return self.process_sync(self._current_input_tensor, processors)
+                else:
+                    return self._current_input_tensor
+            
+            # If we don't have current input stored, we have an issue
+            class_name = self.__class__.__name__
+            logger.error(f"{class_name}: No background results and no current input tensor available")
+            raise RuntimeError(f"{class_name}: No processing results available")
+        
+        result = self._next_frame_result
+        if result['status'] != 'success':
+            class_name = self.__class__.__name__
+            logger.warning(f"{class_name}: Background processing failed: {result.get('error', 'Unknown error')}")
+            # Process current input synchronously on error
+            if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
+                if processors:
+                    return self.process_sync(self._current_input_tensor, processors)
+                else:
+                    return self._current_input_tensor
+            raise RuntimeError(f"{class_name}: Background processing failed and no fallback available")
+        
+        return result['result']

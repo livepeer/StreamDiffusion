@@ -102,41 +102,7 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
                 'status': 'error'
             }
     
-    def _apply_current_frame_processing(self, 
-                                      processors: List[Any] = None,
-                                      *args, **kwargs) -> torch.Tensor:
-        """
-        Apply processing results from previous iteration.
-        
-        Implementation of BaseOrchestrator._apply_current_frame_processing for pipeline preprocessing.
-        
-        Returns:
-            Processed tensor, or processed current input if no results available
-        """
-        if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
-            # First frame or no background results - process current input synchronously
-            if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                if processors:
-                    return self.process_sync(self._current_input_tensor, processors)
-                else:
-                    return self._current_input_tensor
-            
-            # If we don't have current input stored, we have an issue
-            logger.error("PipelinePreprocessingOrchestrator: No background results and no current input tensor available")
-            raise RuntimeError("PipelinePreprocessingOrchestrator: No processing results available")
-        
-        result = self._next_frame_result
-        if result['status'] != 'success':
-            logger.warning(f"PipelinePreprocessingOrchestrator: Background processing failed: {result.get('error', 'Unknown error')}")
-            # Process current input synchronously on error
-            if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                if processors:
-                    return self.process_sync(self._current_input_tensor, processors)
-                else:
-                    return self._current_input_tensor
-            raise RuntimeError("PipelinePreprocessingOrchestrator: Background processing failed and no fallback available")
-        
-        return result['result']
+    
     
     def _apply_single_processor(self, 
                               input_tensor: torch.Tensor, 
