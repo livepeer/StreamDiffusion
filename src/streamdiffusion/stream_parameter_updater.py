@@ -6,7 +6,7 @@ import gc
 
 import logging
 logger = logging.getLogger(__name__)
-from .preprocessing.orchestrator_user import OrchestratorUser
+from .processing.orchestrator_user import OrchestratorUser
 
 class CacheStats:
     """Helper class to track cache statistics"""
@@ -166,20 +166,31 @@ class StreamParameterUpdater(OrchestratorUser):
         # Choose processing mode based on is_stream parameter
         try:
             if is_stream:
-                # Pipelined processing - optimized for throughput with 1-frame lag
-                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors_pipelined(
-                    input_image=style_image,
-                    embedding_preprocessors=relevant_preprocessors,
-                    stream_width=self.stream.width,
-                    stream_height=self.stream.height
-                )
+                # Pipelined processing - optimized for throughput with 1-frame lag  
+                # Set embedding mode and timeout
+                self._embedding_orchestrator._current_processing_mode = "embedding"
+                original_timeout = self._embedding_orchestrator.timeout_ms
+                self._embedding_orchestrator.timeout_ms = 50.0
+                
+                try:
+                    embedding_results = self._embedding_orchestrator.process_pipelined(
+                        input_image=style_image,
+                        preprocessors=relevant_preprocessors,
+                        stream_width=self.stream.width,
+                        stream_height=self.stream.height
+                    )
+                finally:
+                    # Restore original timeout and clear mode
+                    self._embedding_orchestrator.timeout_ms = original_timeout
+                    self._embedding_orchestrator._current_processing_mode = None
             else:
                 # Synchronous processing - immediate results for discrete updates
-                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors(
-                    input_image=style_image,
-                    embedding_preprocessors=relevant_preprocessors,
+                embedding_results = self._embedding_orchestrator.process_sync(
+                    control_image=style_image,
+                    preprocessors=relevant_preprocessors,
                     stream_width=self.stream.width,
-                    stream_height=self.stream.height
+                    stream_height=self.stream.height,
+                    processing_type="ipadapter"
                 )
             
             # Cache results for this style image key
@@ -245,6 +256,8 @@ class StreamParameterUpdater(OrchestratorUser):
         normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        pipeline_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -303,6 +316,16 @@ class StreamParameterUpdater(OrchestratorUser):
             if ipadapter_config is not None:
                 logger.info(f"update_stream_params: Updating IPAdapter configuration")
                 self._update_ipadapter_config(ipadapter_config)
+            
+            # Handle postprocessing configuration updates
+            if postprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating postprocessing configuration")
+                self._update_postprocessing_config(postprocessing_config)
+            
+            # Handle pipeline preprocessing configuration updates
+            if pipeline_preprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating pipeline preprocessing configuration")
+                self._update_pipeline_preprocessing_config(pipeline_preprocessing_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -1014,7 +1037,7 @@ class StreamParameterUpdater(OrchestratorUser):
                             preprocessor=desired_cfg.get('preprocessor'),
                             conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
                             enabled=desired_cfg.get('enabled', True),
-                            preprocessor_params=desired_cfg.get('preprocessor_params'),
+                            processor_params=desired_cfg.get('processor_params'),
                         )
                         controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
                     except Exception:
@@ -1038,10 +1061,10 @@ class StreamParameterUpdater(OrchestratorUser):
                     if 0 <= existing_index < len(controlnet_pipeline.enabled_list):
                         controlnet_pipeline.enabled_list[existing_index] = bool(desired_cfg['enabled'])
 
-                if 'preprocessor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
+                if 'processor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
                     preprocessor = controlnet_pipeline.preprocessors[existing_index]
-                    preprocessor.params.update(desired_cfg['preprocessor_params'])
-                    for param_name, param_value in desired_cfg['preprocessor_params'].items():
+                    preprocessor.params.update(desired_cfg['processor_params'])
+                    for param_name, param_value in desired_cfg['processor_params'].items():
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
 
@@ -1106,7 +1129,7 @@ class StreamParameterUpdater(OrchestratorUser):
             config = {
                 'model_id': model_id,
                 'conditioning_scale': scale,
-                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
+                'processor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
                 'enabled': enabled_val,
             }
             current_config.append(config)
@@ -1217,6 +1240,124 @@ class StreamParameterUpdater(OrchestratorUser):
                 return self.wrapper.stream.stream
         
         return None
+
+    def _update_postprocessing_config(self, postprocessing_config: List[Dict[str, Any]]) -> None:
+        """
+        Update postprocessing configuration.
+        
+        Args:
+            postprocessing_config: List of postprocessor configurations defining the desired state.
+                                 Each dict contains: name, enabled, scale, processor_params, etc.
+        """
+        # Check if wrapper has postprocessing enabled
+        if not hasattr(self.wrapper, 'use_postprocessing') or not self.wrapper.use_postprocessing:
+            logger.warning("_update_postprocessing_config: Postprocessing not enabled on wrapper")
+            return
+        
+        if not hasattr(self.wrapper, '_postprocessing_orchestrator') or not self.wrapper._postprocessing_orchestrator:
+            logger.warning("_update_postprocessing_config: Postprocessing orchestrator not initialized")
+            return
+        
+        try:
+            # Import here to avoid circular dependencies
+            from streamdiffusion.processing.processors import get_preprocessor
+            
+            # Rebuild postprocessor instances
+            self.wrapper._postprocessor_instances = []
+            for proc_config in postprocessing_config:
+                if proc_config.get('enabled', True):
+                    processor = get_preprocessor(proc_config['name'])
+                    
+                    # Set system parameters (same pattern as ControlNet)
+                    try:
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params['image_width'] = int(self.stream.width)
+                            processor.params['image_height'] = int(self.stream.height)
+                        if hasattr(processor, 'image_width'):
+                            setattr(processor, 'image_width', int(self.stream.width))
+                        if hasattr(processor, 'image_height'):
+                            setattr(processor, 'image_height', int(self.stream.height))
+                    except Exception:
+                        pass
+                    
+                    # Configure processor with processor_params if provided (same pattern as ControlNet)
+                    if proc_config.get('processor_params'):
+                        params = proc_config['processor_params']
+                        # If the processor exposes a 'params' dict, update it
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params.update(params)
+                        # Also set individual attributes
+                        for param_name, param_value in params.items():
+                            if hasattr(processor, param_name):
+                                setattr(processor, param_name, param_value)
+                    self.wrapper._postprocessor_instances.append(processor)
+            
+            # Clear orchestrator cache since processors changed
+            self.wrapper._postprocessing_orchestrator.clear_cache()
+            
+            logger.info(f"_update_postprocessing_config: Updated to {len(self.wrapper._postprocessor_instances)} processors")
+        except Exception as e:
+            logger.error(f"_update_postprocessing_config: Failed to update postprocessing config: {e}")
+            raise RuntimeError(f"Postprocessing config update failed: {e}")
+
+    def _update_pipeline_preprocessing_config(self, pipeline_preprocessing_config: List[Dict[str, Any]]) -> None:
+        """
+        Update pipeline preprocessing configuration.
+        
+        Args:
+            pipeline_preprocessing_config: List of pipeline preprocessor configurations defining the desired state.
+                                         Each dict contains: name, enabled, scale, processor_params, etc.
+        """
+        # Check if wrapper has pipeline preprocessing enabled
+        if not hasattr(self.wrapper, 'use_pipeline_preprocessing') or not self.wrapper.use_pipeline_preprocessing:
+            logger.warning("_update_pipeline_preprocessing_config: Pipeline preprocessing not enabled on wrapper")
+            return
+        
+        if not hasattr(self.wrapper, '_pipeline_preprocessing_orchestrator') or not self.wrapper._pipeline_preprocessing_orchestrator:
+            logger.warning("_update_pipeline_preprocessing_config: Pipeline preprocessing orchestrator not initialized")
+            return
+        
+        try:
+            # Import here to avoid circular dependencies
+            from streamdiffusion.processing.processors import get_preprocessor
+            
+            # Rebuild pipeline preprocessor instances
+            self.wrapper._pipeline_preprocessor_instances = []
+            for proc_config in pipeline_preprocessing_config:
+                if proc_config.get('enabled', True):
+                    processor = get_preprocessor(proc_config['name'])
+                    
+                    # Set system parameters (same pattern as ControlNet and postprocessing)
+                    try:
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params['image_width'] = int(self.stream.width)
+                            processor.params['image_height'] = int(self.stream.height)
+                        if hasattr(processor, 'image_width'):
+                            setattr(processor, 'image_width', int(self.stream.width))
+                        if hasattr(processor, 'image_height'):
+                            setattr(processor, 'image_height', int(self.stream.height))
+                    except Exception:
+                        pass
+                    
+                    # Configure processor with processor_params if provided (same pattern as ControlNet and postprocessing)
+                    if proc_config.get('processor_params'):
+                        params = proc_config['processor_params']
+                        # If the processor exposes a 'params' dict, update it
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params.update(params)
+                        # Also set individual attributes
+                        for param_name, param_value in params.items():
+                            if hasattr(processor, param_name):
+                                setattr(processor, param_name, param_value)
+                    self.wrapper._pipeline_preprocessor_instances.append(processor)
+            
+            # Clear orchestrator cache since processors changed
+            self.wrapper._pipeline_preprocessing_orchestrator.clear_cache()
+            
+            logger.info(f"_update_pipeline_preprocessing_config: Updated to {len(self.wrapper._pipeline_preprocessor_instances)} processors")
+        except Exception as e:
+            logger.error(f"_update_pipeline_preprocessing_config: Failed to update pipeline preprocessing config: {e}")
+            raise RuntimeError(f"Pipeline preprocessing config update failed: {e}")
 
     def _get_current_ipadapter_config(self) -> Optional[Dict[str, Any]]:
         """

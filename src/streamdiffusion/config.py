@@ -124,6 +124,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
         'normalize_seed_weights': config.get('normalize_seed_weights', True),
         'enable_pytorch_fallback': config.get('enable_pytorch_fallback', False),
+        'skip_diffusion': config.get('skip_diffusion', False),
     }
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
@@ -139,6 +140,22 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
+    
+    # Set postprocessing usage if postprocessors are configured
+    if 'postprocessing' in config and config['postprocessing'].get('enabled', False):
+        param_map['use_postprocessing'] = True
+        param_map['postprocessing_config'] = _prepare_postprocessing_configs(config)
+    else:
+        param_map['use_postprocessing'] = config.get('use_postprocessing', False)
+        param_map['postprocessing_config'] = config.get('postprocessing_config')
+    
+    # Set pipeline preprocessing usage if preprocessors are configured
+    if 'pipeline_preprocessing' in config and config['pipeline_preprocessing'].get('enabled', False):
+        param_map['use_pipeline_preprocessing'] = True
+        param_map['pipeline_preprocessing_config'] = _prepare_pipeline_preprocessing_configs(config)
+    else:
+        param_map['use_pipeline_preprocessing'] = config.get('use_pipeline_preprocessing', False)
+        param_map['pipeline_preprocessing_config'] = config.get('pipeline_preprocessing_config')
     
     return {k: v for k, v in param_map.items() if v is not None}
 
@@ -183,7 +200,7 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             'preprocessor': cn_config.get('preprocessor', 'passthrough'),
             'conditioning_scale': cn_config.get('conditioning_scale', 1.0),
             'enabled': cn_config.get('enabled', True),
-            'preprocessor_params': cn_config.get('preprocessor_params'),
+            'processor_params': cn_config.get('processor_params'),
             'pipeline_type': pipeline_type,
             'control_guidance_start': cn_config.get('control_guidance_start', 0.0),
             'control_guidance_end': cn_config.get('control_guidance_end', 1.0),
@@ -211,6 +228,38 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         ipadapter_configs.append(ipadapter_config)
     
     return ipadapter_configs
+
+
+def _prepare_postprocessing_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Prepare postprocessing configurations for wrapper"""
+    postprocessing_configs = []
+    
+    for proc_config in config['postprocessing']['processors']:
+        postprocessing_config = {
+            'name': proc_config['name'],
+            'enabled': proc_config.get('enabled', True),
+            'scale': proc_config.get('scale', 1.0),
+            'processor_params': proc_config.get('processor_params', {}),
+        }
+        postprocessing_configs.append(postprocessing_config)
+    
+    return postprocessing_configs
+
+
+def _prepare_pipeline_preprocessing_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Prepare pipeline preprocessing configurations for wrapper"""
+    pipeline_preprocessing_configs = []
+    
+    for proc_config in config['pipeline_preprocessing']['processors']:
+        pipeline_preprocessing_config = {
+            'name': proc_config['name'],
+            'enabled': proc_config.get('enabled', True),
+            'scale': proc_config.get('scale', 1.0),
+            'processor_params': proc_config.get('processor_params', {}),
+        }
+        pipeline_preprocessing_configs.append(pipeline_preprocessing_config)
+    
+    return pipeline_preprocessing_configs
 
 
 def create_prompt_blending_config(
@@ -310,6 +359,54 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if 'image_encoder_path' not in ipadapter:
                 raise ValueError(f"_validate_config: IPAdapter {i} missing required 'image_encoder_path'")
 
+    # Validate postprocessing if present
+    if 'postprocessing' in config:
+        postproc_config = config['postprocessing']
+        if not isinstance(postproc_config, dict):
+            raise ValueError("_validate_config: 'postprocessing' must be a dictionary")
+        
+        if 'enabled' in postproc_config and not isinstance(postproc_config['enabled'], bool):
+            raise ValueError("_validate_config: postprocessing 'enabled' must be a boolean")
+        
+        if 'processors' in postproc_config:
+            processors = postproc_config['processors']
+            if not isinstance(processors, list):
+                raise ValueError("_validate_config: postprocessing 'processors' must be a list")
+            
+            for i, processor in enumerate(processors):
+                if not isinstance(processor, dict):
+                    raise ValueError(f"_validate_config: Postprocessor {i} must be a dictionary")
+                
+                if 'name' not in processor:
+                    raise ValueError(f"_validate_config: Postprocessor {i} missing required 'name'")
+                
+                if 'processor_params' in processor and not isinstance(processor['processor_params'], dict):
+                    raise ValueError(f"_validate_config: Postprocessor {i} 'processor_params' must be a dictionary")
+
+    # Validate pipeline preprocessing configuration if present
+    if 'pipeline_preprocessing' in config:
+        pipeline_preprocessing_config = config['pipeline_preprocessing']
+        if not isinstance(pipeline_preprocessing_config, dict):
+            raise ValueError("_validate_config: 'pipeline_preprocessing' must be a dictionary")
+        
+        if 'enabled' in pipeline_preprocessing_config and not isinstance(pipeline_preprocessing_config['enabled'], bool):
+            raise ValueError("_validate_config: pipeline_preprocessing 'enabled' must be a boolean")
+        
+        if 'processors' in pipeline_preprocessing_config:
+            processors = pipeline_preprocessing_config['processors']
+            if not isinstance(processors, list):
+                raise ValueError("_validate_config: pipeline_preprocessing 'processors' must be a list")
+            
+            for i, processor in enumerate(processors):
+                if not isinstance(processor, dict):
+                    raise ValueError(f"_validate_config: Pipeline preprocessor {i} must be a dictionary")
+                
+                if 'name' not in processor:
+                    raise ValueError(f"_validate_config: Pipeline preprocessor {i} missing required 'name'")
+                
+                if 'processor_params' in processor and not isinstance(processor['processor_params'], dict):
+                    raise ValueError(f"_validate_config: Pipeline preprocessor {i} 'processor_params' must be a dictionary")
+
     # Validate prompt blending configuration if present
     if 'prompt_blending' in config:
         blend_config = config['prompt_blending']
@@ -377,3 +474,8 @@ def _validate_config(config: Dict[str, Any]) -> None:
         enable_pytorch_fallback = config['enable_pytorch_fallback']
         if not isinstance(enable_pytorch_fallback, bool):
             raise ValueError("_validate_config: 'enable_pytorch_fallback' must be a boolean value")
+    
+    if 'skip_diffusion' in config:
+        skip_diffusion = config['skip_diffusion']
+        if not isinstance(skip_diffusion, bool):
+            raise ValueError("_validate_config: 'skip_diffusion' must be a boolean value")

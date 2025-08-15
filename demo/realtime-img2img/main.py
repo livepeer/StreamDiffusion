@@ -787,6 +787,16 @@ class App:
             """Get current ControlNet configuration info"""
             return JSONResponse({"controlnet": self._get_controlnet_info()})
 
+        @self.app.get("/api/pipeline-preprocessing/info-config")
+        async def get_pipeline_preprocessing_info_config():
+            """Get current pipeline preprocessing configuration info"""
+            return JSONResponse({"pipeline_preprocessing": self._get_pipeline_preprocessing_info()})
+
+        @self.app.get("/api/postprocessing/info-config")
+        async def get_postprocessing_info_config():
+            """Get current postprocessing configuration info"""
+            return JSONResponse({"postprocessing": self._get_postprocessing_info()})
+
         @self.app.get("/api/blending/current")
         async def get_current_blending_config():
             """Get current prompt and seed blending configurations"""
@@ -1549,7 +1559,7 @@ class App:
         async def get_preprocessors_info():
             """Get preprocessor information using metadata from preprocessor classes"""
             try:
-                from src.streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
                 
                 available_preprocessors = list_preprocessors()
                 preprocessors_info = {}
@@ -1611,7 +1621,7 @@ class App:
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
                 # Create new preprocessor instance
-                from src.streamdiffusion.preprocessing.processors import get_preprocessor
+                from src.streamdiffusion.processing.processors import get_preprocessor
                 new_preprocessor_instance = get_preprocessor(new_preprocessor)
 
                 # Resolve stream object and preprocessor list regardless of module or stream facade
@@ -1841,6 +1851,538 @@ class App:
             except Exception as e:
                 logger.error(f"get_current_preprocessor_params: Failed to get current parameters: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to get current preprocessor parameters: {str(e)}")
+
+        # Pipeline Preprocessing API Endpoints
+        @self.app.get("/api/pipeline-preprocessing/info")
+        async def get_pipeline_preprocessing_info():
+            """Get pipeline preprocessor information using metadata from preprocessor classes"""
+            try:
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
+                
+                available_preprocessors = list_preprocessors()
+                preprocessors_info = {}
+                
+                for preprocessor_name in available_preprocessors:
+                    try:
+                        preprocessor_instance = get_preprocessor(preprocessor_name)
+                        metadata = preprocessor_instance.__class__.get_preprocessor_metadata()
+                        
+                        preprocessors_info[preprocessor_name] = {
+                            "display_name": metadata.get("display_name", preprocessor_name),
+                            "description": metadata.get("description", ""),
+                            "parameters": metadata.get("parameters", {})
+                        }
+                    except Exception as e:
+                        logger.warning(f"get_pipeline_preprocessing_info: Failed to get metadata for {preprocessor_name}: {e}")
+                        continue
+                
+                return JSONResponse({
+                    "preprocessors": preprocessors_info,
+                    "available": available_preprocessors
+                })
+                
+            except Exception as e:
+                logger.error(f"get_pipeline_preprocessing_info: Error loading preprocessor info: {e}")
+                return JSONResponse({
+                    "preprocessors": {},
+                    "available": [],
+                    "error": "Could not load preprocessor information"
+                })
+
+        @self.app.post("/api/pipeline-preprocessing/add")
+        async def add_pipeline_preprocessor(request: Request):
+            """Add a new pipeline preprocessor"""
+            try:
+                data = await request.json()
+                processor = data.get("processor", "passthrough")
+                enabled = data.get("enabled", True)
+                processor_params = data.get("processor_params", {})
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current configuration from stream state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = []
+                if 'pipeline_preprocessing_config' in state:
+                    current_config = state['pipeline_preprocessing_config']
+                elif hasattr(self.pipeline.stream.wrapper, 'pipeline_preprocessing_config'):
+                    current_config = self.pipeline.stream.wrapper.pipeline_preprocessing_config or []
+                
+                if not isinstance(current_config, list):
+                    current_config = []
+                
+                # Add new processor
+                new_processor = {
+                    "name": processor,
+                    "enabled": enabled,
+                    "processor_params": processor_params
+                }
+                current_config.append(new_processor)
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully added pipeline preprocessor {processor}",
+                    "processor_index": len(current_config) - 1
+                })
+                
+            except Exception as e:
+                logger.error(f"add_pipeline_preprocessor: Failed to add processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add pipeline preprocessor: {str(e)}")
+
+        @self.app.delete("/api/pipeline-preprocessing/remove/{processor_index}")
+        async def remove_pipeline_preprocessor(processor_index: int):
+            """Remove a pipeline preprocessor"""
+            try:
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current configuration from stream state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('pipeline_preprocessing_config', [])
+                if not isinstance(current_config, list):
+                    current_config = []
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Remove processor
+                current_config.pop(processor_index)
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully removed pipeline preprocessor at index {processor_index}"
+                })
+                
+            except Exception as e:
+                logger.error(f"remove_pipeline_preprocessor: Failed to remove processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove pipeline preprocessor: {str(e)}")
+
+        @self.app.post("/api/pipeline-preprocessing/toggle")
+        async def toggle_pipeline_preprocessor_enabled(request: Request):
+            """Toggle enabled status of a pipeline preprocessor"""
+            try:
+                data = await request.json()
+                processor_index = data.get("processor_index", 0)
+                enabled = data.get("enabled", True)
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('pipeline_preprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update enabled status
+                current_config[processor_index]['enabled'] = enabled
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully {'enabled' if enabled else 'disabled'} pipeline preprocessor at index {processor_index}"
+                })
+                
+            except Exception as e:
+                logger.error(f"toggle_pipeline_preprocessor_enabled: Failed to toggle processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to toggle pipeline preprocessor: {str(e)}")
+
+        @self.app.post("/api/pipeline-preprocessing/switch")
+        async def switch_pipeline_preprocessor(request: Request):
+            """Switch pipeline preprocessor for a specific index"""
+            try:
+                data = await request.json()
+                processor_index = data.get("processor_index", 0)
+                new_processor = data.get("processor")
+                processor_params = data.get("processor_params", {})
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"switch_pipeline_preprocessor: Switching processor {processor_index} to {new_processor}")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('pipeline_preprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update processor
+                current_config[processor_index]['name'] = new_processor
+                current_config[processor_index]['processor_params'] = processor_params
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully switched to {new_processor} processor",
+                    "processor_index": processor_index,
+                    "processor": new_processor,
+                    "parameters": processor_params
+                })
+                    
+            except Exception as e:
+                logger.error(f"switch_pipeline_preprocessor: Failed to switch processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to switch pipeline preprocessor: {str(e)}")
+
+        @self.app.post("/api/pipeline-preprocessing/update-params")
+        async def update_pipeline_preprocessor_params(request: Request):
+            """Update pipeline preprocessor parameters for a specific index"""
+            try:
+                data = await request.json()
+                processor_index = data.get("processor_index", 0)
+                processor_params = data.get("processor_params", {})
+                
+                if not processor_params:
+                    raise HTTPException(status_code=400, detail="No parameters provided")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"update_pipeline_preprocessor_params: Updating processor {processor_index} params: {processor_params}")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('pipeline_preprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update parameters
+                current_config[processor_index]['processor_params'] = processor_params
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully updated parameters for processor {processor_index}",
+                    "processor_index": processor_index,
+                    "parameters": processor_params
+                })
+                
+            except Exception as e:
+                logger.error(f"update_pipeline_preprocessor_params: Failed to update parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update pipeline preprocessor parameters: {str(e)}")
+
+        @self.app.get("/api/pipeline-preprocessing/current-params/{processor_index}")
+        async def get_current_pipeline_preprocessor_params(processor_index: int):
+            """Get current parameter values for a specific pipeline preprocessor"""
+            try:
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('pipeline_preprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                processor_config = current_config[processor_index]
+                
+                return JSONResponse({
+                    "processor": processor_config.get("name"),
+                    "parameters": processor_config.get("processor_params", {})
+                })
+                    
+            except Exception as e:
+                logger.error(f"get_current_pipeline_preprocessor_params: Failed to get current parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get current pipeline preprocessor parameters: {str(e)}")
+
+        # Postprocessing API Endpoints
+        @self.app.get("/api/postprocessing/info")
+        async def get_postprocessing_info():
+            """Get postprocessor information using metadata from preprocessor classes"""
+            try:
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
+                
+                available_preprocessors = list_preprocessors()
+                preprocessors_info = {}
+                
+                for preprocessor_name in available_preprocessors:
+                    try:
+                        preprocessor_instance = get_preprocessor(preprocessor_name)
+                        metadata = preprocessor_instance.__class__.get_preprocessor_metadata()
+                        
+                        preprocessors_info[preprocessor_name] = {
+                            "display_name": metadata.get("display_name", preprocessor_name),
+                            "description": metadata.get("description", ""),
+                            "parameters": metadata.get("parameters", {})
+                        }
+                    except Exception as e:
+                        logger.warning(f"get_postprocessing_info: Failed to get metadata for {preprocessor_name}: {e}")
+                        continue
+                
+                return JSONResponse({
+                    "preprocessors": preprocessors_info,
+                    "available": available_preprocessors
+                })
+                
+            except Exception as e:
+                logger.error(f"get_postprocessing_info: Error loading preprocessor info: {e}")
+                return JSONResponse({
+                    "preprocessors": {},
+                    "available": [],
+                    "error": "Could not load preprocessor information"
+                })
+
+        @self.app.post("/api/postprocessing/add")
+        async def add_postprocessor(request: Request):
+            """Add a new postprocessor"""
+            try:
+                data = await request.json()
+                processor = data.get("processor", "passthrough")
+                enabled = data.get("enabled", True)
+                processor_params = data.get("processor_params", {})
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                
+                # Add new processor
+                new_processor = {
+                    "name": processor,
+                    "enabled": enabled,
+                    "processor_params": processor_params
+                }
+                current_config.append(new_processor)
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(postprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully added postprocessor {processor}",
+                    "processor_index": len(current_config) - 1
+                })
+                
+            except Exception as e:
+                logger.error(f"add_postprocessor: Failed to add processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add postprocessor: {str(e)}")
+
+        @self.app.delete("/api/postprocessing/remove/{processor_index}")
+        async def remove_postprocessor(processor_index: int):
+            """Remove a postprocessor"""
+            try:
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Remove processor
+                current_config.pop(processor_index)
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(postprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully removed postprocessor at index {processor_index}"
+                })
+                
+            except Exception as e:
+                logger.error(f"remove_postprocessor: Failed to remove processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove postprocessor: {str(e)}")
+
+        @self.app.post("/api/postprocessing/toggle")
+        async def toggle_postprocessor_enabled(request: Request):
+            """Toggle enabled status of a postprocessor"""
+            try:
+                data = await request.json()
+                processor_index = data.get("processor_index", 0)
+                enabled = data.get("enabled", True)
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update enabled status
+                current_config[processor_index]['enabled'] = enabled
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(postprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully {'enabled' if enabled else 'disabled'} postprocessor at index {processor_index}"
+                })
+                
+            except Exception as e:
+                logger.error(f"toggle_postprocessor_enabled: Failed to toggle processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to toggle postprocessor: {str(e)}")
+
+        @self.app.post("/api/postprocessing/switch")
+        async def switch_postprocessor(request: Request):
+            """Switch postprocessor for a specific index"""
+            try:
+                data = await request.json()
+                processor_index = data.get("processor_index", 0)
+                new_processor = data.get("processor")
+                processor_params = data.get("processor_params", {})
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"switch_postprocessor: Switching processor {processor_index} to {new_processor}")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update processor
+                current_config[processor_index]['name'] = new_processor
+                current_config[processor_index]['processor_params'] = processor_params
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(postprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully switched to {new_processor} processor",
+                    "processor_index": processor_index,
+                    "processor": new_processor,
+                    "parameters": processor_params
+                })
+                    
+            except Exception as e:
+                logger.error(f"switch_postprocessor: Failed to switch processor: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to switch postprocessor: {str(e)}")
+
+        @self.app.post("/api/postprocessing/update-params")
+        async def update_postprocessor_params(request: Request):
+            """Update postprocessor parameters for a specific index"""
+            try:
+                data = await request.json()
+                processor_index = data.get("processor_index", 0)
+                processor_params = data.get("processor_params", {})
+                
+                if not processor_params:
+                    raise HTTPException(status_code=400, detail="No parameters provided")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"update_postprocessor_params: Updating processor {processor_index} params: {processor_params}")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update parameters
+                current_config[processor_index]['processor_params'] = processor_params
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(postprocessing_config=current_config)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully updated parameters for processor {processor_index}",
+                    "processor_index": processor_index,
+                    "parameters": processor_params
+                })
+                
+            except Exception as e:
+                logger.error(f"update_postprocessor_params: Failed to update parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update postprocessor parameters: {str(e)}")
+
+        @self.app.get("/api/postprocessing/current-params/{processor_index}")
+        async def get_current_postprocessor_params(processor_index: int):
+            """Get current parameter values for a specific postprocessor"""
+            try:
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                processor_config = current_config[processor_index]
+                
+                return JSONResponse({
+                    "processor": processor_config.get("name"),
+                    "parameters": processor_config.get("processor_params", {})
+                })
+                    
+            except Exception as e:
+                logger.error(f"get_current_postprocessor_params: Failed to get current parameters: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get current postprocessor parameters: {str(e)}")
+
+        # Skip Diffusion API Endpoint
+        @self.app.post("/api/skip-diffusion/toggle")
+        async def toggle_skip_diffusion(request: Request):
+            """Toggle skip diffusion mode"""
+            try:
+                data = await request.json()
+                skip_diffusion = data.get("skip_diffusion", False)
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update pipeline
+                self.pipeline.update_stream_params(skip_diffusion=skip_diffusion)
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Skip diffusion {'enabled' if skip_diffusion else 'disabled'}",
+                    "skip_diffusion": skip_diffusion
+                })
+                
+            except Exception as e:
+                logger.error(f"toggle_skip_diffusion: Failed to toggle skip diffusion: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to toggle skip diffusion: {str(e)}")
+
+        @self.app.get("/api/skip-diffusion/status")
+        async def get_skip_diffusion_status():
+            """Get current skip diffusion status"""
+            try:
+                if not self.pipeline:
+                    return JSONResponse({"skip_diffusion": False})
+                
+                # Get current state
+                state = self.pipeline.stream.get_stream_state()
+                skip_diffusion = state.get('skip_diffusion', False)
+                
+                return JSONResponse({"skip_diffusion": skip_diffusion})
+                
+            except Exception as e:
+                logger.error(f"get_skip_diffusion_status: Failed to get status: {e}")
+                return JSONResponse({"skip_diffusion": False})
 
         # Only mount static files if not in API-only mode
         if not self.args.api_only:
@@ -2182,6 +2724,56 @@ class App:
         else:
             print("_create_pipeline_with_config: Pipeline does not have IPAdapter enabled")
         
+        # Apply pipeline preprocessing and postprocessing configurations from YAML
+        config_for_processing = self.runtime_controlnet_config if self.runtime_controlnet_config else self.uploaded_controlnet_config
+        if config_for_processing:
+            # Apply pipeline preprocessing config
+            if 'pipeline_preprocessing' in config_for_processing:
+                pp_config = config_for_processing['pipeline_preprocessing']
+                if pp_config.get('enabled', False) and 'processors' in pp_config:
+                    try:
+                        # Convert config format to expected format for update_stream_params
+                        pipeline_preprocessing_config = []
+                        for processor in pp_config['processors']:
+                            pipeline_preprocessing_config.append({
+                                'name': processor.get('name', 'passthrough'),
+                                'enabled': processor.get('enabled', True),
+                                'processor_params': processor.get('processor_params', {})
+                            })
+                        
+                        new_pipeline.update_stream_params(pipeline_preprocessing_config=pipeline_preprocessing_config)
+                        logger.info(f"_create_pipeline_with_config: Applied pipeline preprocessing config with {len(pipeline_preprocessing_config)} processors")
+                    except Exception as e:
+                        logger.error(f"_create_pipeline_with_config: Failed to apply pipeline preprocessing config: {e}")
+            
+            # Apply postprocessing config
+            if 'postprocessing' in config_for_processing:
+                post_config = config_for_processing['postprocessing']
+                if post_config.get('enabled', False) and 'processors' in post_config:
+                    try:
+                        # Convert config format to expected format for update_stream_params
+                        postprocessing_config = []
+                        for processor in post_config['processors']:
+                            postprocessing_config.append({
+                                'name': processor.get('name', 'passthrough'),
+                                'enabled': processor.get('enabled', True),
+                                'processor_params': processor.get('processor_params', {})
+                            })
+                        
+                        new_pipeline.update_stream_params(postprocessing_config=postprocessing_config)
+                        logger.info(f"_create_pipeline_with_config: Applied postprocessing config with {len(postprocessing_config)} processors")
+                    except Exception as e:
+                        logger.error(f"_create_pipeline_with_config: Failed to apply postprocessing config: {e}")
+            
+            # Apply skip_diffusion setting
+            if 'skip_diffusion' in config_for_processing:
+                try:
+                    skip_diffusion = config_for_processing['skip_diffusion']
+                    new_pipeline.update_stream_params(skip_diffusion=skip_diffusion)
+                    logger.info(f"_create_pipeline_with_config: Applied skip_diffusion={skip_diffusion}")
+                except Exception as e:
+                    logger.error(f"_create_pipeline_with_config: Failed to apply skip_diffusion setting: {e}")
+
         # Clean up temp file if created
         if self.uploaded_controlnet_config and not controlnet_config_path:
             try:
@@ -2237,6 +2829,88 @@ class App:
                     })
         
         return controlnet_info
+
+    def _get_pipeline_preprocessing_info(self):
+        """Get pipeline preprocessing information from uploaded config or active pipeline"""
+        preprocessing_info = {
+            "enabled": False,
+            "config_loaded": False,
+            "processors": []
+        }
+        
+        # Check active pipeline state first
+        if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+            try:
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('pipeline_preprocessing_config', [])
+                if current_config:
+                    preprocessing_info["enabled"] = True
+                    preprocessing_info["config_loaded"] = True
+                    for i, processor_config in enumerate(current_config):
+                        preprocessing_info["processors"].append({
+                            "index": i,
+                            "name": processor_config.get('name', 'passthrough'),
+                            "enabled": processor_config.get('enabled', True)
+                        })
+                    return preprocessing_info
+            except Exception as e:
+                logger.warning(f"_get_pipeline_preprocessing_info: Failed to get state from pipeline: {e}")
+        
+        # Fall back to uploaded YAML config if no active pipeline
+        if self.uploaded_controlnet_config and 'pipeline_preprocessing' in self.uploaded_controlnet_config:
+            pp_config = self.uploaded_controlnet_config['pipeline_preprocessing']
+            if pp_config.get('enabled', False) and 'processors' in pp_config:
+                preprocessing_info["enabled"] = True
+                preprocessing_info["config_loaded"] = True
+                for i, processor_config in enumerate(pp_config['processors']):
+                    preprocessing_info["processors"].append({
+                        "index": i,
+                        "name": processor_config.get('name', 'passthrough'),
+                        "enabled": processor_config.get('enabled', True)
+                    })
+        
+        return preprocessing_info
+    
+    def _get_postprocessing_info(self):
+        """Get postprocessing information from uploaded config or active pipeline"""
+        postprocessing_info = {
+            "enabled": False,
+            "config_loaded": False,
+            "processors": []
+        }
+        
+        # Check active pipeline state first
+        if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+            try:
+                state = self.pipeline.stream.get_stream_state()
+                current_config = state.get('postprocessing_config', [])
+                if current_config:
+                    postprocessing_info["enabled"] = True
+                    postprocessing_info["config_loaded"] = True
+                    for i, processor_config in enumerate(current_config):
+                        postprocessing_info["processors"].append({
+                            "index": i,
+                            "name": processor_config.get('name', 'passthrough'),
+                            "enabled": processor_config.get('enabled', True)
+                        })
+                    return postprocessing_info
+            except Exception as e:
+                logger.warning(f"_get_postprocessing_info: Failed to get state from pipeline: {e}")
+        
+        # Fall back to uploaded YAML config if no active pipeline
+        if self.uploaded_controlnet_config and 'postprocessing' in self.uploaded_controlnet_config:
+            pp_config = self.uploaded_controlnet_config['postprocessing']
+            if pp_config.get('enabled', False) and 'processors' in pp_config:
+                postprocessing_info["enabled"] = True
+                postprocessing_info["config_loaded"] = True
+                for i, processor_config in enumerate(pp_config['processors']):
+                    postprocessing_info["processors"].append({
+                        "index": i,
+                        "name": processor_config.get('name', 'passthrough'),
+                        "enabled": processor_config.get('enabled', True)
+                    })
+        
+        return postprocessing_info
 
     def _load_default_style_image(self):
         """Load the default style image for IPAdapter"""

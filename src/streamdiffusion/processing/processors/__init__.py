@@ -11,6 +11,8 @@ from .hed import HEDPreprocessor
 from .ipadapter_embedding import IPAdapterEmbeddingPreprocessor
 from .faceid_embedding import FaceIDEmbeddingPreprocessor
 from .feedback import FeedbackPreprocessor
+from .upscale import UpscalePreprocessor
+from .realesrgan_trt import RealESRGANProcessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -53,6 +55,8 @@ _preprocessor_registry = {
     "soft_edge": SoftEdgePreprocessor,
     "hed": HEDPreprocessor,
     "feedback": FeedbackPreprocessor,
+    "upscale": UpscalePreprocessor,
+    "realesrgan_trt": RealESRGANProcessor,
 }
 
 # Add TensorRT preprocessors if available
@@ -120,6 +124,8 @@ __all__ = [
     "IPAdapterEmbeddingPreprocessor",
     "FaceIDEmbeddingPreprocessor",
     "FeedbackPreprocessor",
+    "UpscalePreprocessor",
+    "RealESRGANProcessor",
     "get_preprocessor",
     "register_preprocessor",
     "list_preprocessors",

@@ -17,6 +17,7 @@
   let imageEl: HTMLImageElement;
   let localResolution: ResolutionInfo;
 
+
   // Reactive resolution parsing
   $: {
     if (currentResolution) {
@@ -65,6 +66,8 @@
     isFullscreen = !!document.fullscreenElement;
   }
 
+
+
   // Listen for fullscreen changes
   if (typeof window !== 'undefined') {
     document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -90,12 +93,7 @@
       alt="Generated output stream"
     />
     
-    <!-- Resolution indicator -->
-    {#if localResolution}
-      <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
-        Output: {localResolution.width}×{localResolution.height} ({localResolution.aspectRatioString})
-      </div>
-    {/if}
+
     
     <div class="absolute bottom-2 right-2 flex gap-2">
       <Button
@@ -132,11 +130,6 @@
       </div>
       <p class="text-lg font-medium">Generated output will appear here</p>
       <p class="text-sm opacity-75">Click "Start Stream" to begin</p>
-      {#if localResolution}
-        <div class="text-xs mt-2 opacity-50">
-          Ready for {localResolution.width}×{localResolution.height} ({localResolution.aspectRatioString})
-        </div>
-      {/if}
     </div>
   {/if}
 </div>
