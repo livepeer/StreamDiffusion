@@ -923,6 +923,80 @@ class StreamDiffusionWrapper:
 
         return pil_images
 
+    def _setup_processor_orchestrator(self, use_processing, config_list, width, height, processing_type, orchestrator_class_name):
+        """
+        _setup_processor_orchestrator: Consolidated processor orchestrator setup for postprocessing and pipeline preprocessing
+        
+        Args:
+            use_processing: Whether to enable this processing type
+            config_list: List of processor configurations
+            width: Image width for processor setup
+            height: Image height for processor setup
+            processing_type: String description for logging (e.g., "postprocessing")
+            orchestrator_class_name: Class name to import (e.g., "PostprocessingOrchestrator")
+            
+        Returns:
+            Tuple of (orchestrator_instance, processor_instances_list)
+        """
+        if not use_processing or not config_list:
+            return None, []
+            
+        try:
+            from .processing.processors import get_preprocessor
+            
+            # Dynamic import based on orchestrator class name
+            if orchestrator_class_name == "PostprocessingOrchestrator":
+                from .processing.postprocessing_orchestrator import PostprocessingOrchestrator
+                orchestrator_class = PostprocessingOrchestrator
+            elif orchestrator_class_name == "PipelinePreprocessingOrchestrator":
+                from .processing.pipeline_preprocessing_orchestrator import PipelinePreprocessingOrchestrator
+                orchestrator_class = PipelinePreprocessingOrchestrator
+            else:
+                raise ValueError(f"_setup_processor_orchestrator: Unknown orchestrator class: {orchestrator_class_name}")
+            
+            orchestrator = orchestrator_class(
+                device=self.device, 
+                dtype=self.dtype, 
+                max_workers=4
+            )
+            
+            # Build processor instances using existing registry
+            processor_instances = []
+            for proc_config in config_list:
+                if proc_config.get('enabled', True):
+                    processor = get_preprocessor(proc_config['name'])
+                    
+                    # Set system parameters
+                    try:
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params['image_width'] = int(width)
+                            processor.params['image_height'] = int(height)
+                        if hasattr(processor, 'image_width'):
+                            setattr(processor, 'image_width', int(width))
+                        if hasattr(processor, 'image_height'):
+                            setattr(processor, 'image_height', int(height))
+                    except Exception:
+                        pass
+                    
+                    # Configure processor with processor_params if provided
+                    if proc_config.get('processor_params'):
+                        params = proc_config['processor_params']
+                        # If the processor exposes a 'params' dict, update it
+                        if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                            processor.params.update(params)
+                        # Also set individual attributes
+                        for param_name, param_value in params.items():
+                            if hasattr(processor, param_name):
+                                setattr(processor, param_name, param_value)
+                    processor_instances.append(processor)
+            
+            logger.info(f"_load_model: {processing_type.capitalize()} initialized with {len(processor_instances)} processors")
+            return orchestrator, processor_instances
+            
+        except Exception as e:
+            logger.error(f"_load_model: {processing_type.capitalize()} initialization failed: {e}")
+            raise RuntimeError(f"{processing_type.capitalize()} setup failed: {e}")
+
     def _load_model(
         self,
         model_id_or_path: str,
@@ -1751,104 +1825,14 @@ class StreamDiffusionWrapper:
                 raise
 
         # Initialize postprocessing
-        if use_postprocessing and postprocessing_config:
-            try:
-                from .processing.postprocessing_orchestrator import PostprocessingOrchestrator
-                from .processing.processors import get_preprocessor
-                
-                self._postprocessing_orchestrator = PostprocessingOrchestrator(
-                    device=self.device, 
-                    dtype=self.dtype, 
-                    max_workers=4
-                )
-                
-                # Build postprocessor instances using existing registry
-                self._postprocessor_instances = []
-                for proc_config in postprocessing_config:
-                    if proc_config.get('enabled', True):
-                        processor = get_preprocessor(proc_config['name'])
-                        
-                        # Set system parameters (same pattern as ControlNet)
-                        try:
-                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
-                                processor.params['image_width'] = int(width)
-                                processor.params['image_height'] = int(height)
-                            if hasattr(processor, 'image_width'):
-                                setattr(processor, 'image_width', int(width))
-                            if hasattr(processor, 'image_height'):
-                                setattr(processor, 'image_height', int(height))
-                        except Exception:
-                            pass
-                        
-                        # Configure processor with processor_params if provided (same pattern as ControlNet)
-                        if proc_config.get('processor_params'):
-                            params = proc_config['processor_params']
-                            # If the processor exposes a 'params' dict, update it
-                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
-                                processor.params.update(params)
-                            # Also set individual attributes
-                            for param_name, param_value in params.items():
-                                if hasattr(processor, param_name):
-                                    setattr(processor, param_name, param_value)
-                        self._postprocessor_instances.append(processor)
-                
-                logger.info(f"_load_model: Postprocessing initialized with {len(self._postprocessor_instances)} processors")
-            except Exception as e:
-                logger.error(f"_load_model: Postprocessing initialization failed: {e}")
-                raise RuntimeError(f"Postprocessing setup failed: {e}")
-        else:
-            self._postprocessing_orchestrator = None
-            self._postprocessor_instances = []
+        self._postprocessing_orchestrator, self._postprocessor_instances = self._setup_processor_orchestrator(
+            use_postprocessing, postprocessing_config, width, height, "postprocessing", "PostprocessingOrchestrator"
+        )
 
-        # Initialize pipeline preprocessing
-        if use_pipeline_preprocessing and pipeline_preprocessing_config:
-            try:
-                from .processing.pipeline_preprocessing_orchestrator import PipelinePreprocessingOrchestrator
-                from .processing.processors import get_preprocessor
-                
-                self._pipeline_preprocessing_orchestrator = PipelinePreprocessingOrchestrator(
-                    device=self.device, 
-                    dtype=self.dtype, 
-                    max_workers=4
-                )
-                
-                # Build pipeline preprocessor instances using existing registry
-                self._pipeline_preprocessor_instances = []
-                for proc_config in pipeline_preprocessing_config:
-                    if proc_config.get('enabled', True):
-                        processor = get_preprocessor(proc_config['name'])
-                        
-                        # Set system parameters (same pattern as ControlNet and postprocessing)
-                        try:
-                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
-                                processor.params['image_width'] = int(width)
-                                processor.params['image_height'] = int(height)
-                            if hasattr(processor, 'image_width'):
-                                setattr(processor, 'image_width', int(width))
-                            if hasattr(processor, 'image_height'):
-                                setattr(processor, 'image_height', int(height))
-                        except Exception:
-                            pass
-                        
-                        # Configure processor with processor_params if provided (same pattern as ControlNet and postprocessing)
-                        if proc_config.get('processor_params'):
-                            params = proc_config['processor_params']
-                            # If the processor exposes a 'params' dict, update it
-                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
-                                processor.params.update(params)
-                            # Also set individual attributes
-                            for param_name, param_value in params.items():
-                                if hasattr(processor, param_name):
-                                    setattr(processor, param_name, param_value)
-                        self._pipeline_preprocessor_instances.append(processor)
-                
-                logger.info(f"_load_model: Pipeline preprocessing initialized with {len(self._pipeline_preprocessor_instances)} processors")
-            except Exception as e:
-                logger.error(f"_load_model: Pipeline preprocessing initialization failed: {e}")
-                raise RuntimeError(f"Pipeline preprocessing setup failed: {e}")
-        else:
-            self._pipeline_preprocessing_orchestrator = None
-            self._pipeline_preprocessor_instances = []
+        # Initialize pipeline preprocessing  
+        self._pipeline_preprocessing_orchestrator, self._pipeline_preprocessor_instances = self._setup_processor_orchestrator(
+            use_pipeline_preprocessing, pipeline_preprocessing_config, width, height, "pipeline preprocessing", "PipelinePreprocessingOrchestrator"
+        )
 
         return stream
 
