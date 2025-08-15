@@ -114,39 +114,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
                 'status': 'error'
             }
     
-    def _apply_current_frame_processing(self, postprocessors: List[Any] = None, *args, **kwargs) -> torch.Tensor:
-        """
-        Apply processing results from previous iteration.
-        
-        Implementation of BaseOrchestrator._apply_current_frame_processing for postprocessing.
-        
-        Returns:
-            Processed tensor, or processed current input if no results available
-        """
-        if not hasattr(self, '_next_frame_result') or self._next_frame_result is None:
-            # First frame or no background results - process current input synchronously
-            if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                if postprocessors:
-                    return self.process_sync(self._current_input_tensor, postprocessors)
-                else:
-                    return self._current_input_tensor
-            
-            # If we don't have the current input stored, we have an issue
-            logger.error("PostprocessingOrchestrator: No background results and no current input tensor available")
-            raise RuntimeError("PostprocessingOrchestrator: No processing results available")
-        
-        result = self._next_frame_result
-        if result['status'] != 'success':
-            logger.warning(f"PostprocessingOrchestrator: Background processing failed: {result.get('error', 'Unknown error')}")
-            # Process current input synchronously on error
-            if hasattr(self, '_current_input_tensor') and self._current_input_tensor is not None:
-                if postprocessors:
-                    return self.process_sync(self._current_input_tensor, postprocessors)
-                else:
-                    return self._current_input_tensor
-            raise RuntimeError("PostprocessingOrchestrator: Background processing failed and no fallback available")
-        
-        return result['result']
+    # _apply_current_frame_processing inherited from BaseOrchestrator
     
     def _process_postprocessors_parallel(self, 
                                        input_tensor: torch.Tensor, 
