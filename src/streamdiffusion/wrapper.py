@@ -113,6 +113,9 @@ class StreamDiffusionWrapper:
         # Postprocessing options
         use_postprocessing: bool = False,
         postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        # Pipeline preprocessing options
+        use_pipeline_preprocessing: bool = False,
+        pipeline_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
         skip_diffusion: bool = False,
     ):
         """
@@ -204,6 +207,8 @@ class StreamDiffusionWrapper:
         self.ipadapter_config = ipadapter_config
         self.use_postprocessing = use_postprocessing
         self.postprocessing_config = postprocessing_config
+        self.use_pipeline_preprocessing = use_pipeline_preprocessing
+        self.pipeline_preprocessing_config = pipeline_preprocessing_config
         self.skip_diffusion = skip_diffusion
 
         if mode == "txt2img":
@@ -265,6 +270,8 @@ class StreamDiffusionWrapper:
             ipadapter_config=ipadapter_config,
             use_postprocessing=use_postprocessing,
             postprocessing_config=postprocessing_config,
+            use_pipeline_preprocessing=use_pipeline_preprocessing,
+            pipeline_preprocessing_config=pipeline_preprocessing_config,
         )
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
@@ -461,6 +468,8 @@ class StreamDiffusionWrapper:
         ipadapter_config: Optional[Dict[str, Any]] = None,
         # Postprocessing configuration
         postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        # Pipeline preprocessing configuration
+        pipeline_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
         skip_diffusion: Optional[bool] = None,
     ) -> None:
         """
@@ -506,6 +515,9 @@ class StreamDiffusionWrapper:
         postprocessing_config : Optional[List[Dict[str, Any]]]
             List of postprocessor configurations defining the desired state.
             Each dict contains: name, enabled, scale, processor_params, etc.
+        pipeline_preprocessing_config : Optional[List[Dict[str, Any]]]
+            List of pipeline preprocessor configurations defining the desired state.
+            Each dict contains: name, enabled, scale, processor_params, etc.
         skip_diffusion : Optional[bool]
             Whether to skip diffusion entirely and process input directly.
         """
@@ -530,6 +542,7 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
             postprocessing_config=postprocessing_config,
+            pipeline_preprocessing_config=pipeline_preprocessing_config,
         )
 
     def __call__(
@@ -587,16 +600,48 @@ class StreamDiffusionWrapper:
         if image is None:
             raise ValueError("_process_skip_diffusion: image required for skip diffusion mode")
         
-        # Handle input tensor normalization
-        if isinstance(image, str) or isinstance(image, Image.Image):
-            image = self.preprocess_image(image)
-        elif isinstance(image, torch.Tensor):
-            # Check if tensor is in [0,1] range and needs normalization to [-1,1]
-            if image.min().item() >= 0.0 and image.max().item() <= 1.0:
-                image = image * 2.0 - 1.0
+        # Apply pipeline preprocessing if enabled
+        if self.use_pipeline_preprocessing and self._pipeline_preprocessing_orchestrator and self._pipeline_preprocessor_instances:
+            # Convert input to tensor first (pipeline range: [-1, 1])
+            if isinstance(image, str) or isinstance(image, Image.Image):
+                input_tensor = self.preprocess_image(image)
+            elif isinstance(image, torch.Tensor):
+                # Check if tensor is in [0,1] range and needs normalization to [-1,1]
+                if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                    input_tensor = image * 2.0 - 1.0
+                else:
+                    input_tensor = image
+            else:
+                input_tensor = image
+            
+            # Convert from [-1,1] to [0,1] range for processors (same as postprocessing)
+            normalized_tensor = self._denormalize_on_gpu(input_tensor)
+            
+            # Store current input for orchestrator (same as normal diffusion)
+            self._pipeline_preprocessing_orchestrator._current_input_tensor = normalized_tensor
+            # Use synchronous processing for skip diffusion mode
+            processed_tensor = self._pipeline_preprocessing_orchestrator.process_sync(
+                normalized_tensor, 
+                self._pipeline_preprocessor_instances
+            )
+            
+            # Convert back to [-1,1] range for pipeline (same as postprocessing)
+            processed_tensor = self._denormalize_from_processors(processed_tensor)
+        else:
+            # Handle input tensor normalization (existing logic)
+            if isinstance(image, str) or isinstance(image, Image.Image):
+                processed_tensor = self.preprocess_image(image)
+            elif isinstance(image, torch.Tensor):
+                # Check if tensor is in [0,1] range and needs normalization to [-1,1]
+                if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                    processed_tensor = image * 2.0 - 1.0
+                else:
+                    processed_tensor = image
+            else:
+                processed_tensor = image
         
-        # Process with postprocessing if enabled, otherwise return input directly
-        return self.postprocess_image(image, output_type=self.output_type)
+        # Process with postprocessing if enabled, otherwise return processed tensor directly
+        return self.postprocess_image(processed_tensor, output_type=self.output_type)
 
     def txt2img(
         self, prompt: Optional[str] = None
@@ -664,15 +709,48 @@ class StreamDiffusionWrapper:
         if prompt is not None:
             self.update_prompt(prompt, warn_about_conflicts=True)
 
-        if isinstance(image, str) or isinstance(image, Image.Image):
-            image = self.preprocess_image(image)
-        elif isinstance(image, torch.Tensor):
-            # Check if tensor is in [0,1] range (from bytes_to_pt) and needs normalization to [-1,1]
-            if image.min().item() >= 0.0 and image.max().item() <= 1.0:
-                image = image * 2.0 - 1.0  # Convert [0,1] to [-1,1]
+        # Apply pipeline preprocessing if enabled
+        if self.use_pipeline_preprocessing and self._pipeline_preprocessing_orchestrator and self._pipeline_preprocessor_instances:
+            # Convert input to tensor first (pipeline range: [-1, 1])
+            if isinstance(image, str) or isinstance(image, Image.Image):
+                input_tensor = self.preprocess_image(image)
+            elif isinstance(image, torch.Tensor):
+                # Check if tensor is in [0,1] range and needs normalization to [-1,1]
+                if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                    input_tensor = image * 2.0 - 1.0
+                else:
+                    input_tensor = image
+            else:
+                input_tensor = image
+            
+            # Convert from [-1,1] to [0,1] range for processors (same as postprocessing)
+            normalized_tensor = self._denormalize_on_gpu(input_tensor)
+            
+            # Store current input for orchestrator
+            self._pipeline_preprocessing_orchestrator._current_input_tensor = normalized_tensor
+            # Use pipelined processing for normal diffusion
+            processed_tensor = self._pipeline_preprocessing_orchestrator.process_pipelined(
+                normalized_tensor, 
+                self._pipeline_preprocessor_instances
+            )
+            
+            # Convert back to [-1,1] range for pipeline (same as postprocessing)
+            processed_image = self._denormalize_from_processors(processed_tensor)
+        else:
+            # Existing preprocessing logic
+            if isinstance(image, str) or isinstance(image, Image.Image):
+                processed_image = self.preprocess_image(image)
+            elif isinstance(image, torch.Tensor):
+                # Check if tensor is in [0,1] range (from bytes_to_pt) and needs normalization to [-1,1]
+                if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                    processed_image = image * 2.0 - 1.0  # Convert [0,1] to [-1,1]
+                else:
+                    processed_image = image
+            else:
+                processed_image = image
 
         # Normal diffusion pipeline
-        image_tensor = self.stream(image)
+        image_tensor = self.stream(processed_image)
         
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
@@ -872,6 +950,8 @@ class StreamDiffusionWrapper:
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         use_postprocessing: bool = False,
         postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        use_pipeline_preprocessing: bool = False,
+        pipeline_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -1719,6 +1799,56 @@ class StreamDiffusionWrapper:
         else:
             self._postprocessing_orchestrator = None
             self._postprocessor_instances = []
+
+        # Initialize pipeline preprocessing
+        if use_pipeline_preprocessing and pipeline_preprocessing_config:
+            try:
+                from .processing.pipeline_preprocessing_orchestrator import PipelinePreprocessingOrchestrator
+                from .processing.processors import get_preprocessor
+                
+                self._pipeline_preprocessing_orchestrator = PipelinePreprocessingOrchestrator(
+                    device=self.device, 
+                    dtype=self.dtype, 
+                    max_workers=4
+                )
+                
+                # Build pipeline preprocessor instances using existing registry
+                self._pipeline_preprocessor_instances = []
+                for proc_config in pipeline_preprocessing_config:
+                    if proc_config.get('enabled', True):
+                        processor = get_preprocessor(proc_config['name'])
+                        
+                        # Set system parameters (same pattern as ControlNet and postprocessing)
+                        try:
+                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                                processor.params['image_width'] = int(width)
+                                processor.params['image_height'] = int(height)
+                            if hasattr(processor, 'image_width'):
+                                setattr(processor, 'image_width', int(width))
+                            if hasattr(processor, 'image_height'):
+                                setattr(processor, 'image_height', int(height))
+                        except Exception:
+                            pass
+                        
+                        # Configure processor with processor_params if provided (same pattern as ControlNet and postprocessing)
+                        if proc_config.get('processor_params'):
+                            params = proc_config['processor_params']
+                            # If the processor exposes a 'params' dict, update it
+                            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                                processor.params.update(params)
+                            # Also set individual attributes
+                            for param_name, param_value in params.items():
+                                if hasattr(processor, param_name):
+                                    setattr(processor, param_name, param_value)
+                        self._pipeline_preprocessor_instances.append(processor)
+                
+                logger.info(f"_load_model: Pipeline preprocessing initialized with {len(self._pipeline_preprocessor_instances)} processors")
+            except Exception as e:
+                logger.error(f"_load_model: Pipeline preprocessing initialization failed: {e}")
+                raise RuntimeError(f"Pipeline preprocessing setup failed: {e}")
+        else:
+            self._pipeline_preprocessing_orchestrator = None
+            self._pipeline_preprocessor_instances = []
 
         return stream
 
