@@ -166,20 +166,31 @@ class StreamParameterUpdater(OrchestratorUser):
         # Choose processing mode based on is_stream parameter
         try:
             if is_stream:
-                # Pipelined processing - optimized for throughput with 1-frame lag
-                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors_pipelined(
-                    input_image=style_image,
-                    embedding_preprocessors=relevant_preprocessors,
-                    stream_width=self.stream.width,
-                    stream_height=self.stream.height
-                )
+                # Pipelined processing - optimized for throughput with 1-frame lag  
+                # Set embedding mode and timeout
+                self._embedding_orchestrator._current_processing_mode = "embedding"
+                original_timeout = self._embedding_orchestrator.timeout_ms
+                self._embedding_orchestrator.timeout_ms = 50.0
+                
+                try:
+                    embedding_results = self._embedding_orchestrator.process_pipelined(
+                        input_image=style_image,
+                        preprocessors=relevant_preprocessors,
+                        stream_width=self.stream.width,
+                        stream_height=self.stream.height
+                    )
+                finally:
+                    # Restore original timeout and clear mode
+                    self._embedding_orchestrator.timeout_ms = original_timeout
+                    self._embedding_orchestrator._current_processing_mode = None
             else:
                 # Synchronous processing - immediate results for discrete updates
-                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors(
-                    input_image=style_image,
-                    embedding_preprocessors=relevant_preprocessors,
+                embedding_results = self._embedding_orchestrator.process_sync(
+                    control_image=style_image,
+                    preprocessors=relevant_preprocessors,
                     stream_width=self.stream.width,
-                    stream_height=self.stream.height
+                    stream_height=self.stream.height,
+                    processing_type="ipadapter"
                 )
             
             # Cache results for this style image key

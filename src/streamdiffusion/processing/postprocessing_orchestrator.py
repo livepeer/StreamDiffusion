@@ -113,9 +113,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
                 'error': str(e),
                 'status': 'error'
             }
-    
-    # _apply_current_frame_processing inherited from BaseOrchestrator
-    
+        
     def _process_postprocessors_parallel(self, 
                                        input_tensor: torch.Tensor, 
                                        postprocessors: List[Any]) -> torch.Tensor:

@@ -33,10 +33,6 @@ class BaseOrchestrator(Generic[T, R], ABC):
         # Pipeline state for pipelined processing
         self._next_frame_future = None
         self._next_frame_result = None
-        
-        # Pipeline state for embedding preprocessing (used by preprocessing orchestrator)
-        self._next_embedding_future = None
-        self._next_embedding_result = None
     
     def cleanup(self) -> None:
         """Cleanup thread pool resources"""
