@@ -35,16 +35,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         self._preprocessors_cache_key = None
         self._has_feedback_cache = False
     
-    def cleanup(self) -> None:
-        """Cleanup thread pool resources"""
-        super().cleanup()
-    
-    def __del__(self):
-        """Cleanup on destruction"""
-        try:
-            self.cleanup()
-        except:
-            pass
+
     
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
