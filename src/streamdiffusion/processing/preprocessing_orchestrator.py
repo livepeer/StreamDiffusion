@@ -532,8 +532,6 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         
         return processed_images
     
-
-    
     def _process_single_preprocessor_group(self,
                                          prep_key: str,
                                          group: Dict[str, Any],
@@ -591,17 +589,16 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
                 # Ensure NCHW shape
                 if processed_tensor.dim() == 3:
                     processed_tensor = processed_tensor.unsqueeze(0)
-                # Resize to target spatial resolution if needed to match stream dimensions
-                processed_tensor = self._resize_tensor_if_needed(
-                    processed_tensor, target_width, target_height
-                )
                 return processed_tensor.to(device=self.device, dtype=self.dtype)
             except Exception:
                 pass  # Fall through to standard processing
         
-        # Direct tensor passthrough (no preprocessor)
+        # Direct tensor passthrough (no preprocessor) - preprocessors handle their own sizing
         if preprocessor is None:
-            return self._resize_tensor_if_needed(control_tensor, target_width, target_height)
+            # For passthrough, we still need basic format handling
+            if control_tensor.dim() == 3:
+                control_tensor = control_tensor.unsqueeze(0)
+            return control_tensor.to(device=self.device, dtype=self.dtype)
         
         # Convert to PIL for preprocessor, then back to tensor
         if control_tensor.dim() == 4:
@@ -619,45 +616,14 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         control_image = Image.fromarray(control_array.astype(np.uint8))
         return self.prepare_control_image(control_image, preprocessor, target_width, target_height)
     
-    def _resize_tensor_if_needed(self,
-                               control_tensor: torch.Tensor,
-                               target_width: int,
-                               target_height: int) -> torch.Tensor:
-        """Resize tensor to target size if needed"""
-        target_size = (target_height, target_width)
-        
-        # Handle dimensions efficiently
-        if control_tensor.dim() == 4:
-            control_tensor = control_tensor[0]
-        if control_tensor.dim() == 3 and control_tensor.shape[0] not in [1, 3]:
-            control_tensor = control_tensor.permute(2, 0, 1)
-        
-        # Resize if needed
-        if control_tensor.shape[-2:] != target_size:
-            if control_tensor.dim() == 3:
-                control_tensor = control_tensor.unsqueeze(0)
-            control_tensor = torch.nn.functional.interpolate(
-                control_tensor, size=target_size, mode='bilinear', align_corners=False
-            )
-            if control_tensor.shape[0] == 1:
-                control_tensor = control_tensor.squeeze(0)
-        
-        if control_tensor.dim() == 3:
-            control_tensor = control_tensor.unsqueeze(0)
-        
-        return control_tensor.to(device=self.device, dtype=self.dtype)
     
     def _convert_to_tensor(self,
                          control_image: Union[Image.Image, np.ndarray],
                          target_width: int,
                          target_height: int) -> torch.Tensor:
-        """Convert PIL Image or numpy array to tensor"""
-        # Handle PIL Images
+        """Convert PIL Image or numpy array to tensor - preprocessors handle their own sizing"""
+        # Handle PIL Images - no resizing here, preprocessors handle their target size
         if isinstance(control_image, Image.Image):
-            target_size = (target_width, target_height)
-            if control_image.size != target_size:
-                control_image = control_image.resize(target_size, Image.LANCZOS)
-            
             control_tensor = self._cached_transform(control_image).unsqueeze(0)
             return control_tensor.to(device=self.device, dtype=self.dtype)
         
@@ -673,12 +639,6 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
     def _to_tensor_safe(self, image: Image.Image) -> torch.Tensor:
         """Thread-safe tensor conversion from PIL Image"""
         return self._cached_transform(image).unsqueeze(0).to(device=self.device, dtype=self.dtype)
-    
-
-    
-    # Pipelined processing methods (now handled by BaseOrchestrator)
-    
-
     
     def _execute_background_processing(self,
                                      preprocessor_groups: Dict[str, Dict[str, Any]],
@@ -761,12 +721,6 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         except Exception as e:
             logger.error(f"PreprocessingOrchestrator: Preprocessor {preprocessor_key} failed: {e}")
             return None
-    
-        
-
-
-    
-    # Embedding pipelining methods
     
     def _start_next_frame_embedding_preprocessing(self,
                                                 input_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
