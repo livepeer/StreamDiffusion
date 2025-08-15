@@ -19,11 +19,16 @@
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
   import InputControl from '$lib/components/InputControl.svelte';
+  import PipelinePreprocessingConfig from '$lib/components/PipelinePreprocessingConfig.svelte';
+  import PostprocessingConfig from '$lib/components/PostprocessingConfig.svelte';
+  import SkipDiffusionControl from '$lib/components/SkipDiffusionControl.svelte';
 
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
   let controlnetInfo: any = null;
   let ipadapterInfo: any = null;
+  let pipelinePreprocessingInfo: any = null;
+  let postprocessingInfo: any = null;
   let ipadapterScale: number = 1.0;
   let ipadapterWeightType: string = "linear";
   let tIndexList: number[] = [35, 45];
@@ -125,6 +130,26 @@
       
       controlnetInfo = settings.controlnet || null;
       ipadapterInfo = settings.ipadapter || null;
+      
+      // Load pipeline preprocessing and postprocessing info
+      try {
+        const [pipelinePreprocessingResponse, postprocessingResponse] = await Promise.all([
+          fetch('/api/pipeline-preprocessing/info-config'),
+          fetch('/api/postprocessing/info-config')
+        ]);
+        
+        if (pipelinePreprocessingResponse.ok) {
+          const data = await pipelinePreprocessingResponse.json();
+          pipelinePreprocessingInfo = data.pipeline_preprocessing || null;
+        }
+        
+        if (postprocessingResponse.ok) {
+          const data = await postprocessingResponse.json();
+          postprocessingInfo = data.postprocessing || null;
+        }
+      } catch (err) {
+        console.warn('getSettings: Failed to load processing info:', err);
+      }
       selectedModelId = settings.model_id || '';
       // Apply config_values (from YAML) into the pipelineValues store for immediate UI sync
       if (settings.config_values) {
@@ -276,6 +301,30 @@
     } catch (error: unknown) {
       console.error('handleResolutionUpdate: Failed to update resolution:', error);
       warningMessage = 'Failed to update resolution: ' + (error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handlePipelinePreprocessingRefresh() {
+    try {
+      const response = await fetch('/api/pipeline-preprocessing/info-config');
+      if (response.ok) {
+        const data = await response.json();
+        pipelinePreprocessingInfo = data.pipeline_preprocessing || null;
+      }
+    } catch (err) {
+      console.warn('handlePipelinePreprocessingRefresh: Failed to refresh pipeline preprocessing info:', err);
+    }
+  }
+
+  async function handlePostprocessingRefresh() {
+    try {
+      const response = await fetch('/api/postprocessing/info-config');
+      if (response.ok) {
+        const data = await response.json();
+        postprocessingInfo = data.postprocessing || null;
+      }
+    } catch (err) {
+      console.warn('handlePostprocessingRefresh: Failed to refresh postprocessing info:', err);
     }
   }
 
@@ -784,6 +833,9 @@
                 </div>
               {/if}
             </div>
+
+            <!-- Skip Diffusion Control -->
+            <SkipDiffusionControl />
           </div>
         </div>
 
@@ -883,6 +935,16 @@
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}
           ></IPAdapterConfig>
+
+          <PipelinePreprocessingConfig 
+            {pipelinePreprocessingInfo}
+            on:refresh={handlePipelinePreprocessingRefresh}
+          ></PipelinePreprocessingConfig>
+
+          <PostprocessingConfig 
+            {postprocessingInfo}
+            on:refresh={handlePostprocessingRefresh}
+          ></PostprocessingConfig>
         </div>
       {:else}
         <!-- Collapsed Right Panel Toggle -->
