@@ -99,28 +99,7 @@ class ControlNetModelEngine:
         if time_ids is not None:
             input_dict["time_ids"] = time_ids
         
-        # Filter inputs to only those the engine actually exposes to avoid binding errors
-        try:
-            allowed_inputs = set()
-            for idx in range(self.engine.engine.num_io_tensors):
-                name = self.engine.engine.get_tensor_name(idx)
-                if self.engine.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
-                    allowed_inputs.add(name)
 
-            # Drop any extra keys (e.g., text_embeds/time_ids) that the engine was not built to accept
-            if allowed_inputs:
-                filtered_input_dict = {k: v for k, v in input_dict.items() if k in allowed_inputs}
-                if len(filtered_input_dict) != len(input_dict):
-                    missing = [k for k in input_dict.keys() if k not in allowed_inputs]
-                    if missing:
-                        logger.debug(
-                            "ControlNet TRT: filtering unsupported inputs %s (allowed=%s)",
-                            missing, sorted(list(allowed_inputs))
-                        )
-                input_dict = filtered_input_dict
-        except Exception:
-            # Be permissive if engine query fails; proceed with original dict
-            pass
         
         shape_dict = {name: tensor.shape for name, tensor in input_dict.items()}
         
@@ -142,6 +121,7 @@ class ControlNetModelEngine:
         self.stream.synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
+        
         return down_blocks, mid_block
     
     def _extract_controlnet_outputs(self, outputs: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], torch.Tensor]:
@@ -157,6 +137,7 @@ class ControlNetModelEngine:
         mid_block = outputs.get("mid_block")
         return down_blocks, mid_block
     
+
 
 
 

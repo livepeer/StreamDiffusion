@@ -106,6 +106,15 @@ class StreamDiffusion:
         # Hook containers (step 1: introduced but initially no-op)
         self.embedding_hooks: List[EmbeddingHook] = []
         self.unet_hooks: List[UnetHook] = []
+        
+        # Cache TensorRT detection to avoid repeated hasattr checks
+        self._is_unet_tensorrt = None
+
+    def _check_unet_tensorrt(self) -> bool:
+        """Cache TensorRT detection to avoid repeated hasattr calls"""
+        if self._is_unet_tensorrt is None:
+            self._is_unet_tensorrt = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
+        return self._is_unet_tensorrt
 
     def load_lcm_lora(
         self,
@@ -439,6 +448,7 @@ class StreamDiffusion:
         t_list: Union[torch.Tensor, list[int]],
         idx: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             x_t_latent_plus_uc = torch.concat([x_t_latent[0:1], x_t_latent], dim=0)
             t_list = torch.concat([t_list[0:1], t_list], dim=0)
@@ -462,6 +472,8 @@ class StreamDiffusion:
                 # Handle batching for CFG - replicate conditioning to match batch size
                 batch_size = x_t_latent_plus_uc.shape[0]
                 
+                # TODO: Optimize SDXL conditioning tensor operations - multiple torch.cat/repeat calls per step
+                # Could pre-allocate tensors for common batch sizes, but requires careful CFG mode handling?
                 # Replicate add_text_embeds and add_time_ids to match the batch size
                 if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
                     # For initialize mode: [uncond, cond, cond, ...]
@@ -531,15 +543,13 @@ class StreamDiffusion:
         # Call UNet with appropriate conditioning
         if self.is_sdxl:
             try:
-                # Add timing to detect hang
-                import time
-                start_time = time.time()
+
                 
                 # Detect UNet type and use appropriate calling convention
                 added_cond_kwargs = unet_kwargs.get('added_cond_kwargs', {})
                 
                 # Check if this is a TensorRT engine or PyTorch UNet
-                is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
+                is_tensorrt_engine = self._check_unet_tensorrt()
                 
                 if is_tensorrt_engine:
                     # TensorRT engine expects positional args + kwargs. IP-Adapter scale vector, if any, is provided by hooks via extra_unet_kwargs
@@ -553,7 +563,6 @@ class StreamDiffusion:
                     if hook_mid_res is not None:
                         extra_kwargs['mid_block_additional_residual'] = hook_mid_res
 
-                    logger.debug(f"pipeline.unet_step: Calling TRT SDXL UNet with extra_kwargs keys={list(extra_kwargs.keys())}")
                     model_pred = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
                         unet_kwargs['timestep'],                  # timestep (positional)
@@ -589,7 +598,6 @@ class StreamDiffusion:
             # For SD1.5/SD2.1, use the old calling convention for compatibility
             # Build kwargs from hooks and include residuals
             ip_scale_kw = {}
-            is_tensorrt_engine = hasattr(self.unet, 'engine') and hasattr(self.unet, 'stream')
             if isinstance(hook_extra_kwargs, dict):
                 ip_scale_kw.update(hook_extra_kwargs)
 
@@ -601,7 +609,6 @@ class StreamDiffusion:
             if hook_mid_res is not None:
                 ip_scale_kw['mid_block_additional_residual'] = hook_mid_res
 
-            logger.debug(f"pipeline.unet_step: Calling TRT SD1.5 UNet with keys={list(ip_scale_kw.keys())}")
             model_pred = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
@@ -610,15 +617,6 @@ class StreamDiffusion:
                 **ip_scale_kw,
             )[0]
 
-        # Check for problematic values in model prediction
-        if torch.isnan(model_pred).any():
-            nan_count = torch.isnan(model_pred).sum().item()
-            logger.error(f"[PIPELINE] unet_step: *** ERROR: {nan_count} NaN values in model_pred! ***")
-        if torch.isinf(model_pred).any():
-            inf_count = torch.isinf(model_pred).sum().item()
-            logger.error(f"[PIPELINE] unet_step: *** ERROR: {inf_count} Inf values in model_pred! ***")
-        if (model_pred == 0).all():
-            logger.error(f"[PIPELINE] unet_step: *** ERROR: All model_pred values are zero! ***")
         
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
@@ -692,15 +690,6 @@ class StreamDiffusion:
         return x_t_latent
 
     def decode_image(self, x_0_pred_out: torch.Tensor) -> torch.Tensor:
-        # Check for problematic values
-        if torch.isnan(x_0_pred_out).any():
-            nan_count = torch.isnan(x_0_pred_out).sum().item()
-            logger.error(f"[PIPELINE] decode_image: *** WARNING: {nan_count} NaN values detected in input! ***")
-        if torch.isinf(x_0_pred_out).any():
-            inf_count = torch.isinf(x_0_pred_out).sum().item()
-            logger.error(f"[PIPELINE] decode_image: *** WARNING: {inf_count} Inf values detected in input! ***")
-        if (x_0_pred_out == 0).all():
-            logger.error(f"[PIPELINE] decode_image: *** WARNING: All values are zero! ***")
         
         scaled_latent = x_0_pred_out / self.vae.config.scaling_factor
         

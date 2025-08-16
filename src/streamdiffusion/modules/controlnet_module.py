@@ -54,6 +54,12 @@ class ControlNetModule(OrchestratorUser):
         self._prepared_dtype: Optional[torch.dtype] = None
         self._prepared_batch: Optional[int] = None
         self._images_version: int = 0
+        
+        # Cache expensive lookups to avoid repeated hasattr/getattr calls
+        self._engines_by_id: Dict[str, Any] = {}
+        self._engines_cache_valid: bool = False
+        self._is_sdxl: Optional[bool] = None
+        self._expected_text_len: int = 77
 
     # ---------- Public API (used by wrapper in a later step) ----------
     def install(self, stream) -> None:
@@ -74,6 +80,9 @@ class ControlNetModule(OrchestratorUser):
         self._prepared_device = None
         self._prepared_dtype = None
         self._prepared_batch = None
+        # Invalidate caches on install
+        self._engines_cache_valid = False
+        self._is_sdxl = None
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         model = self._load_pytorch_controlnet_model(cfg.model_id)
@@ -333,48 +342,40 @@ class ControlNetModule(OrchestratorUser):
                 if not self.controlnets:
                     return UnetKwargsDelta()
 
-                active_indices = [
-                    i
-                    for i, (cn, img, scale, enabled) in enumerate(
-                        zip(
-                            self.controlnets,
-                            self.controlnet_images,
-                            self.controlnet_scales,
-                            self.enabled_list if len(self.enabled_list) == len(self.controlnets) else [True] * len(self.controlnets),
-                        )
-                    )
-                    if cn is not None and img is not None and scale > 0 and bool(enabled)
-                ]
+                # Single pass to collect active ControlNet data
+                active_data = []
+                enabled_flags = self.enabled_list if len(self.enabled_list) == len(self.controlnets) else None
+                
+                for i, (cn, img, scale) in enumerate(zip(self.controlnets, self.controlnet_images, self.controlnet_scales)):
+                    if cn is not None and img is not None and scale > 0:
+                        enabled = enabled_flags[i] if enabled_flags else True
+                        if enabled:
+                            active_data.append((cn, img, scale, i))
 
-                if not active_indices:
+                if not active_data:
                     return UnetKwargsDelta()
 
-                active_controlnets = [self.controlnets[i] for i in active_indices]
-                active_images = [self.controlnet_images[i] for i in active_indices]
-                active_scales = [self.controlnet_scales[i] for i in active_indices]
+            # Cache TRT engines lookup to avoid rebuilding every frame
+            if not self._engines_cache_valid:
+                self._engines_by_id.clear()
+                try:
+                    if hasattr(self._stream, 'controlnet_engines') and isinstance(self._stream.controlnet_engines, list):
+                        for eng in self._stream.controlnet_engines:
+                            mid = getattr(eng, 'model_id', None)
+                            if mid:
+                                self._engines_by_id[mid] = eng
+                    self._engines_cache_valid = True
+                except Exception:
+                    pass
 
-            # Prefer TRT engines when available by model_id
-            engines_by_id: Dict[str, Any] = {}
-            try:
-                if hasattr(self._stream, 'controlnet_engines') and isinstance(self._stream.controlnet_engines, list):
-                    for eng in self._stream.controlnet_engines:
-                        mid = getattr(eng, 'model_id', None)
-                        if mid:
-                            engines_by_id[mid] = eng
-            except Exception:
-                pass
+            # Cache SDXL detection to avoid repeated hasattr calls
+            if self._is_sdxl is None:
+                try:
+                    self._is_sdxl = getattr(self._stream, 'is_sdxl', False)
+                except Exception:
+                    self._is_sdxl = False
 
-            # Use original text token window only for ControlNet encoding
-            # Detect expected text length from UNet config if available; fallback to 77
-            expected_text_len = 77
-            try:
-                if hasattr(self._stream.unet, 'config') and hasattr(self._stream.unet.config, 'cross_attention_dim'):
-                    # For SDXL TRT with IPAdapter baked, engine may expect 77+num_image_tokens for encoder_hidden_states
-                    # However, ControlNet expects just the text portion. Slice accordingly.
-                    expected_text_len = 77
-            except Exception:
-                pass
-            encoder_hidden_states = self._stream.prompt_embeds[:, :expected_text_len, :]
+            encoder_hidden_states = self._stream.prompt_embeds[:, :self._expected_text_len, :]
 
             base_kwargs: Dict[str, Any] = {
                 'sample': x_t,
@@ -396,54 +397,74 @@ class ControlNetModule(OrchestratorUser):
             # Use pre-prepared tensors
             prepared_images = self._prepared_tensors
 
-            for cn, img, scale, idx_i in zip(active_controlnets, active_images, active_scales, active_indices):
-                # Swap to TRT engine if compiled and available for this model_id
-                try:
-                    model_id = getattr(cn, 'model_id', None)
-                    if model_id and model_id in engines_by_id:
-                        cn = engines_by_id[model_id]
-                        # Swapped to TRT engine
-                except Exception:
-                    pass
+            for cn, img, scale, idx_i in active_data:
+                # Swap to TRT engine if available for this model_id (use cached lookup)
+                model_id = getattr(cn, 'model_id', None)
+                if model_id and model_id in self._engines_by_id:
+                    cn = self._engines_by_id[model_id]
+                
                 # Use pre-prepared tensor
                 current_img = prepared_images[idx_i] if idx_i < len(prepared_images) else img
                 if current_img is None:
                     continue
-                kwargs = base_kwargs.copy()
-                kwargs['controlnet_cond'] = current_img
-                kwargs['conditioning_scale'] = float(scale)
-                # For SDXL ControlNet, pass added_cond_kwargs (text_embeds, time_ids)
+
+                # Check if this is TensorRT engine (single check)
+                is_trt_engine = hasattr(cn, 'engine') and hasattr(cn, 'stream')
+                
+                # Prepare SDXL conditioning once (use cached is_sdxl)
+                added_cond_kwargs = ctx.sdxl_cond if self._is_sdxl and ctx.sdxl_cond is not None else None
+                
                 try:
-                    if getattr(self._stream, 'is_sdxl', False) and ctx.sdxl_cond is not None:
-                        kwargs['added_cond_kwargs'] = ctx.sdxl_cond
-                except Exception:
-                    pass
-                # For SDXL, preparing CN forward
-                # Route to TensorRT engine if this ControlNet is an engine wrapper
-                try:
-                    if hasattr(cn, 'engine') and hasattr(cn, 'stream'):
-                        # Using TRT ControlNet engine
-                        # Engine expects positional args and scalar conditioning_scale
-                        down_samples, mid_sample = cn(
-                            sample=kwargs['sample'],
-                            timestep=kwargs['timestep'],
-                            encoder_hidden_states=kwargs['encoder_hidden_states'],
-                            controlnet_cond=kwargs['controlnet_cond'],
-                            conditioning_scale=float(scale),
-                            **({} if 'added_cond_kwargs' not in kwargs else kwargs['added_cond_kwargs'])
-                        )
+                    if is_trt_engine:
+                        # TensorRT engine path
+                        if added_cond_kwargs:
+                            down_samples, mid_sample = cn(
+                                sample=x_t,
+                                timestep=t_list,
+                                encoder_hidden_states=encoder_hidden_states,
+                                controlnet_cond=current_img,
+                                conditioning_scale=float(scale),
+                                **added_cond_kwargs
+                            )
+                        else:
+                            down_samples, mid_sample = cn(
+                                sample=x_t,
+                                timestep=t_list,
+                                encoder_hidden_states=encoder_hidden_states,
+                                controlnet_cond=current_img,
+                                conditioning_scale=float(scale)
+                            )
                     else:
-                        down_samples, mid_sample = cn(**kwargs)
+                        # PyTorch ControlNet path
+                        if added_cond_kwargs:
+                            down_samples, mid_sample = cn(
+                                sample=x_t,
+                                timestep=t_list,
+                                encoder_hidden_states=encoder_hidden_states,
+                                controlnet_cond=current_img,
+                                conditioning_scale=float(scale),
+                                return_dict=False,
+                                added_cond_kwargs=added_cond_kwargs
+                            )
+                        else:
+                            down_samples, mid_sample = cn(
+                                sample=x_t,
+                                timestep=t_list,
+                                encoder_hidden_states=encoder_hidden_states,
+                                controlnet_cond=current_img,
+                                conditioning_scale=float(scale),
+                                return_dict=False
+                            )
                 except Exception as e:
                     import traceback
                     __import__('logging').getLogger(__name__).error("ControlNetModule: controlnet forward failed: %s", e)
                     try:
-                        __import__('logging').getLogger(__name__).error("ControlNetModule: kwargs_summary: keys=%s, cond_shape=%s, img_shape=%s, scale=%s, is_sdxl=%s",
-                                     list(kwargs.keys()),
-                                     (tuple(kwargs.get('encoder_hidden_states').shape) if isinstance(kwargs.get('encoder_hidden_states'), torch.Tensor) else None),
+                        __import__('logging').getLogger(__name__).error("ControlNetModule: call_summary: cond_shape=%s, img_shape=%s, scale=%s, is_sdxl=%s, is_trt=%s",
+                                     (tuple(encoder_hidden_states.shape) if isinstance(encoder_hidden_states, torch.Tensor) else None),
                                      (tuple(current_img.shape) if isinstance(current_img, torch.Tensor) else None),
                                      scale,
-                                     getattr(self._stream, 'is_sdxl', False))
+                                     self._is_sdxl,
+                                     is_trt_engine)
                     except Exception:
                         pass
                     __import__('logging').getLogger(__name__).error(traceback.format_exc())
@@ -522,4 +543,6 @@ class ControlNetModule(OrchestratorUser):
             logger.error(f"ControlNetModule: failed to load model '{model_id}': {e}")
             logger.error(traceback.format_exc())
             raise
+
+
 

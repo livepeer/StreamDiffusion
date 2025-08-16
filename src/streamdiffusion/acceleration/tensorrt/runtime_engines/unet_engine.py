@@ -28,6 +28,21 @@ class UNet2DConditionModelEngine:
 
         self.engine.load()
         self.engine.activate()
+        
+        # Cache expensive attribute lookups to avoid repeated getattr calls
+        self._use_ipadapter_cached = None
+        
+        # Pre-compute ControlNet input names to avoid string formatting in hot paths
+        # Support up to 20 ControlNet inputs (more than enough for typical use cases)
+        self._input_control_names = [f"input_control_{i:02d}" for i in range(20)]
+        self._output_control_names = [f"output_control_{i:02d}" for i in range(20)]
+        self._input_control_middle = "input_control_middle"
+
+    def _check_use_ipadapter(self) -> bool:
+        """Cache IP-Adapter detection to avoid repeated getattr calls"""
+        if self._use_ipadapter_cached is None:
+            self._use_ipadapter_cached = getattr(self, 'use_ipadapter', False)
+        return self._use_ipadapter_cached
 
     def __call__(
         self,
@@ -39,11 +54,6 @@ class UNet2DConditionModelEngine:
         controlnet_conditioning: Optional[Dict[str, List[torch.Tensor]]] = None,
         **kwargs,
     ) -> Any:
-        logger.debug("UNet2DConditionModelEngine.__call__: enter")
-        logger.debug(f"UNet2DConditionModelEngine.__call__: use_ipadapter={getattr(self, 'use_ipadapter', False)}, use_control={self.use_control}")
-        logger.debug(f"UNet2DConditionModelEngine.__call__: latent_model_input shape={tuple(latent_model_input.shape)}, dtype={latent_model_input.dtype}, device={latent_model_input.device}")
-        logger.debug(f"UNet2DConditionModelEngine.__call__: timestep shape={tuple(timestep.shape)}, dtype={timestep.dtype}")
-        logger.debug(f"UNet2DConditionModelEngine.__call__: encoder_hidden_states shape={tuple(encoder_hidden_states.shape)}, dtype={encoder_hidden_states.dtype}")
         
 
         if timestep.dtype != torch.float32:
@@ -65,7 +75,7 @@ class UNet2DConditionModelEngine:
 
         
         # Handle IP-Adapter runtime scale vector if engine was built with it
-        if getattr(self, 'use_ipadapter', False):
+        if self._check_use_ipadapter():
             if 'ipadapter_scale' not in kwargs:
                 logger.error("UNet2DConditionModelEngine: ipadapter_scale missing but required (use_ipadapter=True)")
                 raise RuntimeError("UNet2DConditionModelEngine: ipadapter_scale is required for IP-Adapter engines")
@@ -73,7 +83,6 @@ class UNet2DConditionModelEngine:
             if not isinstance(ip_scale, torch.Tensor):
                 logger.error(f"UNet2DConditionModelEngine: ipadapter_scale has wrong type: {type(ip_scale)}")
                 raise TypeError("ipadapter_scale must be a torch.Tensor")
-            logger.debug(f"UNet2DConditionModelEngine.__call__: ipadapter_scale shape={tuple(ip_scale.shape)}, dtype={ip_scale.dtype}, device={ip_scale.device}, min={float(ip_scale.min().item()) if ip_scale.numel()>0 else 'n/a'}, max={float(ip_scale.max().item()) if ip_scale.numel()>0 else 'n/a'}")
             shape_dict["ipadapter_scale"] = ip_scale.shape
             input_dict["ipadapter_scale"] = ip_scale
             
@@ -118,14 +127,12 @@ class UNet2DConditionModelEngine:
             allocated_before = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM before allocation: {allocated_before:.2f}GB")
         
-        logger.debug(f"UNet2DConditionModelEngine.__call__: shape_dict={ {k: tuple(v) if hasattr(v,'__iter__') else v for k,v in shape_dict.items()} }")
         self.engine.allocate_buffers(shape_dict=shape_dict, device=latent_model_input.device)
         
         if self.debug_vram:
             allocated_after = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM after allocation: {allocated_after:.2f}GB")
 
-        logger.debug(f"UNet2DConditionModelEngine.__call__: input_dict keys={list(input_dict.keys())}")
         try:
             outputs = self.engine.infer(
                 input_dict,
@@ -141,14 +148,9 @@ class UNet2DConditionModelEngine:
             allocated_final = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM after inference: {allocated_final:.2f}GB")
         
-        if "latent" not in outputs:
-            logger.error(f"*** ERROR: 'latent' output not found in TensorRT outputs! Available keys: {list(outputs.keys())} ***")
-            raise ValueError("TensorRT engine did not produce expected 'latent' output")
+       
         
         noise_pred = outputs["latent"]
-        logger.debug(f"UNet2DConditionModelEngine.__call__: output shape={tuple(noise_pred.shape)}, dtype={noise_pred.dtype}, device={noise_pred.device}")
-        if torch.isnan(noise_pred).any() or torch.isinf(noise_pred).any():
-            logger.error("UNet2DConditionModelEngine.__call__: output contains NaN/Inf")
       
         
 
@@ -170,21 +172,21 @@ class UNet2DConditionModelEngine:
         # Add input controls (down blocks)
         if 'input' in controlnet_conditioning:
             for i, tensor in enumerate(controlnet_conditioning['input']):
-                input_name = f"input_control_{i:02d}"  # Use zero-padded names
+                input_name = self._input_control_names[i]  # Use pre-computed names
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
         
         # Add output controls (up blocks) 
         if 'output' in controlnet_conditioning:
             for i, tensor in enumerate(controlnet_conditioning['output']):
-                input_name = f"output_control_{i:02d}"  # Use zero-padded names
+                input_name = self._output_control_names[i]  # Use pre-computed names
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
         
         # Add middle controls
         if 'middle' in controlnet_conditioning:
             for i, tensor in enumerate(controlnet_conditioning['middle']):
-                input_name = f"input_control_middle"  # Use consistent middle naming
+                input_name = self._input_control_middle  # Use pre-computed name
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
 
@@ -207,13 +209,13 @@ class UNet2DConditionModelEngine:
         if down_block_additional_residuals is not None:
             # Map directly to engine input names (no reversal needed for our approach)
             for i, tensor in enumerate(down_block_additional_residuals):
-                input_name = f"input_control_{i:02d}"  # Use zero-padded names to match engine
+                input_name = self._input_control_names[i]  # Use pre-computed names
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
         
         # Add middle block residual
         if mid_block_additional_residual is not None:
-            input_name = "input_control_middle"  # Match engine middle control name
+            input_name = self._input_control_middle  # Use pre-computed name
             shape_dict[input_name] = mid_block_additional_residual.shape
             input_dict[input_name] = mid_block_additional_residual
 
