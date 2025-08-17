@@ -14,9 +14,9 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
     that are applied to generated images after diffusion.
     """
     
-    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
+    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, pipeline_ref: Optional[Any] = None):
         # Postprocessing: 50ms timeout for quality-critical operations like upscaling
-        super().__init__(device, dtype, max_workers, timeout_ms=50.0)
+        super().__init__(device, dtype, max_workers, timeout_ms=50.0, pipeline_ref=pipeline_ref)
         
         # Postprocessing-specific state
         self._last_input_tensor = None
@@ -52,6 +52,9 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         """
         if not postprocessors:
             return input_tensor
+        
+        # Set pipeline references for processors that need them
+        self._prepare_processors(postprocessors)
         
         # Sequential application of postprocessors
         current_tensor = input_tensor

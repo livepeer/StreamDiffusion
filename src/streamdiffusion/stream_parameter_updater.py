@@ -1298,6 +1298,10 @@ class StreamParameterUpdater(OrchestratorUser):
             # Import here to avoid circular dependencies
             from streamdiffusion.processing.processors import get_preprocessor
             
+            # Set pipeline reference on existing orchestrator
+            if hasattr(self.wrapper._pipeline_preprocessing_orchestrator, 'pipeline_ref'):
+                self.wrapper._pipeline_preprocessing_orchestrator.pipeline_ref = self.stream
+            
             # Rebuild pipeline preprocessor instances
             self.wrapper._pipeline_preprocessor_instances = []
             for proc_config in pipeline_preprocessing_config:

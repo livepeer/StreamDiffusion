@@ -107,12 +107,7 @@ class ControlNetModule(OrchestratorUser):
                     except Exception:
                         pass
 
-            # Provide pipeline reference for preprocessors that need it (e.g., FeedbackPreprocessor)
-            try:
-                if hasattr(preproc, 'set_pipeline_ref'):
-                    preproc.set_pipeline_ref(self._stream)
-            except Exception:
-                pass
+
 
             # Align preprocessor target size with stream resolution once (avoid double-resize later)
             try:

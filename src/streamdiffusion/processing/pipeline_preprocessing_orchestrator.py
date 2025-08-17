@@ -1,5 +1,5 @@
 import torch
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 from .base_orchestrator import BaseOrchestrator
 
@@ -17,9 +17,9 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
     - Processor tensors: [0, 1] range (standard image processing)
     """
     
-    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
+    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, pipeline_ref: Optional[Any] = None):
         # Pipeline preprocessing: 10ms timeout for responsive processing
-        super().__init__(device, dtype, max_workers, timeout_ms=10.0)
+        super().__init__(device, dtype, max_workers, timeout_ms=10.0, pipeline_ref=pipeline_ref)
         
         # Pipeline preprocessing specific state
         pass
@@ -55,6 +55,9 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
         """
         if not processors:
             return input_tensor
+        
+        # Set pipeline references for processors that need them
+        self._prepare_processors(processors)
         
         # Sequential application of processors
         current_tensor = input_tensor

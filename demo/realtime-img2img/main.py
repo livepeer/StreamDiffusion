@@ -1657,9 +1657,7 @@ class App:
                 system_params.update(preprocessor_params)
                 new_preprocessor_instance.params.update(system_params)
 
-                # Set pipeline reference for feedback preprocessor
-                if hasattr(new_preprocessor_instance, 'set_pipeline_ref'):
-                    new_preprocessor_instance.set_pipeline_ref(stream_obj)
+
 
                 # Replace the preprocessor
                 old_preprocessor = preproc_list[controlnet_index]

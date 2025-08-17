@@ -927,7 +927,7 @@ class StreamDiffusionWrapper:
 
         return pil_images
 
-    def _setup_processor_orchestrator(self, use_processing, config_list, width, height, processing_type, orchestrator_class_name):
+    def _setup_processor_orchestrator(self, use_processing, config_list, width, height, processing_type, orchestrator_class_name, pipeline_ref=None):
         """
         _setup_processor_orchestrator: Consolidated processor orchestrator setup for postprocessing and pipeline preprocessing
         
@@ -938,6 +938,7 @@ class StreamDiffusionWrapper:
             height: Image height for processor setup
             processing_type: String description for logging (e.g., "postprocessing")
             orchestrator_class_name: Class name to import (e.g., "PostprocessingOrchestrator")
+            pipeline_ref: Pipeline reference to pass to orchestrator
             
         Returns:
             Tuple of (orchestrator_instance, processor_instances_list)
@@ -961,7 +962,8 @@ class StreamDiffusionWrapper:
             orchestrator = orchestrator_class(
                 device=self.device, 
                 dtype=self.dtype, 
-                max_workers=4
+                max_workers=4,
+                pipeline_ref=pipeline_ref
             )
             
             # Build processor instances using existing registry
@@ -1806,12 +1808,12 @@ class StreamDiffusionWrapper:
 
         # Initialize postprocessing
         self._postprocessing_orchestrator, self._postprocessor_instances = self._setup_processor_orchestrator(
-            use_postprocessing, postprocessing_config, width, height, "postprocessing", "PostprocessingOrchestrator"
+            use_postprocessing, postprocessing_config, width, height, "postprocessing", "PostprocessingOrchestrator", pipeline_ref=stream
         )
 
         # Initialize pipeline preprocessing  
         self._pipeline_preprocessing_orchestrator, self._pipeline_preprocessor_instances = self._setup_processor_orchestrator(
-            use_pipeline_preprocessing, pipeline_preprocessing_config, width, height, "pipeline preprocessing", "PipelinePreprocessingOrchestrator"
+            use_pipeline_preprocessing, pipeline_preprocessing_config, width, height, "pipeline preprocessing", "PipelinePreprocessingOrchestrator", pipeline_ref=stream
         )
 
         return stream

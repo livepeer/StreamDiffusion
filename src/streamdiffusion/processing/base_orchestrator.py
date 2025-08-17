@@ -24,15 +24,23 @@ class BaseOrchestrator(Generic[T, R], ABC):
         R: Result type returned from processing operations
     """
     
-    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, timeout_ms: float = 10.0):
+    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, timeout_ms: float = 10.0, pipeline_ref: Optional[Any] = None):
         self.device = device
         self.dtype = dtype
         self.timeout_ms = timeout_ms
+        self.pipeline_ref = pipeline_ref
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         
         # Pipeline state for pipelined processing
         self._next_frame_future = None
         self._next_frame_result = None
+    
+    def _prepare_processors(self, processors: List[Any]) -> None:
+        """Set pipeline references for processors that need them"""
+        if self.pipeline_ref:
+            for processor in processors:
+                if hasattr(processor, 'set_pipeline_ref'):
+                    processor.set_pipeline_ref(self.pipeline_ref)
     
     def cleanup(self) -> None:
         """Cleanup thread pool resources"""

@@ -21,9 +21,9 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
     Handles image format conversion (while most are GPU native,some preprocessors are CPU only), preprocessor execution, and result caching.
     """
     
-    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4):
+    def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, pipeline_ref: Optional[Any] = None):
         # Preprocessing: 10ms timeout for fast frame-skipping behavior
-        super().__init__(device, dtype, max_workers, timeout_ms=10.0)
+        super().__init__(device, dtype, max_workers, timeout_ms=10.0, pipeline_ref=pipeline_ref)
         
         # Caching
         self._preprocessed_cache: Dict[str, torch.Tensor] = {}

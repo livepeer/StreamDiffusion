@@ -17,7 +17,7 @@ class OrchestratorUser:
         orchestrator = getattr(stream, 'preprocessing_orchestrator', None)
         if orchestrator is None:
             # Lazy-create on stream once, on first user that needs it
-            orchestrator = PreprocessingOrchestrator(device=stream.device, dtype=stream.dtype, max_workers=4)
+            orchestrator = PreprocessingOrchestrator(device=stream.device, dtype=stream.dtype, max_workers=4, pipeline_ref=stream)
             setattr(stream, 'preprocessing_orchestrator', orchestrator)
         self._preprocessing_orchestrator = orchestrator
 
