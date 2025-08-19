@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import cv2
 import numpy as np
 from PIL import Image
+import time
 from typing import Union, Optional, Any, Tuple
 from .base import PipelineAwareProcessor
 
@@ -110,6 +111,16 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         self.detect_resolution = detect_resolution
         self._first_frame = True
         self._raft_model = None
+        
+        # Profiling variables
+        self._frame_count = 0
+        self._total_times = {
+            'process_core': 0.0,
+            'process_tensor_core': 0.0,
+            'compute_and_warp': 0.0,
+            'optical_flow': 0.0,
+            'warp_frame': 0.0
+        }
     
     @property
     def raft_model(self):
@@ -121,6 +132,14 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
             self._raft_model.eval()
         return self._raft_model
     
+    def _print_profiling_stats(self):
+        """Print average timing statistics every 100 frames"""
+        if self._frame_count % 100 == 0 and self._frame_count > 0:
+            print(f"temporal_net._print_profiling_stats: Frame {self._frame_count} - Average times (ms):")
+            for key, total_time in self._total_times.items():
+                avg_time = (total_time / self._frame_count) * 1000
+                print(f"  {key}: {avg_time:.2f}ms")
+    
     def _process_core(self, image: Image.Image) -> Image.Image:
         """
         Process using optical flow warping of previous frame output
@@ -131,6 +150,8 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         Returns:
             Warped previous frame for temporal guidance, or fallback for first frame
         """
+        start_time = time.time()
+        self._frame_count += 1
         # Check fast_mode first
         fast_mode = self.params.get('fast_mode', False)
         
@@ -160,20 +181,27 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
                 if output_format == "concat":
                     # Concatenate current frame + warped frame for TemporalNet2 (6 channels)
                     result_tensor = self._concatenate_frames_tensor(current_tensor, warped_tensor)
-                    return self.tensor_to_pil(result_tensor)
+                    result = self.tensor_to_pil(result_tensor)
                 else:
                     # Return only warped frame (3 channels)
-                    return self.tensor_to_pil(warped_tensor)
+                    result = self.tensor_to_pil(warped_tensor)
             except Exception as e:
                 print(f"temporal_net._process_core: Optical flow failed, using fallback: {e}")
                 # Create 6-channel fallback by concatenating current frame with itself
-                return self._concatenate_frames(image, image)
+                result = self._concatenate_frames(image, image)
         else:
             # First frame or no previous output available
             self._first_frame = False
             
             # For first frame, duplicate current frame to create 6-channel output
-            return self._concatenate_frames(image, image)
+            result = self._concatenate_frames(image, image)
+        
+        # End profiling
+        end_time = time.time()
+        self._total_times['process_core'] += (end_time - start_time)
+        self._print_profiling_stats()
+        
+        return result
     
     def _process_tensor_core(self, tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -185,6 +213,8 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         Returns:
             Warped previous frame tensor for temporal guidance
         """
+        start_time = time.time()
+        self._frame_count += 1
         # Check fast_mode first
         fast_mode = self.params.get('fast_mode', False)
         
@@ -228,7 +258,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
                 if result_tensor.dim() == 3:
                     result_tensor = result_tensor.unsqueeze(0)
                 
-                return result_tensor.to(device=self.device, dtype=self.dtype)
+                result = result_tensor.to(device=self.device, dtype=self.dtype)
             except Exception as e:
                 print(f"temporal_net._process_tensor_core: Optical flow failed, using fallback: {e}")
                 output_format = self.params.get('output_format', 'concat')
@@ -237,13 +267,13 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
                     result_tensor = self._concatenate_frames_tensor(input_tensor, input_tensor)
                     if result_tensor.dim() == 3:
                         result_tensor = result_tensor.unsqueeze(0)
-                    return result_tensor.to(device=self.device, dtype=self.dtype)
+                    result = result_tensor.to(device=self.device, dtype=self.dtype)
                 else:
                     # Create 6-channel fallback by concatenating current frame with itself
                     result_tensor = self._concatenate_frames_tensor(input_tensor, input_tensor)
                     if result_tensor.dim() == 3:
                         result_tensor = result_tensor.unsqueeze(0)
-                    return result_tensor.to(device=self.device, dtype=self.dtype)
+                    result = result_tensor.to(device=self.device, dtype=self.dtype)
         else:
             # First frame or no previous output available
             self._first_frame = False
@@ -261,7 +291,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
                 result_tensor = self._concatenate_frames_tensor(current_tensor, current_tensor)
                 if result_tensor.dim() == 3:
                     result_tensor = result_tensor.unsqueeze(0)
-                return result_tensor.to(device=self.device, dtype=self.dtype)
+                result = result_tensor.to(device=self.device, dtype=self.dtype)
             else:
                 # Create 6-channel fallback by concatenating current frame with itself
                 if tensor.dim() == 4 and tensor.shape[0] == 1:
@@ -271,7 +301,14 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
                 result_tensor = self._concatenate_frames_tensor(current_tensor, current_tensor)
                 if result_tensor.dim() == 3:
                     result_tensor = result_tensor.unsqueeze(0)
-                return result_tensor.to(device=self.device, dtype=self.dtype)
+                result = result_tensor.to(device=self.device, dtype=self.dtype)
+        
+        # End profiling
+        end_time = time.time()
+        self._total_times['process_tensor_core'] += (end_time - start_time)
+        self._print_profiling_stats()
+        
+        return result
     
 
     
@@ -286,6 +323,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         Returns:
             Warped previous frame tensor on GPU
         """
+        start_time = time.time()
         detect_resolution = self.params.get('detect_resolution', 512)
         target_width, target_height = self.get_target_dimensions()
         
@@ -332,7 +370,13 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
             ).squeeze(0)
         
         # Convert to processor's dtype only at the very end
-        return warped_frame.to(dtype=self.dtype)
+        result = warped_frame.to(dtype=self.dtype)
+        
+        # End profiling
+        end_time = time.time()
+        self._total_times['compute_and_warp'] += (end_time - start_time)
+        
+        return result
     
     def _compute_optical_flow(self, frame1: torch.Tensor, frame2: torch.Tensor) -> torch.Tensor:
         """
@@ -345,6 +389,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         Returns:
             Optical flow tensor (2HW format)
         """
+        start_time = time.time()
         # Frames already in float32, just add batch dimension
         frame1_batch = frame1.unsqueeze(0)
         frame2_batch = frame2.unsqueeze(0)
@@ -361,6 +406,11 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
             flow = flow_predictions[-1][0]  # Take final prediction, remove batch dim
         
         # Keep flow in float32 for downstream use
+        
+        # End profiling
+        end_time = time.time()
+        self._total_times['optical_flow'] += (end_time - start_time)
+        
         return flow
     
     def _warp_frame_tensor(self, frame: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
@@ -374,6 +424,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         Returns:
             Warped frame tensor
         """
+        start_time = time.time()
         # Frame already in float32 from pipeline
         H, W = frame.shape[-2:]
         
@@ -406,7 +457,13 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         )
         
         # Keep in float32 until final conversion
-        return warped_batch.squeeze(0)
+        result = warped_batch.squeeze(0)
+        
+        # End profiling
+        end_time = time.time()
+        self._total_times['warp_frame'] += (end_time - start_time)
+        
+        return result
     
 
     
@@ -482,3 +539,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         Reset the preprocessor state (useful for new sequences)
         """
         self._first_frame = True
+        # Reset profiling
+        self._frame_count = 0
+        for key in self._total_times:
+            self._total_times[key] = 0.0
