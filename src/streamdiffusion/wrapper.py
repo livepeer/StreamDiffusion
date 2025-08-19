@@ -970,7 +970,7 @@ class StreamDiffusionWrapper:
             processor_instances = []
             for proc_config in config_list:
                 if proc_config.get('enabled', True):
-                    processor = get_preprocessor(proc_config['name'])
+                    processor = get_preprocessor(proc_config['name'], pipeline_ref=pipeline_ref)
                     
                     # Set system parameters
                     try:

@@ -81,23 +81,24 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
     
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
-        Check for feedback preprocessors that require sync processing.
+        Check for pipeline-aware preprocessors that require sync processing.
         
-        Feedback preprocessors need synchronous processing to avoid temporal artifacts.
+        Pipeline-aware preprocessors (feedback, temporal, etc.) need synchronous processing 
+        to avoid temporal artifacts and ensure access to previous pipeline outputs.
         
         Args:
             *args: Arguments from process_pipelined call (preprocessors, scales, stream_width, stream_height)
             **kwargs: Keyword arguments
             
         Returns:
-            True if feedback preprocessors detected, False otherwise
+            True if pipeline-aware preprocessors detected, False otherwise
         """
         # Extract preprocessors from args - they're the first argument after control_image
         if len(args) < 1:
             return False
         
         preprocessors = args[0]  # preprocessors is first arg after control_image
-        return self._check_feedback_cached(preprocessors)
+        return self._check_pipeline_aware_cached(preprocessors)
 
     def _process_frame_background(self, 
                                 control_image: ControlImage,
@@ -421,9 +422,9 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             return None
 
     #Helper methods
-    def _check_feedback_cached(self, preprocessors: List[Optional[Any]]) -> bool:
+    def _check_pipeline_aware_cached(self, preprocessors: List[Optional[Any]]) -> bool:
         """
-        Efficiently check for feedback preprocessors using caching
+        Efficiently check for pipeline-aware preprocessors using caching
         
         Only performs expensive isinstance checks when preprocessor list actually changes.
         """
@@ -432,24 +433,35 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         
         # Return cached result if preprocessors haven't changed
         if cache_key == self._preprocessors_cache_key:
-            return self._has_feedback_cache
+            return self._has_feedback_cache  # Reuse cache variable for backward compatibility
         
         # Preprocessors changed - recompute and cache
         self._preprocessors_cache_key = cache_key
         self._has_feedback_cache = False
         
         try:
-            from .processors.feedback import FeedbackPreprocessor
+            # Check for the mixin or class attribute first
             for prep in preprocessors:
-                if isinstance(prep, FeedbackPreprocessor):
+                if prep is not None and getattr(prep, 'requires_sync_processing', False):
                     self._has_feedback_cache = True
                     break
         except Exception:
-            # Fallback on class name check without importing
-            for prep in preprocessors:
-                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
-                    self._has_feedback_cache = True
-                    break
+            # Fallback: check for specific known pipeline-aware processors
+            try:
+                from .processors.feedback import FeedbackPreprocessor
+                from .processors.temporal_net import TemporalNetPreprocessor
+                for prep in preprocessors:
+                    if isinstance(prep, (FeedbackPreprocessor, TemporalNetPreprocessor)):
+                        self._has_feedback_cache = True
+                        break
+            except Exception:
+                # Final fallback on class name check without importing
+                for prep in preprocessors:
+                    if prep is not None:
+                        class_name = prep.__class__.__name__.lower()
+                        if any(name in class_name for name in ['feedback', 'temporal']):
+                            self._has_feedback_cache = True
+                            break
         
         return self._has_feedback_cache
 

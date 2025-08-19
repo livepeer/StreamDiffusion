@@ -337,6 +337,12 @@ def _validate_config(config: Dict[str, Any]) -> None:
             
             if 'model_id' not in controlnet:
                 raise ValueError(f"_validate_config: ControlNet {i} missing required 'model_id'")
+            
+            # Validate conditioning_channels if present
+            if 'conditioning_channels' in controlnet:
+                channels = controlnet['conditioning_channels']
+                if not isinstance(channels, int) or channels <= 0:
+                    raise ValueError(f"_validate_config: ControlNet {i} 'conditioning_channels' must be a positive integer, got {channels}")
     
     # Validate ipadapters if present
     if 'ipadapters' in config:

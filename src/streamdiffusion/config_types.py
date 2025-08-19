@@ -7,6 +7,7 @@ class ControlNetConfig(BaseModel):
     conditioning_scale: float = Field(1.0, ge=0.0, le=2.0, description="Conditioning strength (0.0 = disabled, 1.0 = normal, 2.0 = strong)")
     enabled: bool = Field(True, description="Whether this ControlNet is active")
     preprocessor_params: Optional[Dict[str, Any]] = Field(None, description="Parameters passed to the preprocessor")
+    conditioning_channels: Optional[int] = Field(None, description="Number of input channels for ControlNet (3 for RGB, 6 for temporal models)")
     
     class Config:
         extra = "forbid"  # Prevent unknown fields

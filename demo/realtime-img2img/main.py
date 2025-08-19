@@ -1569,14 +1569,14 @@ class App:
         async def get_preprocessors_info():
             """Get preprocessor information using metadata from preprocessor classes"""
             try:
-                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor_class
                 
                 available_preprocessors = list_preprocessors()
                 preprocessors_info = {}
                 
                 for preprocessor_name in available_preprocessors:
                     try:
-                        preprocessor_class = get_preprocessor(preprocessor_name).__class__
+                        preprocessor_class = get_preprocessor_class(preprocessor_name)
                         
                         # Get comprehensive metadata from class
                         metadata = preprocessor_class.get_preprocessor_metadata()
@@ -1630,16 +1630,16 @@ class App:
                 if controlnet_index >= len(cn_pipeline.preprocessors):
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
-                # Create new preprocessor instance
-                from src.streamdiffusion.processing.processors import get_preprocessor
-                new_preprocessor_instance = get_preprocessor(new_preprocessor)
-
                 # Resolve stream object and preprocessor list regardless of module or stream facade
                 stream_obj = getattr(cn_pipeline, '_stream', None)
                 if stream_obj is None:
                     stream_obj = getattr(self.pipeline, 'stream', None)
                 if stream_obj is None:
                     raise HTTPException(status_code=500, detail="Pipeline stream not available")
+
+                # Create new preprocessor instance with pipeline reference
+                from src.streamdiffusion.processing.processors import get_preprocessor
+                new_preprocessor_instance = get_preprocessor(new_preprocessor, pipeline_ref=stream_obj)
 
                 preproc_list = getattr(cn_pipeline, 'preprocessors', None)
                 if preproc_list is None:
@@ -1865,15 +1865,15 @@ class App:
         async def get_pipeline_preprocessing_info():
             """Get pipeline preprocessor information using metadata from preprocessor classes"""
             try:
-                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor_class
                 
                 available_preprocessors = list_preprocessors()
                 preprocessors_info = {}
                 
                 for preprocessor_name in available_preprocessors:
                     try:
-                        preprocessor_instance = get_preprocessor(preprocessor_name)
-                        metadata = preprocessor_instance.__class__.get_preprocessor_metadata()
+                        preprocessor_class = get_preprocessor_class(preprocessor_name)
+                        metadata = preprocessor_class.get_preprocessor_metadata()
                         
                         preprocessors_info[preprocessor_name] = {
                             "display_name": metadata.get("display_name", preprocessor_name),
@@ -2115,15 +2115,15 @@ class App:
         async def get_postprocessing_info():
             """Get postprocessor information using metadata from preprocessor classes"""
             try:
-                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor
+                from src.streamdiffusion.processing.processors import list_preprocessors, get_preprocessor_class
                 
                 available_preprocessors = list_preprocessors()
                 preprocessors_info = {}
                 
                 for preprocessor_name in available_preprocessors:
                     try:
-                        preprocessor_instance = get_preprocessor(preprocessor_name)
-                        metadata = preprocessor_instance.__class__.get_preprocessor_metadata()
+                        preprocessor_class = get_preprocessor_class(preprocessor_name)
+                        metadata = preprocessor_class.get_preprocessor_metadata()
                         
                         preprocessors_info[preprocessor_name] = {
                             "display_name": metadata.get("display_name", preprocessor_name),

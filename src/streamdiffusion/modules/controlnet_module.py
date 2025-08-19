@@ -86,13 +86,13 @@ class ControlNetModule(OrchestratorUser):
         self._engine_type_cache.clear()
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
-        model = self._load_pytorch_controlnet_model(cfg.model_id)
+        model = self._load_pytorch_controlnet_model(cfg.model_id, cfg.conditioning_channels)
         model = model.to(device=self.device, dtype=self.dtype)
 
         preproc = None
         if cfg.preprocessor:
             from streamdiffusion.processing.processors import get_preprocessor
-            preproc = get_preprocessor(cfg.preprocessor)
+            preproc = get_preprocessor(cfg.preprocessor, pipeline_ref=self._stream)
             # Apply provided parameters to the preprocessor instance
             if cfg.preprocessor_params:
                 params = cfg.preprocessor_params or {}
@@ -571,25 +571,95 @@ class ControlNetModule(OrchestratorUser):
         # API returns a list; pick first if present
         return images[0] if images else None
 
-    def _load_pytorch_controlnet_model(self, model_id: str) -> ControlNetModel:
+    def _load_pytorch_controlnet_model(self, model_id: str, conditioning_channels: Optional[int] = None) -> ControlNetModel:
         from pathlib import Path
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Default to 3 channels for backwards compatibility
+        if conditioning_channels is None:
+            conditioning_channels = 3
+        
         try:
-            if Path(model_id).exists():
-                controlnet = ControlNetModel.from_pretrained(
-                    model_id, torch_dtype=self.dtype, local_files_only=True
-                )
+            model_path = Path(model_id)
+            
+            # Check if it's a direct file path to a safetensors/ckpt file
+            if model_path.exists() and model_path.is_file():
+                if model_path.suffix in ['.safetensors', '.ckpt', '.bin']:
+                    logger.info(f"ControlNetModule._load_pytorch_controlnet_model: Loading ControlNet from single file: {model_path} (channels={conditioning_channels})")
+                    # Try loading from single file (works for most ControlNet models)
+                    load_kwargs = {
+                        'torch_dtype': self.dtype,
+                        'use_safetensors': model_path.suffix == '.safetensors',
+                        'low_cpu_mem_usage': False,
+                        'ignore_mismatched_sizes': True
+                    }
+                    
+                    # Add conditioning_channels for non-standard channel counts
+                    if conditioning_channels != 3:
+                        load_kwargs['conditioning_channels'] = conditioning_channels
+                    
+                    controlnet = ControlNetModel.from_single_file(str(model_path), **load_kwargs)
+                    logger.info(f"ControlNetModule._load_pytorch_controlnet_model: Successfully loaded from single file")
+                else:
+                    # Not a model file, treat as directory path
+                    pretrained_kwargs = {'torch_dtype': self.dtype, 'local_files_only': True}
+                    if conditioning_channels != 3:
+                        pretrained_kwargs['conditioning_channels'] = conditioning_channels
+                    controlnet = ControlNetModel.from_pretrained(model_id, **pretrained_kwargs)
+            elif model_path.exists() and model_path.is_dir():
+                # Directory path - check for single file in directory first
+                safetensors_files = list(model_path.glob("*.safetensors"))
+                ckpt_files = list(model_path.glob("*.ckpt"))
+                
+                single_files = safetensors_files + ckpt_files
+                if len(single_files) == 1 and not (model_path / "config.json").exists():
+                    # Single model file without diffusers structure - try single file loading
+                    single_file = single_files[0]
+                    logger.info(f"ControlNetModule._load_pytorch_controlnet_model: Found single model file, trying single file loading: {single_file} (channels={conditioning_channels})")
+                    try:
+                        load_kwargs = {
+                            'torch_dtype': self.dtype,
+                            'use_safetensors': single_file.suffix == '.safetensors',
+                            'low_cpu_mem_usage': False,
+                            'ignore_mismatched_sizes': True
+                        }
+                        
+                        # Add conditioning_channels for non-standard channel counts
+                        if conditioning_channels != 3:
+                            load_kwargs['conditioning_channels'] = conditioning_channels
+                        
+                        controlnet = ControlNetModel.from_single_file(str(single_file), **load_kwargs)
+                        logger.info(f"ControlNetModule._load_pytorch_controlnet_model: Successfully loaded from single file in directory")
+                    except Exception as single_file_error:
+                        logger.warning(f"ControlNetModule._load_pytorch_controlnet_model: Single file loading failed, trying pretrained: {single_file_error}")
+                        # Fallback to standard pretrained loading
+                        pretrained_kwargs = {'torch_dtype': self.dtype, 'local_files_only': True}
+                        if conditioning_channels != 3:
+                            pretrained_kwargs['conditioning_channels'] = conditioning_channels
+                        controlnet = ControlNetModel.from_pretrained(model_id, **pretrained_kwargs)
+                else:
+                    # Standard diffusers directory structure
+                    pretrained_kwargs = {'torch_dtype': self.dtype, 'local_files_only': True}
+                    if conditioning_channels != 3:
+                        pretrained_kwargs['conditioning_channels'] = conditioning_channels
+                    controlnet = ControlNetModel.from_pretrained(model_id, **pretrained_kwargs)
             else:
+                # Remote model ID
                 if "/" in model_id and model_id.count("/") > 1:
                     parts = model_id.split("/")
                     repo_id = "/".join(parts[:2])
                     subfolder = "/".join(parts[2:])
-                    controlnet = ControlNetModel.from_pretrained(
-                        repo_id, subfolder=subfolder, torch_dtype=self.dtype
-                    )
+                    pretrained_kwargs = {'subfolder': subfolder, 'torch_dtype': self.dtype}
+                    if conditioning_channels != 3:
+                        pretrained_kwargs['conditioning_channels'] = conditioning_channels
+                    controlnet = ControlNetModel.from_pretrained(repo_id, **pretrained_kwargs)
                 else:
-                    controlnet = ControlNetModel.from_pretrained(
-                        model_id, torch_dtype=self.dtype
-                    )
+                    pretrained_kwargs = {'torch_dtype': self.dtype}
+                    if conditioning_channels != 3:
+                        pretrained_kwargs['conditioning_channels'] = conditioning_channels
+                    controlnet = ControlNetModel.from_pretrained(model_id, **pretrained_kwargs)
+            
             controlnet = controlnet.to(device=self.device, dtype=self.dtype)
             # Track model_id for updater diffing
             try:
@@ -597,10 +667,10 @@ class ControlNetModule(OrchestratorUser):
             except Exception:
                 pass
             return controlnet
+            
         except Exception as e:
-            import logging, traceback
-            logger = logging.getLogger(__name__)
-            logger.error(f"ControlNetModule: failed to load model '{model_id}': {e}")
+            import traceback
+            logger.error(f"ControlNetModule._load_pytorch_controlnet_model: Failed to load model '{model_id}': {e}")
             logger.error(traceback.format_exc())
             raise
 

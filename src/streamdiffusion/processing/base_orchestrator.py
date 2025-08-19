@@ -35,12 +35,7 @@ class BaseOrchestrator(Generic[T, R], ABC):
         self._next_frame_future = None
         self._next_frame_result = None
     
-    def _prepare_processors(self, processors: List[Any]) -> None:
-        """Set pipeline references for processors that need them"""
-        if self.pipeline_ref:
-            for processor in processors:
-                if hasattr(processor, 'set_pipeline_ref'):
-                    processor.set_pipeline_ref(self.pipeline_ref)
+
     
     def cleanup(self) -> None:
         """Cleanup thread pool resources"""

@@ -1,4 +1,5 @@
-from .base import BasePreprocessor
+from .base import BasePreprocessor, PipelineAwareProcessor
+from typing import Any
 from .canny import CannyPreprocessor
 from .depth import DepthPreprocessor
 from .openpose import OpenPosePreprocessor
@@ -13,6 +14,9 @@ from .faceid_embedding import FaceIDEmbeddingPreprocessor
 from .feedback import FeedbackPreprocessor
 from .upscale import UpscalePreprocessor
 from .realesrgan_trt import RealESRGANProcessor
+from .blur import BlurPreprocessor
+from .sharpen import SharpenPreprocessor
+from .temporal_net import TemporalNetPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -57,6 +61,9 @@ _preprocessor_registry = {
     "feedback": FeedbackPreprocessor,
     "upscale": UpscalePreprocessor,
     "realesrgan_trt": RealESRGANProcessor,
+    "blur": BlurPreprocessor,
+    "sharpen": SharpenPreprocessor,
+    "temporal_net": TemporalNetPreprocessor,
 }
 
 # Add TensorRT preprocessors if available
@@ -74,15 +81,15 @@ if MEDIAPIPE_SEGMENTATION_AVAILABLE:
     _preprocessor_registry["mediapipe_segmentation"] = MediaPipeSegmentationPreprocessor
 
 
-def get_preprocessor(name: str) -> BasePreprocessor:
+def get_preprocessor_class(name: str) -> type:
     """
-    Get a preprocessor by name
+    Get a preprocessor class by name (without instantiating)
     
     Args:
         name: Name of the preprocessor
         
     Returns:
-        Preprocessor instance
+        Preprocessor class
         
     Raises:
         ValueError: If preprocessor name is not found
@@ -91,7 +98,32 @@ def get_preprocessor(name: str) -> BasePreprocessor:
         available = ", ".join(_preprocessor_registry.keys())
         raise ValueError(f"Unknown preprocessor '{name}'. Available: {available}")
     
-    return _preprocessor_registry[name]()
+    return _preprocessor_registry[name]
+
+
+def get_preprocessor(name: str, pipeline_ref: Any = None) -> BasePreprocessor:
+    """
+    Get a preprocessor by name
+    
+    Args:
+        name: Name of the preprocessor
+        pipeline_ref: Pipeline reference for pipeline-aware processors (required for some processors)
+        
+    Returns:
+        Preprocessor instance
+        
+    Raises:
+        ValueError: If preprocessor name is not found or pipeline_ref missing for pipeline-aware processor
+    """
+    processor_class = get_preprocessor_class(name)
+    
+    # Check if this is a pipeline-aware processor
+    if hasattr(processor_class, 'requires_sync_processing') and processor_class.requires_sync_processing:
+        if pipeline_ref is None:
+            raise ValueError(f"Processor '{name}' requires a pipeline_ref")
+        return processor_class(pipeline_ref=pipeline_ref, _registry_name=name)
+    else:
+        return processor_class(_registry_name=name)
 
 
 def register_preprocessor(name: str, preprocessor_class):
@@ -105,6 +137,7 @@ def register_preprocessor(name: str, preprocessor_class):
     _preprocessor_registry[name] = preprocessor_class
 
 
+
 def list_preprocessors():
     """List all available preprocessors"""
     return list(_preprocessor_registry.keys())
@@ -112,6 +145,7 @@ def list_preprocessors():
 
 __all__ = [
     "BasePreprocessor",
+    "PipelineAwareProcessor",
     "CannyPreprocessor",
     "DepthPreprocessor", 
     "OpenPosePreprocessor",
@@ -126,7 +160,12 @@ __all__ = [
     "FeedbackPreprocessor",
     "UpscalePreprocessor",
     "RealESRGANProcessor",
+    "BlurPreprocessor",
+    "SharpenPreprocessor",
+    "TemporalNetPreprocessor",
     "get_preprocessor",
+    "get_preprocessor_class",
+
     "register_preprocessor",
     "list_preprocessors",
 ]

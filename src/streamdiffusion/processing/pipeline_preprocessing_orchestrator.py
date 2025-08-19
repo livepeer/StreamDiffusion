@@ -56,9 +56,6 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
         if not processors:
             return input_tensor
         
-        # Set pipeline references for processors that need them
-        self._prepare_processors(processors)
-        
         # Sequential application of processors
         current_tensor = input_tensor
         for processor in processors:

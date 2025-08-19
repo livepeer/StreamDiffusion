@@ -53,9 +53,6 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         if not postprocessors:
             return input_tensor
         
-        # Set pipeline references for processors that need them
-        self._prepare_processors(postprocessors)
-        
         # Sequential application of postprocessors
         current_tensor = input_tensor
         for postprocessor in postprocessors:
