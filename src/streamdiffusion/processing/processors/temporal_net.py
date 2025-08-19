@@ -8,7 +8,7 @@ from typing import Union, Optional, Any, Tuple
 from .base import PipelineAwareProcessor
 
 try:
-    from torchvision.models.optical_flow import raft_large, Raft_Large_Weights
+    from torchvision.models.optical_flow import raft_small, Raft_Small_Weights
     from torchvision.utils import flow_to_image
     TORCHVISION_AVAILABLE = True
 except ImportError:
@@ -126,8 +126,8 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
     def raft_model(self):
         """Lazy loading of the RAFT optical flow model"""
         if self._raft_model is None:
-            print("temporal_net._process_core: Loading RAFT optical flow model")
-            self._raft_model = raft_large(weights=Raft_Large_Weights.DEFAULT, progress=False)
+            print("temporal_net._process_core: Loading RAFT Small optical flow model")
+            self._raft_model = raft_small(weights=Raft_Small_Weights.DEFAULT, progress=False)
             self._raft_model = self._raft_model.to(device=self.device)
             self._raft_model.eval()
         return self._raft_model
@@ -395,7 +395,7 @@ class TemporalNetPreprocessor(PipelineAwareProcessor):
         frame2_batch = frame2.unsqueeze(0)
         
         # Apply RAFT preprocessing if available
-        weights = Raft_Large_Weights.DEFAULT
+        weights = Raft_Small_Weights.DEFAULT
         if hasattr(weights, 'transforms') and weights.transforms is not None:
             transforms = weights.transforms()
             frame1_batch, frame2_batch = transforms(frame1_batch, frame2_batch)
