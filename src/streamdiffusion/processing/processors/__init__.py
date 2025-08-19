@@ -16,7 +16,6 @@ from .upscale import UpscalePreprocessor
 from .realesrgan_trt import RealESRGANProcessor
 from .blur import BlurPreprocessor
 from .sharpen import SharpenPreprocessor
-from .temporal_net import TemporalNetPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -32,6 +31,13 @@ try:
 except ImportError:
     YoloNasPoseTensorrtPreprocessor = None
     POSE_TENSORRT_AVAILABLE = False
+
+try:
+    from .temporal_net_tensorrt import TemporalNetTensorRTPreprocessor
+    TEMPORAL_NET_TENSORRT_AVAILABLE = True
+except ImportError:
+    TemporalNetTensorRTPreprocessor = None
+    TEMPORAL_NET_TENSORRT_AVAILABLE = False
 
 try:
     from .mediapipe_pose import MediaPipePosePreprocessor
@@ -63,7 +69,6 @@ _preprocessor_registry = {
     "realesrgan_trt": RealESRGANProcessor,
     "blur": BlurPreprocessor,
     "sharpen": SharpenPreprocessor,
-    "temporal_net": TemporalNetPreprocessor,
 }
 
 # Add TensorRT preprocessors if available
@@ -72,6 +77,9 @@ if DEPTH_TENSORRT_AVAILABLE:
 
 if POSE_TENSORRT_AVAILABLE:
     _preprocessor_registry["pose_tensorrt"] = YoloNasPoseTensorrtPreprocessor
+
+if TEMPORAL_NET_TENSORRT_AVAILABLE:
+    _preprocessor_registry["temporal_net_tensorrt"] = TemporalNetTensorRTPreprocessor
 
 # Add MediaPipe preprocessors if available
 if MEDIAPIPE_POSE_AVAILABLE:
@@ -162,7 +170,6 @@ __all__ = [
     "RealESRGANProcessor",
     "BlurPreprocessor",
     "SharpenPreprocessor",
-    "TemporalNetPreprocessor",
     "get_preprocessor",
     "get_preprocessor_class",
 
@@ -175,6 +182,9 @@ if DEPTH_TENSORRT_AVAILABLE:
 
 if POSE_TENSORRT_AVAILABLE:
     __all__.append("YoloNasPoseTensorrtPreprocessor")
+
+if TEMPORAL_NET_TENSORRT_AVAILABLE:
+    __all__.append("TemporalNetTensorRTPreprocessor")
 
 if MEDIAPIPE_POSE_AVAILABLE:
     __all__.append("MediaPipePosePreprocessor")
