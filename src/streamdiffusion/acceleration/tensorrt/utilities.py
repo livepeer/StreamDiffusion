@@ -223,39 +223,76 @@ class Engine:
         timing_cache=None,
         workspace_size=0,
     ):
+        print(f"Engine.build: Building TensorRT engine for {onnx_path}")
+        print(f"Engine.build: Output engine path: {self.engine_path}")
+        print(f"Engine.build: FP16 enabled: {fp16}")
+        print(f"Engine.build: Enable refit: {enable_refit}")
+        print(f"Engine.build: Enable all tactics: {enable_all_tactics}")
+        print(f"Engine.build: Workspace size: {workspace_size}")
+        print(f"Engine.build: Timing cache: {timing_cache}")
         logger.info(f"Building TensorRT engine for {onnx_path}: {self.engine_path}")
+        
+        print(f"Engine.build: Creating TensorRT profile")
         p = Profile()
         if input_profile:
+            print(f"Engine.build: Setting up input profiles")
             for name, dims in input_profile.items():
                 assert len(dims) == 3
+                print(f"Engine.build: Adding profile for {name}: min={dims[0]}, opt={dims[1]}, max={dims[2]}")
                 p.add(name, min=dims[0], opt=dims[1], max=dims[2])
+        else:
+            print(f"Engine.build: No input profile provided")
 
+        print(f"Engine.build: Setting up TensorRT configuration")
         config_kwargs = {}
 
         if workspace_size > 0:
+            print(f"Engine.build: Setting workspace memory limit: {workspace_size}")
             config_kwargs["memory_pool_limits"] = {trt.MemoryPoolType.WORKSPACE: workspace_size}
         if not enable_all_tactics:
+            print(f"Engine.build: Disabling all tactics (using default tactics only)")
             config_kwargs["tactic_sources"] = []
+        
+        print(f"Engine.build: Config kwargs: {config_kwargs}")
 
+        print(f"Engine.build: Loading ONNX network")
+        network = network_from_onnx_path(onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM])
+        print(f"Engine.build: ONNX network loaded successfully")
+        
+        print(f"Engine.build: Creating TensorRT config")
+        config = CreateConfig(
+            fp16=fp16, refittable=enable_refit, profiles=[p], load_timing_cache=timing_cache, **config_kwargs
+        )
+        print(f"Engine.build: TensorRT config created")
+        
+        print(f"Engine.build: Building TensorRT engine from network (this may take several minutes)")
         engine = engine_from_network(
-            network_from_onnx_path(onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]),
-            config=CreateConfig(
-                fp16=fp16, refittable=enable_refit, profiles=[p], load_timing_cache=timing_cache, **config_kwargs
-            ),
+            network,
+            config=config,
             save_timing_cache=timing_cache,
         )
+        print(f"Engine.build: TensorRT engine built successfully")
+        
+        print(f"Engine.build: Saving engine to {self.engine_path}")
         save_engine(engine, path=self.engine_path)
+        print(f"Engine.build: Engine saved successfully")
 
     def load(self):
+        print(f"Engine.load: Loading TensorRT engine from {self.engine_path}")
         logger.info(f"Loading TensorRT engine: {self.engine_path}")
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
+        print(f"Engine.load: TensorRT engine loaded successfully")
 
     def activate(self, reuse_device_memory=None):
+        print(f"Engine.activate: Creating execution context")
         if reuse_device_memory:
+            print(f"Engine.activate: Using reused device memory")
             self.context = self.engine.create_execution_context_without_device_memory()
             self.context.device_memory = reuse_device_memory
         else:
+            print(f"Engine.activate: Creating new execution context")
             self.context = self.engine.create_execution_context()
+        print(f"Engine.activate: Execution context created successfully")
 
     def allocate_buffers(self, shape_dict=None, device="cuda"):
         # Check if we can reuse existing buffers (OPTIMIZATION)
@@ -447,14 +484,32 @@ def build_engine(
     build_all_tactics: bool = False,
     build_enable_refit: bool = False,
 ):
+    print(f"build_engine: Starting TensorRT engine build")
+    print(f"build_engine: Engine path: {engine_path}")
+    print(f"build_engine: Optimized ONNX path: {onnx_opt_path}")
+    print(f"build_engine: Image size: {opt_image_width}x{opt_image_height}")
+    print(f"build_engine: Batch size: {opt_batch_size}")
+    print(f"build_engine: Static batch: {build_static_batch}")
+    print(f"build_engine: Dynamic shape: {build_dynamic_shape}")
+    print(f"build_engine: All tactics: {build_all_tactics}")
+    print(f"build_engine: Enable refit: {build_enable_refit}")
+    
+    print(f"build_engine: Checking GPU memory")
     _, free_mem, _ = cudart.cudaMemGetInfo()
     GiB = 2**30
+    print(f"build_engine: Free GPU memory: {free_mem / GiB:.2f} GiB")
+    
     if free_mem > 6 * GiB:
         activation_carveout = 4 * GiB
         max_workspace_size = free_mem - activation_carveout
+        print(f"build_engine: Using workspace size: {max_workspace_size / GiB:.2f} GiB (with {activation_carveout / GiB:.1f} GiB carveout)")
     else:
         max_workspace_size = 0
+        print(f"build_engine: Limited memory detected, using no workspace")
+    
+    print(f"build_engine: Creating TensorRT Engine object")
     engine = Engine(engine_path)
+    print(f"build_engine: Getting input profile from model_data")
     input_profile = model_data.get_input_profile(
         opt_batch_size,
         opt_image_height,
@@ -462,6 +517,8 @@ def build_engine(
         static_batch=build_static_batch,
         static_shape=not build_dynamic_shape,
     )
+    print(f"build_engine: Input profile: {input_profile}")
+    print(f"build_engine: Starting TensorRT engine compilation")
     engine.build(
         onnx_opt_path,
         fp16=True,
@@ -470,7 +527,9 @@ def build_engine(
         enable_all_tactics=build_all_tactics,
         workspace_size=max_workspace_size,
     )
+    print(f"build_engine: TensorRT engine compilation completed")
 
+    print(f"build_engine: TensorRT engine build completed successfully")
     return engine
 
 
@@ -578,12 +637,17 @@ def export_onnx(
                     location="weights.pb",
                     convert_attribute=False,
                 )
+                print(f"export_onnx: ONNX model converted to external data format with weights in weights.pb")
                 logger.info(f"Converted to external data format with weights in weights.pb")
+            else:
+                print(f"export_onnx: Model size under 2GB threshold, keeping standard format")
             
             del onnx_model
     del wrapped_model
+    print(f"export_onnx: Cleanup completed")
     gc.collect()
     torch.cuda.empty_cache()
+    print(f"export_onnx: ONNX export completed successfully")
 
 
 def optimize_onnx(
@@ -594,27 +658,45 @@ def optimize_onnx(
     import os
     import shutil
     
+    print(f"optimize_onnx: Starting ONNX optimization")
+    print(f"optimize_onnx: Input ONNX path: {onnx_path}")
+    print(f"optimize_onnx: Output ONNX path: {onnx_opt_path}")
+    
     # Check if external data files exist (indicating external data format was used)
     onnx_dir = os.path.dirname(onnx_path)
     external_data_files = [f for f in os.listdir(onnx_dir) if f.endswith('.pb')]
     uses_external_data = len(external_data_files) > 0
+    print(f"optimize_onnx: Uses external data: {uses_external_data}")
+    if external_data_files:
+        print(f"optimize_onnx: External data files found: {external_data_files}")
     
     if uses_external_data:
+        print(f"optimize_onnx: Processing model with external data")
         # Load model with external data
+        print(f"optimize_onnx: Loading ONNX model with external data")
         onnx_model = onnx.load(onnx_path, load_external_data=True)
+        print(f"optimize_onnx: Running model_data.optimize()")
         onnx_opt_graph = model_data.optimize(onnx_model)
+        print(f"optimize_onnx: ONNX optimization completed")
         
         # Create output directory
         opt_dir = os.path.dirname(onnx_opt_path)
         os.makedirs(opt_dir, exist_ok=True)
+        print(f"optimize_onnx: Created output directory: {opt_dir}")
         
         # Clean up existing files in output directory
         if os.path.exists(opt_dir):
+            print(f"optimize_onnx: Cleaning up existing files in output directory")
+            cleaned_files = []
             for f in os.listdir(opt_dir):
                 if f.endswith('.pb') or f.endswith('.onnx'):
                     os.remove(os.path.join(opt_dir, f))
+                    cleaned_files.append(f)
+            if cleaned_files:
+                print(f"optimize_onnx: Removed existing files: {cleaned_files}")
         
         # Save optimized model with external data format
+        print(f"optimize_onnx: Saving optimized model with external data format")
         onnx.save_model(
             onnx_opt_graph,
             onnx_opt_path,
@@ -623,13 +705,22 @@ def optimize_onnx(
             location="weights.pb",
             convert_attribute=False,
         )
+        print(f"optimize_onnx: Optimized model saved with external data")
         logger.info(f"ONNX optimization complete with external data")
         
     else:
+        print(f"optimize_onnx: Processing standard model (no external data)")
         # Standard optimization for smaller models
-        onnx_opt_graph = model_data.optimize(onnx.load(onnx_path))
+        print(f"optimize_onnx: Loading standard ONNX model")
+        onnx_model = onnx.load(onnx_path)
+        print(f"optimize_onnx: Running model_data.optimize()")
+        onnx_opt_graph = model_data.optimize(onnx_model)
+        print(f"optimize_onnx: Saving optimized model")
         onnx.save(onnx_opt_graph, onnx_opt_path)
+        print(f"optimize_onnx: Standard optimization completed")
     
+    print(f"optimize_onnx: Cleaning up optimization resources")
     del onnx_opt_graph
     gc.collect()
     torch.cuda.empty_cache()
+    print(f"optimize_onnx: ONNX optimization completed successfully")

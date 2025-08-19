@@ -33,6 +33,11 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
     Returns:
         A dictionary with detailed information about the detected model.
     """
+    print(f"detect_model: Starting model detection for {type(model).__name__}")
+    print(f"detect_model: Model class: {model.__class__}")
+    if hasattr(model, 'config'):
+        print(f"detect_model: Model config available: {type(model.config)}")
+    
     model_type = "Unknown"
     is_turbo = False
     is_sdxl = False
@@ -159,7 +164,8 @@ def detect_model(model: torch.nn.Module, pipe: Optional[Any] = None) -> Dict[str
         'architecture_details': architecture_details,
         'compatibility_info': compatibility_info,
     }
-
+    
+    print(f"detect_model: Final detection result - {model_type} (SDXL: {is_sdxl}, Turbo: {is_turbo}, SD3: {is_sd3}, confidence: {confidence})")
     return result
 
 

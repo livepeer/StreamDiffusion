@@ -1334,14 +1334,18 @@ class StreamDiffusionWrapper:
                     )
                     
                     tensorrt_unet_loaded = True
+                    print(f"_load_model: TensorRT UNet engine loaded successfully")
                     logger.info("TensorRT UNet engine loaded successfully")
                     
                 except Exception as e:
+                    print(f"_load_model: TensorRT UNet engine loading failed with exception: {type(e).__name__}: {str(e)}")
                     error_msg = str(e).lower()
                     is_oom_error = ('out of memory' in error_msg or 'outofmemory' in error_msg or 
                                    'oom' in error_msg or 'cuda error' in error_msg)
+                    print(f"_load_model: Detected OOM error: {is_oom_error}")
                     
                     if is_oom_error:
+                        print(f"_load_model: Handling OOM error, falling back to PyTorch")
                         logger.error(f"TensorRT UNet engine OOM: {e}")
                         logger.info("Falling back to PyTorch UNet (no TensorRT acceleration)")
                         logger.info("This will be slower but should work with less memory")

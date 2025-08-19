@@ -24,8 +24,11 @@ class EngineManager:
     
     def __init__(self, engine_dir: str):
         """Initialize with engine directory."""
+        print(f"EngineManager.__init__: Initializing with engine directory: {engine_dir}")
         self.engine_dir = Path(engine_dir)
+        print(f"EngineManager.__init__: Engine directory path object: {self.engine_dir}")
         self.engine_dir.mkdir(parents=True, exist_ok=True)
+        print(f"EngineManager.__init__: Engine directory created/verified: {self.engine_dir.exists()}")
         
         # Import the existing compile functions from tensorrt/__init__.py
         from streamdiffusion.acceleration.tensorrt import (
@@ -86,7 +89,22 @@ class EngineManager:
         Moves and consolidates create_prefix() function from wrapper.py lines 995-1014.
         Special handling for ControlNet engines which use model_id-based directories.
         """
+        print(f"get_engine_path: Generating path for {engine_type.value}")
+        print(f"get_engine_path: Model ID/Path: {model_id_or_path}")
+        print(f"get_engine_path: Batch config - max: {max_batch}, min: {min_batch_size}")
+        print(f"get_engine_path: Mode: {mode}")
+        print(f"get_engine_path: LCM LoRA: {use_lcm_lora}, Tiny VAE: {use_tiny_vae}")
+        if ipadapter_scale is not None:
+            print(f"get_engine_path: IPAdapter scale: {ipadapter_scale}")
+        if ipadapter_tokens is not None:
+            print(f"get_engine_path: IPAdapter tokens: {ipadapter_tokens}")
+        if controlnet_model_id is not None:
+            print(f"get_engine_path: ControlNet model ID: {controlnet_model_id}")
+        if is_faceid is not None:
+            print(f"get_engine_path: FaceID: {is_faceid}")
+        
         filename = self._configs[engine_type]['filename']
+        print(f"get_engine_path: Using filename: {filename}")
         
         if engine_type == EngineType.CONTROLNET:
             # ControlNet engines use special model_id-based directory structure
@@ -98,7 +116,9 @@ class EngineManager:
             
             # Use ControlNetEnginePool naming convention: dynamic engines with 384-1024 range
             prefix = f"controlnet_{model_dir_name}--batch-{max_batch}--dyn-384-1024"
-            return self.engine_dir / prefix / filename
+            engine_path = self.engine_dir / prefix / filename
+            print(f"get_engine_path: ControlNet engine path: {engine_path}")
+            return engine_path
         else:
             # Standard engines use the unified prefix format
             # Extract base name (from wrapper.py lines 1002-1003)
@@ -117,7 +137,9 @@ class EngineManager:
             
             prefix += f"--mode-{mode}"
             
-            return self.engine_dir / prefix / filename
+            engine_path = self.engine_dir / prefix / filename
+            print(f"get_engine_path: Standard engine path: {engine_path}")
+            return engine_path
     
     def _get_embedding_dim_for_model_type(self, model_type: str) -> int:
         """Get embedding dimension based on model type."""
@@ -130,15 +152,27 @@ class EngineManager:
     
     def _execute_compilation(self, compile_fn, engine_path: Path, model, model_config, batch_size: int, kwargs: Dict) -> None:
         """Execute compilation with common pattern to eliminate duplication."""
+        onnx_path = str(engine_path) + ".onnx"
+        onnx_opt_path = str(engine_path) + ".opt.onnx"
+        engine_build_options = kwargs.get('engine_build_options', {})
+        
+        print(f"_execute_compilation: Starting compilation with {compile_fn.__name__}")
+        print(f"_execute_compilation: ONNX path: {onnx_path}")
+        print(f"_execute_compilation: ONNX opt path: {onnx_opt_path}")
+        print(f"_execute_compilation: Engine path: {engine_path}")
+        print(f"_execute_compilation: Batch size: {batch_size}")
+        print(f"_execute_compilation: Build options: {engine_build_options}")
+        
         compile_fn(
             model,
             model_config,
-            str(engine_path) + ".onnx",
-            str(engine_path) + ".opt.onnx",
+            onnx_path,
+            onnx_opt_path,
             str(engine_path),
             opt_batch_size=batch_size,
-            engine_build_options=kwargs.get('engine_build_options', {})
+            engine_build_options=engine_build_options
         )
+        print(f"_execute_compilation: Compilation completed successfully")
     
     def _prepare_controlnet_models(self, kwargs: Dict):
         """Prepare ControlNet models for compilation."""
@@ -184,52 +218,81 @@ class EngineManager:
         
         Moves compilation blocks from wrapper.py lines 1200-1252, 1254-1283, 1285-1313.
         """
+        print(f"compile_and_load_engine: Starting compilation for {engine_type.value}")
+        print(f"compile_and_load_engine: Engine path: {engine_path}")
+        print(f"compile_and_load_engine: Engine exists: {engine_path.exists()}")
+        print(f"compile_and_load_engine: Kwargs keys: {list(kwargs.keys())}")
+        
         if not engine_path.exists():
             # Get the appropriate compile function for this engine type
             config = self._configs[engine_type]
             compile_fn = config['compile_fn']
+            print(f"compile_and_load_engine: Using compile function: {compile_fn.__name__}")
             
             # Ensure parent directory exists
             engine_path.parent.mkdir(parents=True, exist_ok=True)
+            print(f"compile_and_load_engine: Created parent directory: {engine_path.parent}")
             
             # Handle engine-specific compilation requirements
             if engine_type == EngineType.VAE_DECODER:
+                print(f"compile_and_load_engine: VAE_DECODER compilation path")
                 # VAE decoder requires modifying forward method during compilation
                 stream_vae = kwargs['stream_vae']
                 stream_vae.forward = stream_vae.decode
+                print(f"compile_and_load_engine: Modified VAE forward method for compilation")
                 try:
                     self._execute_compilation(compile_fn, engine_path, kwargs['model'], kwargs['model_config'], kwargs['batch_size'], kwargs)
                 finally:
                     # Always clean up the forward attribute
                     delattr(stream_vae, "forward")
+                    print(f"compile_and_load_engine: Cleaned up VAE forward method")
             elif engine_type == EngineType.CONTROLNET:
+                print(f"compile_and_load_engine: CONTROLNET compilation path")
                 # ControlNet requires special model creation and compilation
                 model, model_config = self._prepare_controlnet_models(kwargs)
+                print(f"compile_and_load_engine: Prepared ControlNet models")
                 self._execute_compilation(compile_fn, engine_path, model, model_config, kwargs['batch_size'], kwargs)
             else:
+                print(f"compile_and_load_engine: Standard compilation path for {engine_type.value}")
                 # Standard compilation for UNet and VAE encoder
                 self._execute_compilation(compile_fn, engine_path, kwargs['model'], kwargs['model_config'], kwargs['batch_size'], kwargs)
+        else:
+            print(f"compile_and_load_engine: Engine already exists, skipping compilation")
         
         # Load and return using the appropriate loader
+        print(f"compile_and_load_engine: Loading engine for {engine_type.value}")
         return self.load_engine(engine_type, engine_path, **kwargs)
     
     def load_engine(self, engine_type: EngineType, engine_path: Path, **kwargs: Dict) -> Any:
         """Load engine with type-specific handling."""
+        print(f"load_engine: Loading {engine_type.value} engine from {engine_path}")
         config = self._configs[engine_type]
         loader = config['loader']
+        print(f"load_engine: Using loader function for {engine_type.value}")
         
         if engine_type == EngineType.UNET:
+            print(f"load_engine: UNet-specific loading with metadata")
             # UNet engine needs special handling for metadata and error recovery
             loaded_engine = loader(engine_path, kwargs.get('cuda_stream'))
             self._set_unet_metadata(loaded_engine, kwargs)
+            print(f"load_engine: UNet engine loaded and metadata set")
             return loaded_engine
         elif engine_type == EngineType.CONTROLNET:
+            print(f"load_engine: ControlNet-specific loading")
             # ControlNet engine needs model_type parameter
-            return loader(engine_path, kwargs.get('cuda_stream'), 
-                         model_type=kwargs.get('model_type', 'sd15'),
-                         use_cuda_graph=kwargs.get('use_cuda_graph', False))
+            model_type = kwargs.get('model_type', 'sd15')
+            use_cuda_graph = kwargs.get('use_cuda_graph', False)
+            print(f"load_engine: ControlNet model_type: {model_type}, use_cuda_graph: {use_cuda_graph}")
+            loaded_engine = loader(engine_path, kwargs.get('cuda_stream'), 
+                         model_type=model_type,
+                         use_cuda_graph=use_cuda_graph)
+            print(f"load_engine: ControlNet engine loaded successfully")
+            return loaded_engine
         else:
-            return loader(engine_path, kwargs.get('cuda_stream'))
+            print(f"load_engine: Standard engine loading for {engine_type.value}")
+            loaded_engine = loader(engine_path, kwargs.get('cuda_stream'))
+            print(f"load_engine: {engine_type.value} engine loaded successfully")
+            return loaded_engine
     
     def _set_unet_metadata(self, loaded_engine, kwargs: Dict) -> None:
         """Set metadata on UNet engine for runtime use."""

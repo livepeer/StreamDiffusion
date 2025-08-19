@@ -25,7 +25,16 @@ def compile_vae_encoder(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    print(f"compile_vae_encoder: Starting VAE encoder compilation")
+    print(f"compile_vae_encoder: ONNX path: {onnx_path}")
+    print(f"compile_vae_encoder: ONNX opt path: {onnx_opt_path}")
+    print(f"compile_vae_encoder: Engine path: {engine_path}")
+    print(f"compile_vae_encoder: Batch size: {opt_batch_size}")
+    print(f"compile_vae_encoder: Build options: {engine_build_options}")
+    
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
+    print(f"compile_vae_encoder: Created EngineBuilder")
+    
     builder.build(
         onnx_path,
         onnx_opt_path,
@@ -33,6 +42,7 @@ def compile_vae_encoder(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    print(f"compile_vae_encoder: VAE encoder compilation completed")
 
 
 def compile_vae_decoder(
@@ -44,8 +54,19 @@ def compile_vae_decoder(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    print(f"compile_vae_decoder: Starting VAE decoder compilation")
+    print(f"compile_vae_decoder: ONNX path: {onnx_path}")
+    print(f"compile_vae_decoder: ONNX opt path: {onnx_opt_path}")
+    print(f"compile_vae_decoder: Engine path: {engine_path}")
+    print(f"compile_vae_decoder: Batch size: {opt_batch_size}")
+    print(f"compile_vae_decoder: Build options: {engine_build_options}")
+    
     vae = vae.to(torch.device("cuda"))
+    print(f"compile_vae_decoder: Moved VAE to CUDA")
+    
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
+    print(f"compile_vae_decoder: Created EngineBuilder")
+    
     builder.build(
         onnx_path,
         onnx_opt_path,
@@ -53,6 +74,7 @@ def compile_vae_decoder(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    print(f"compile_vae_decoder: VAE decoder compilation completed")
 
 
 def compile_unet(
@@ -64,8 +86,19 @@ def compile_unet(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    print(f"compile_unet: Starting UNet compilation")
+    print(f"compile_unet: ONNX path: {onnx_path}")
+    print(f"compile_unet: ONNX opt path: {onnx_opt_path}")
+    print(f"compile_unet: Engine path: {engine_path}")
+    print(f"compile_unet: Batch size: {opt_batch_size}")
+    print(f"compile_unet: Build options: {engine_build_options}")
+    
     unet = unet.to(torch.device("cuda"), dtype=torch.float16)
+    print(f"compile_unet: Moved UNet to CUDA with float16 dtype")
+    
     builder = EngineBuilder(model_data, unet, device=torch.device("cuda"))
+    print(f"compile_unet: Created EngineBuilder")
+    
     builder.build(
         onnx_path,
         onnx_opt_path,
@@ -73,3 +106,4 @@ def compile_unet(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    print(f"compile_unet: UNet compilation completed")
