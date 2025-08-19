@@ -1,5 +1,1 @@
-"""
-StreamDiffusion modules package.
-
-This package contains various modules for StreamDiffusion functionality.
-"""
+# This is a placeholder file to make the modules package importable
