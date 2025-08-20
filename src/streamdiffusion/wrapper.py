@@ -14,8 +14,11 @@ logger = logging.getLogger(__name__)
 
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
+
 from .model_detection import detect_model
-from .config_types import ControlNetConfig, IPAdapterConfig
+
+from .pipeline import StreamDiffusion
+from .image_utils import postprocess_image
 
 torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -102,11 +105,11 @@ class StreamDiffusionWrapper:
         normalize_seed_weights: bool = True,
         # ControlNet options
         use_controlnet: bool = False,
-        controlnet_config: Optional[Union[ControlNetConfig, List[ControlNetConfig]]] = None,
+        controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         enable_pytorch_fallback: bool = False,
         # IPAdapter options
         use_ipadapter: bool = False,
-        ipadapter_config: Optional[IPAdapterConfig] = None,
+        ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -181,19 +184,14 @@ class StreamDiffusionWrapper:
             by default True. When False, weights > 1 will amplify noise.
         use_controlnet : bool, optional
             Whether to enable ControlNet support, by default False.
-        controlnet_config : Optional[Union[ControlNetConfig, List[ControlNetConfig]]], optional
+        controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
             ControlNet configuration(s), by default None.
-            Can be a single ControlNetConfig or list of ControlNetConfigs for multiple ControlNets.
-            Each config contains: model_id, preprocessor, conditioning_scale, enabled, preprocessor_params.
+            Can be a single config dict or list of config dicts for multiple ControlNets.
+            Each config should contain: model_id, preprocessor (optional), conditioning_scale, etc.
         enable_pytorch_fallback : bool, optional
             Whether to enable PyTorch fallback when acceleration fails, by default False.
             When True, falls back to PyTorch inference if TensorRT/xformers acceleration fails.
             When False, raises an exception when acceleration fails.
-        use_ipadapter : bool, optional
-            Whether to enable IPAdapter support, by default False.
-        ipadapter_config : Optional[IPAdapterConfig], optional
-            IPAdapter configuration, by default None.
-            Contains: ipadapter_model_path, image_encoder_path, scale, style_image, etc.
         """
         self.sd_turbo = "turbo" in model_id_or_path
         self.use_controlnet = use_controlnet
@@ -449,9 +447,9 @@ class StreamDiffusionWrapper:
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
         # ControlNet configuration
-        controlnet_config: Optional[List[ControlNetConfig]] = None,
+        controlnet_config: Optional[List[Dict[str, Any]]] = None,
         # IPAdapter configuration
-        ipadapter_config: Optional[IPAdapterConfig] = None,
+        ipadapter_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -486,13 +484,13 @@ class StreamDiffusionWrapper:
         normalize_seed_weights : Optional[bool]
             Whether to normalize seed weights in blending to sum to 1, by default None (no change).
             When False, weights > 1 will amplify noise.
-        controlnet_config : Optional[List[ControlNetConfig]]
+        controlnet_config : Optional[List[Dict[str, Any]]]
             Complete ControlNet configuration list defining the desired state.
-            Each ControlNetConfig contains: model_id, preprocessor, conditioning_scale, enabled, 
-            preprocessor_params. System will diff current vs desired state and 
+            Each dict contains: model_id, preprocessor, conditioning_scale, enabled, 
+            preprocessor_params, etc. System will diff current vs desired state and 
             perform minimal add/remove/update operations.
-        ipadapter_config : Optional[IPAdapterConfig]
-            IPAdapter configuration containing scale, style_image_key, etc.
+        ipadapter_config : Optional[Dict[str, Any]]
+            IPAdapter configuration dict containing scale, style_image, etc.
         """
         # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
@@ -776,10 +774,10 @@ class StreamDiffusionWrapper:
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
         use_controlnet: bool = False,
-        controlnet_config: Optional[Union[ControlNetConfig, List[ControlNetConfig]]] = None,
+        controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         enable_pytorch_fallback: bool = False,
         use_ipadapter: bool = False,
-        ipadapter_config: Optional[IPAdapterConfig] = None,
+        ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -827,12 +825,12 @@ class StreamDiffusionWrapper:
             The seed, by default 2.
         use_controlnet : bool, optional
             Whether to apply ControlNet patch, by default False.
-        controlnet_config : Optional[Union[ControlNetConfig, List[ControlNetConfig]]], optional
+        controlnet_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
             ControlNet configuration(s), by default None.
         use_ipadapter : bool, optional
             Whether to apply IPAdapter patch, by default False.
-        ipadapter_config : Optional[IPAdapterConfig], optional
-            IPAdapter configuration, by default None.
+        ipadapter_config : Optional[Union[Dict[str, Any], List[Dict[str, Any]]]], optional
+            IPAdapter configuration(s), by default None.
 
         Returns
         -------
@@ -1178,11 +1176,18 @@ class StreamDiffusionWrapper:
                 # If using TensorRT with IP-Adapter, ensure processors and weights are installed BEFORE export
                 if use_ipadapter_trt and has_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
                     try:
-                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule
-                        from streamdiffusion.config_types import IPAdapterConfig
+                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
                         cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
-                        # cfg is already a Pydantic IPAdapterConfig, so just use it directly
-                        ip_cfg = cfg
+                        ip_cfg = IPAdapterConfig(
+                            style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                            num_image_tokens=cfg.get('num_image_tokens', 4),
+                            ipadapter_model_path=cfg['ipadapter_model_path'],
+                            image_encoder_path=cfg['image_encoder_path'],
+                            style_image=cfg.get('style_image'),
+                            scale=cfg.get('scale', 1.0),
+                            is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                            insightface_model_name=cfg.get('insightface_model_name'),
+                        )
                         ip_module_for_export = IPAdapterModule(ip_cfg)
                         ip_module_for_export.install(stream)
                         setattr(stream, '_ipadapter_module', ip_module_for_export)
@@ -1481,16 +1486,22 @@ class StreamDiffusionWrapper:
         # Install modules via hooks instead of patching (wrapper keeps forwarding updates only)
         if use_controlnet and controlnet_config:
             try:
-                from streamdiffusion.modules.controlnet_module import ControlNetModule
+                from streamdiffusion.modules.controlnet_module import ControlNetModule, ControlNetConfig
                 cn_module = ControlNetModule(device=self.device, dtype=self.dtype)
                 cn_module.install(stream)
                 # Normalize to list of configs
                 configs = controlnet_config if isinstance(controlnet_config, list) else [controlnet_config]
                 for cfg in configs:
-                    if not cfg.model_id:
+                    if not cfg.get('model_id'):
                         continue
-                    # cfg is already a ControlNetConfig pydantic model
-                    cn_module.add_controlnet(cfg, control_image=None)  # No control_image in init
+                    cn_cfg = ControlNetConfig(
+                        model_id=cfg['model_id'],
+                        preprocessor=cfg.get('preprocessor'),
+                        conditioning_scale=cfg.get('conditioning_scale', 1.0),
+                        enabled=cfg.get('enabled', True),
+                        preprocessor_params=cfg.get('preprocessor_params'),
+                    )
+                    cn_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
                 # Expose for later updates if needed by caller code
                 stream._controlnet_module = cn_module
 
@@ -1542,9 +1553,20 @@ class StreamDiffusionWrapper:
 
         if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
             try:
-                from streamdiffusion.modules.ipadapter_module import IPAdapterModule
-                # ipadapter_config is already an IPAdapterConfig pydantic model
-                ip_module = IPAdapterModule(ipadapter_config)
+                from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                # Use first config if list provided
+                cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                ip_cfg = IPAdapterConfig(
+                    style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                    num_image_tokens=cfg.get('num_image_tokens', 4),
+                    ipadapter_model_path=cfg['ipadapter_model_path'],
+                    image_encoder_path=cfg['image_encoder_path'],
+                    style_image=cfg.get('style_image'),
+                    scale=cfg.get('scale', 1.0),
+                    is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                    insightface_model_name=cfg.get('insightface_model_name'),
+                )
+                ip_module = IPAdapterModule(ip_cfg)
                 ip_module.install(stream)
                 # Expose for later updates
                 stream._ipadapter_module = ip_module
