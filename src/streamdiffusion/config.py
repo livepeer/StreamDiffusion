@@ -4,7 +4,7 @@ import yaml
 import json
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
-from .config_types import ControlNetConfig, IPAdapterConfig
+from .config_types import ControlNetConfig, IPAdapterConfig, PostprocessorConfig, PipelinePreprocessorConfig
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
@@ -224,33 +224,25 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> IPAdapterConfig:
     return ipadapter_config
 
 
-def _prepare_postprocessing_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _prepare_postprocessing_configs(config: Dict[str, Any]) -> List[PostprocessorConfig]:
     """Prepare postprocessing configurations for wrapper"""
     postprocessing_configs = []
     
     for proc_config in config['postprocessing']['processors']:
-        postprocessing_config = {
-            'name': proc_config['name'],
-            'enabled': proc_config.get('enabled', True),
-            'scale': proc_config.get('scale', 1.0),
-            'processor_params': proc_config.get('processor_params', {}),
-        }
+        # Convert dict to pydantic model with validation
+        postprocessing_config = PostprocessorConfig(**proc_config)
         postprocessing_configs.append(postprocessing_config)
     
     return postprocessing_configs
 
 
-def _prepare_pipeline_preprocessing_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _prepare_pipeline_preprocessing_configs(config: Dict[str, Any]) -> List[PipelinePreprocessorConfig]:
     """Prepare pipeline preprocessing configurations for wrapper"""
     pipeline_preprocessing_configs = []
     
     for proc_config in config['pipeline_preprocessing']['processors']:
-        pipeline_preprocessing_config = {
-            'name': proc_config['name'],
-            'enabled': proc_config.get('enabled', True),
-            'scale': proc_config.get('scale', 1.0),
-            'processor_params': proc_config.get('processor_params', {}),
-        }
+        # Convert dict to pydantic model with validation
+        pipeline_preprocessing_config = PipelinePreprocessorConfig(**proc_config)
         pipeline_preprocessing_configs.append(pipeline_preprocessing_config)
     
     return pipeline_preprocessing_configs
@@ -373,15 +365,16 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if not isinstance(processors, list):
                 raise ValueError("_validate_config: postprocessing 'processors' must be a list")
             
+            # Validate each processor using Pydantic model
             for i, processor in enumerate(processors):
                 if not isinstance(processor, dict):
                     raise ValueError(f"_validate_config: Postprocessor {i} must be a dictionary")
                 
-                if 'name' not in processor:
-                    raise ValueError(f"_validate_config: Postprocessor {i} missing required 'name'")
-                
-                if 'processor_params' in processor and not isinstance(processor['processor_params'], dict):
-                    raise ValueError(f"_validate_config: Postprocessor {i} 'processor_params' must be a dictionary")
+                try:
+                    # Use Pydantic model for validation
+                    PostprocessorConfig(**processor)
+                except Exception as e:
+                    raise ValueError(f"_validate_config: Postprocessor {i} validation failed: {e}")
 
     # Validate pipeline preprocessing configuration if present
     if 'pipeline_preprocessing' in config:
@@ -397,15 +390,16 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if not isinstance(processors, list):
                 raise ValueError("_validate_config: pipeline_preprocessing 'processors' must be a list")
             
+            # Validate each processor using Pydantic model
             for i, processor in enumerate(processors):
                 if not isinstance(processor, dict):
                     raise ValueError(f"_validate_config: Pipeline preprocessor {i} must be a dictionary")
                 
-                if 'name' not in processor:
-                    raise ValueError(f"_validate_config: Pipeline preprocessor {i} missing required 'name'")
-                
-                if 'processor_params' in processor and not isinstance(processor['processor_params'], dict):
-                    raise ValueError(f"_validate_config: Pipeline preprocessor {i} 'processor_params' must be a dictionary")
+                try:
+                    # Use Pydantic model for validation
+                    PipelinePreprocessorConfig(**processor)
+                except Exception as e:
+                    raise ValueError(f"_validate_config: Pipeline preprocessor {i} validation failed: {e}")
 
     # Validate prompt blending configuration if present
     if 'prompt_blending' in config:

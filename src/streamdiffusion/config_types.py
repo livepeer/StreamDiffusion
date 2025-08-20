@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 class ControlNetConfig(BaseModel):
     model_id: str = Field(..., description="HuggingFace model ID or local path to ControlNet model")
@@ -29,6 +29,27 @@ class IPAdapterConfig(BaseModel):
     # FaceID support
     is_faceid: bool = Field(False, description="Whether this is a FaceID-style IPAdapter")
     insightface_model_name: Optional[str] = Field(None, description="InsightFace model name for FaceID")
+    
+    class Config:
+        extra = "forbid"  # Prevent unknown fields
+
+
+class PostprocessorConfig(BaseModel):
+    """Configuration for a postprocessor in the processing pipeline."""
+    name: str = Field(..., description="Postprocessor name (e.g., 'realesrgan_trt', 'upscale')")
+    enabled: bool = Field(True, description="Whether this postprocessor is active")
+    scale: float = Field(1.0, ge=0.0, le=2.0, description="Postprocessor strength/intensity")
+    processor_params: Optional[Dict[str, Any]] = Field(None, description="Processor-specific parameters")
+    
+    class Config:
+        extra = "forbid"  # Prevent unknown fields
+
+
+class PipelinePreprocessorConfig(BaseModel):
+    """Configuration for a pipeline preprocessor (applied before diffusion)."""
+    name: str = Field(..., description="Preprocessor name (e.g., 'blur', 'sharpen', 'feedback')")
+    enabled: bool = Field(True, description="Whether this preprocessor is active")
+    processor_params: Optional[Dict[str, Any]] = Field(None, description="Processor-specific parameters")
     
     class Config:
         extra = "forbid"  # Prevent unknown fields

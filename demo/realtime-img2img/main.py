@@ -18,7 +18,7 @@ import torch
 import tempfile
 from pathlib import Path
 import yaml
-from streamdiffusion.config_types import ControlNetConfig, IPAdapterConfig
+from streamdiffusion.config_types import ControlNetConfig, IPAdapterConfig, PostprocessorConfig, PipelinePreprocessorConfig
 
 from config import config, Args
 from util import pil_to_frame, pt_to_frame, bytes_to_pil, bytes_to_pt
@@ -1990,8 +1990,13 @@ class App:
                 if processor_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
                 
-                # Update enabled status
-                current_config[processor_index]['enabled'] = enabled
+                # Update enabled status - create new Pydantic model with updated enabled value
+                old_config = current_config[processor_index]
+                current_config[processor_index] = PipelinePreprocessorConfig(
+                    name=old_config.name,
+                    enabled=enabled,
+                    processor_params=old_config.processor_params
+                )
                 
                 # Update pipeline
                 self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
@@ -2026,9 +2031,13 @@ class App:
                 if processor_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
                 
-                # Update processor
-                current_config[processor_index]['name'] = new_processor
-                current_config[processor_index]['processor_params'] = processor_params
+                # Update processor - create new Pydantic model with updated values
+                old_config = current_config[processor_index]
+                current_config[processor_index] = PipelinePreprocessorConfig(
+                    name=new_processor,
+                    enabled=old_config.enabled,
+                    processor_params=processor_params
+                )
                 
                 # Update pipeline
                 self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
@@ -2068,8 +2077,13 @@ class App:
                 if processor_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
                 
-                # Update parameters
-                current_config[processor_index]['processor_params'] = processor_params
+                # Update parameters - create new Pydantic model with updated processor_params
+                old_config = current_config[processor_index]
+                current_config[processor_index] = PipelinePreprocessorConfig(
+                    name=old_config.name,
+                    enabled=old_config.enabled,
+                    processor_params=processor_params
+                )
                 
                 # Update pipeline
                 self.pipeline.update_stream_params(pipeline_preprocessing_config=current_config)
@@ -2231,8 +2245,14 @@ class App:
                 if processor_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
                 
-                # Update enabled status
-                current_config[processor_index]['enabled'] = enabled
+                # Update enabled status - create new Pydantic model with updated enabled value
+                old_config = current_config[processor_index]
+                current_config[processor_index] = PostprocessorConfig(
+                    name=old_config.name,
+                    enabled=enabled,
+                    scale=old_config.scale,
+                    processor_params=old_config.processor_params
+                )
                 
                 # Update pipeline
                 self.pipeline.update_stream_params(postprocessing_config=current_config)
@@ -2267,9 +2287,14 @@ class App:
                 if processor_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
                 
-                # Update processor
-                current_config[processor_index]['name'] = new_processor
-                current_config[processor_index]['processor_params'] = processor_params
+                # Update processor - create new Pydantic model with updated values
+                old_config = current_config[processor_index]
+                current_config[processor_index] = PostprocessorConfig(
+                    name=new_processor,
+                    enabled=old_config.enabled,
+                    scale=old_config.scale,
+                    processor_params=processor_params
+                )
                 
                 # Update pipeline
                 self.pipeline.update_stream_params(postprocessing_config=current_config)
@@ -2309,8 +2334,14 @@ class App:
                 if processor_index >= len(current_config):
                     raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
                 
-                # Update parameters
-                current_config[processor_index]['processor_params'] = processor_params
+                # Update parameters - create new Pydantic model with updated processor_params
+                old_config = current_config[processor_index]
+                current_config[processor_index] = PostprocessorConfig(
+                    name=old_config.name,
+                    enabled=old_config.enabled,
+                    scale=old_config.scale,
+                    processor_params=processor_params
+                )
                 
                 # Update pipeline
                 self.pipeline.update_stream_params(postprocessing_config=current_config)

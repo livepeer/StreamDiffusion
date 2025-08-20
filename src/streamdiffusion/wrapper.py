@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from .pipeline import StreamDiffusion
 from .image_utils import postprocess_image
 from .model_detection import detect_model
-from .config_types import ControlNetConfig, IPAdapterConfig
+from .config_types import ControlNetConfig, IPAdapterConfig, PostprocessorConfig, PipelinePreprocessorConfig
 
 torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -109,10 +109,10 @@ class StreamDiffusionWrapper:
         ipadapter_config: Optional[IPAdapterConfig] = None,
         # Postprocessing options
         use_postprocessing: bool = False,
-        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        postprocessing_config: Optional[List[PostprocessorConfig]] = None,
         # Pipeline preprocessing options
         use_pipeline_preprocessing: bool = False,
-        pipeline_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        pipeline_preprocessing_config: Optional[List[PipelinePreprocessorConfig]] = None,
         skip_diffusion: bool = False,
     ):
         """
@@ -471,9 +471,9 @@ class StreamDiffusionWrapper:
         # IPAdapter configuration
         ipadapter_config: Optional[IPAdapterConfig] = None,
         # Postprocessing configuration
-        postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        postprocessing_config: Optional[List[PostprocessorConfig]] = None,
         # Pipeline preprocessing configuration
-        pipeline_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        pipeline_preprocessing_config: Optional[List[PipelinePreprocessorConfig]] = None,
         skip_diffusion: Optional[bool] = None,
     ) -> None:
         """
@@ -516,12 +516,10 @@ class StreamDiffusionWrapper:
             perform minimal add/remove/update operations.
         ipadapter_config : Optional[IPAdapterConfig]
             IPAdapter configuration containing scale, style_image_key, etc.
-        postprocessing_config : Optional[List[Dict[str, Any]]]
-            List of postprocessor configurations defining the desired state.
-            Each dict contains: name, enabled, scale, processor_params, etc.
-        pipeline_preprocessing_config : Optional[List[Dict[str, Any]]]
-            List of pipeline preprocessor configurations defining the desired state.
-            Each dict contains: name, enabled, scale, processor_params, etc.
+        postprocessing_config : Optional[List[PostprocessorConfig]]
+            List of PostprocessorConfig models defining the desired state.
+        pipeline_preprocessing_config : Optional[List[PipelinePreprocessorConfig]]
+            List of PipelinePreprocessorConfig models defining the desired state.
         skip_diffusion : Optional[bool]
             Whether to skip diffusion entirely and process input directly.
         """
@@ -969,8 +967,8 @@ class StreamDiffusionWrapper:
             # Build processor instances using existing registry
             processor_instances = []
             for proc_config in config_list:
-                if proc_config.get('enabled', True):
-                    processor = get_preprocessor(proc_config['name'], pipeline_ref=pipeline_ref)
+                if proc_config.enabled:
+                    processor = get_preprocessor(proc_config.name, pipeline_ref=pipeline_ref)
                     
                     # Set system parameters
                     try:
@@ -985,8 +983,8 @@ class StreamDiffusionWrapper:
                         pass
                     
                     # Configure processor with processor_params if provided
-                    if proc_config.get('processor_params'):
-                        params = proc_config['processor_params']
+                    if proc_config.processor_params:
+                        params = proc_config.processor_params
                         # If the processor exposes a 'params' dict, update it
                         if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
                             processor.params.update(params)
@@ -1340,9 +1338,9 @@ class StreamDiffusionWrapper:
                 if use_ipadapter_trt and has_ipadapter and ipadapter_config:
                     cfg0 = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
                     # scale omitted from engine naming; runtime will pass ipadapter_scale vector
-                    ipadapter_tokens = cfg0.get('num_image_tokens', 4)
+                    ipadapter_tokens = cfg0.num_image_tokens
                     # Determine FaceID type from config for engine naming
-                    is_faceid = (cfg0.get('type') == 'faceid' or bool(cfg0.get('is_faceid', False)))
+                    is_faceid = cfg0.is_faceid
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
                     EngineType.UNET,
