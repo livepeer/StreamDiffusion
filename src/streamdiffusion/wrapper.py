@@ -1088,9 +1088,9 @@ class StreamDiffusionWrapper:
                 if use_ipadapter_trt and has_ipadapter and ipadapter_config:
                     cfg0 = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
                     # scale omitted from engine naming; runtime will pass ipadapter_scale vector
-                    ipadapter_tokens = cfg0.get('num_image_tokens', 4)
+                    ipadapter_tokens = cfg0.num_image_tokens
                     # Determine FaceID type from config for engine naming
-                    is_faceid = (cfg0.get('type') == 'faceid' or bool(cfg0.get('is_faceid', False)))
+                    is_faceid = cfg0.is_faceid
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
                     EngineType.UNET,
@@ -1504,26 +1504,26 @@ class StreamDiffusionWrapper:
                     try:
                         compiled_cn_engines = []
                         for cfg, cn_model in zip(configs, cn_module.controlnets):
-                            if not cfg or not cfg.get('model_id') or cn_model is None:
+                            if not cfg or not cfg.model_id or cn_model is None:
                                 continue
                             try:
                                 engine = engine_manager.get_or_load_controlnet_engine(
-                                    model_id=cfg['model_id'],
+                                    model_id=cfg.model_id,
                                     pytorch_model=cn_model,
                                     model_type=model_type,
                                     batch_size=stream.trt_unet_batch_size,
                                     cuda_stream=cuda_stream,
                                     use_cuda_graph=False,
                                     unet=None,
-                                    model_path=cfg['model_id']
+                                    model_path=cfg.model_id
                                 )
                                 try:
-                                    setattr(engine, 'model_id', cfg['model_id'])
+                                    setattr(engine, 'model_id', cfg.model_id)
                                 except Exception:
                                     pass
                                 compiled_cn_engines.append(engine)
                             except Exception as e:
-                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}")
+                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.model_id}: {e}")
                         if compiled_cn_engines:
                             setattr(stream, 'controlnet_engines', compiled_cn_engines)
                             try:
