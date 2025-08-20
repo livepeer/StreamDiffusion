@@ -192,43 +192,7 @@ class StreamDiffusion:
         # Check for SDXL compatibility
         if self.is_sdxl:
             return
-
-        # In offline mode, diffusers requires explicit weight_name; try common names automatically
-        is_offline = str(os.environ.get("HF_HUB_OFFLINE", "")).lower() in {"1", "true", "yes"}
-        has_explicit_weight_name = "weight_name" in kwargs
-
-        if (not is_offline) or has_explicit_weight_name or isinstance(pretrained_model_name_or_path_or_dict, dict):
-            self.pipe.load_lora_weights(
-                pretrained_model_name_or_path_or_dict, adapter_name, **kwargs
-            )
-            return
-
-        candidate_weight_names = (
-            "pytorch_lora_weights.safetensors",
-            "pytorch_lora_weights.bin",
-            "diffusion_pytorch_model.safetensors",
-            "adapter_model.safetensors",
-            "lora.safetensors",
-        )
-
-        last_err: Optional[Exception] = None
-        for weight_name in candidate_weight_names:
-            try:
-                self.pipe.load_lora_weights(
-                    pretrained_model_name_or_path_or_dict,
-                    adapter_name,
-                    **{**kwargs, "weight_name": weight_name},
-                )
-                return
-            except Exception as e:  # noqa: BLE001 - we want to keep the last error context
-                last_err = e
-                continue
-
-        # All attempts failed; raise the last error to preserve context
-        if last_err is not None:
-            raise last_err
-        # Fallback (should not reach here)
-        self.pipe.load_lora_weights(
+        self._load_lora_with_offline_fallback(
             pretrained_model_name_or_path_or_dict, adapter_name, **kwargs
         )
 
@@ -238,15 +202,27 @@ class StreamDiffusion:
         adapter_name: Optional[Any] = None,
         **kwargs,
     ) -> None:
-        # In offline mode, diffusers requires explicit weight_name; try common names automatically
-        is_offline = str(os.environ.get("HF_HUB_OFFLINE", "")).lower() in {"1", "true", "yes"}
-        has_explicit_weight_name = "weight_name" in kwargs
+        self._load_lora_with_offline_fallback(
+            pretrained_lora_model_name_or_path_or_dict, adapter_name, **kwargs
+        )
 
-        if (not is_offline) or has_explicit_weight_name or isinstance(pretrained_lora_model_name_or_path_or_dict, dict):
-            self.pipe.load_lora_weights(
-                pretrained_lora_model_name_or_path_or_dict, adapter_name, **kwargs
-            )
+    def _load_lora_with_offline_fallback(
+        self,
+        pretrained: Union[str, Dict[str, torch.Tensor]],
+        adapter_name: Optional[Any],
+        **kwargs,
+    ) -> None:
+        """
+        Load LoRA weights, auto-guessing common weight filenames when HF offline mode is enabled.
+        """
+        try:
+            self.pipe.load_lora_weights(pretrained, adapter_name, **kwargs)
             return
+        except Exception as e:
+            message = str(e)
+            is_offline_weight_error = isinstance(e, ValueError) and "must specify a `weight_name`" in message
+            if not is_offline_weight_error:
+                raise
 
         candidate_weight_names = (
             "pytorch_lora_weights.safetensors",
@@ -260,20 +236,17 @@ class StreamDiffusion:
         for weight_name in candidate_weight_names:
             try:
                 self.pipe.load_lora_weights(
-                    pretrained_lora_model_name_or_path_or_dict,
+                    pretrained,
                     adapter_name,
                     **{**kwargs, "weight_name": weight_name},
                 )
                 return
-            except Exception as e:  # noqa: BLE001 - we want to keep the last error context
+            except Exception as e:
                 last_err = e
                 continue
 
         if last_err is not None:
             raise last_err
-        self.pipe.load_lora_weights(
-            pretrained_lora_model_name_or_path_or_dict, adapter_name, **kwargs
-        )
 
     def fuse_lora(
         self,
