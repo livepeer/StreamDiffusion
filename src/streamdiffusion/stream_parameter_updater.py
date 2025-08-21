@@ -1150,6 +1150,16 @@ class StreamParameterUpdater(OrchestratorUser):
                         self.stream.ipadapter.set_scale(desired_scale)
                         setattr(self.stream.ipadapter, 'scale', desired_scale)
 
+        # Update enabled state if provided
+        if hasattr(desired_config, 'enabled') and desired_config.enabled is not None:
+            enabled_state = bool(desired_config.enabled)
+            # Update IPAdapter instance
+            if hasattr(self.stream, 'ipadapter'):
+                current_enabled = getattr(self.stream.ipadapter, 'enabled', True)
+                if current_enabled != enabled_state:
+                    logger.info(f"_update_ipadapter_config: Updating enabled state: {current_enabled} → {enabled_state}")
+                    setattr(self.stream.ipadapter, 'enabled', enabled_state)
+
         # Update weight type if provided (affects per-layer distribution and/or per-step factor)
         if desired_config.weight_type is not None:
             weight_type = desired_config.weight_type
@@ -1218,7 +1228,7 @@ class StreamParameterUpdater(OrchestratorUser):
             config = {
                 'scale': getattr(ipadapter, 'scale', 1.0),
                 'weight_type': getattr(ipadapter, 'weight_type', None),
-                'enabled': True,  # If instance exists, it's enabled
+                'enabled': getattr(ipadapter, 'enabled', True),  # Check actual enabled state
             }
             
             # Add static initialization fields

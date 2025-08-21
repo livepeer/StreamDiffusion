@@ -170,6 +170,7 @@ class IPAdapterModule(OrchestratorUser):
             # Extend IPAdapter with our custom attributes since diffusers IPAdapter doesn't expose current state
             setattr(ipadapter, 'weight_type', self.config.weight_type)  # For build_layer_weights
             setattr(ipadapter, 'scale', float(self.config.scale))       # Track current scale
+            setattr(ipadapter, 'enabled', bool(self.config.enabled))    # Track enabled state
         except Exception:
             pass
 
@@ -231,11 +232,14 @@ class IPAdapterModule(OrchestratorUser):
             if not hasattr(stream, 'ipadapter') or stream.ipadapter is None:
                 return UnetKwargsDelta()
 
+            # Check if IPAdapter is enabled
+            enabled = getattr(stream.ipadapter, 'enabled', True)
+
             # Read base weight and weight type from IPAdapter instance
             try:
-                base_weight = float(getattr(stream.ipadapter, 'scale', 1.0))
+                base_weight = float(getattr(stream.ipadapter, 'scale', 1.0)) if enabled else 0.0
             except Exception:
-                base_weight = 1.0
+                base_weight = 0.0 if not enabled else 1.0
             weight_type = getattr(stream.ipadapter, 'weight_type', None)
 
             # Determine total steps and current step index for time scheduling
@@ -279,8 +283,7 @@ class IPAdapterModule(OrchestratorUser):
                     except Exception:
                         weights_tensor = None
                     if weights_tensor is None:
-                        import torch as _torch
-                        weights_tensor = _torch.full((num_ip_layers,), float(base_weight), dtype=_torch.float32, device=stream.device)
+                        weights_tensor = torch.full((num_ip_layers,), float(base_weight), dtype=torch.float32, device=stream.device)
                     # Apply per-step time factor
                     try:
                         weights_tensor = weights_tensor * float(time_factor)
@@ -288,13 +291,15 @@ class IPAdapterModule(OrchestratorUser):
                         pass
                     return UnetKwargsDelta(extra_unet_kwargs={'ipadapter_scale': weights_tensor})
 
-            # PyTorch UNet path: modulate installed processor scales by time factor
+            # PyTorch UNet path: modulate installed processor scales by time factor and enabled state
             try:
-                if time_factor != 1.0 and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                if hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
                     for proc in stream.pipe.unet.attn_processors.values():
                         if hasattr(proc, 'scale') and hasattr(proc, '_ip_layer_index'):
                             base_val = getattr(proc, '_base_scale', proc.scale)
-                            proc.scale = float(base_val) * float(time_factor)
+                            # Apply both enabled state and time factor
+                            final_scale = float(base_val) * float(time_factor) if enabled else 0.0
+                            proc.scale = final_scale
             except Exception:
                 pass
 

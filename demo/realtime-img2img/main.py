@@ -1265,6 +1265,42 @@ class App:
                 logging.error(f"update_ipadapter_weight_type: Failed to update weight type: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update weight type: {str(e)}")
 
+        @self.app.post("/api/ipadapter/update-enabled")
+        async def update_ipadapter_enabled(request: Request):
+            """Enable or disable IPAdapter in real-time"""
+            try:
+                data = await request.json()
+                enabled = data.get("enabled")
+                
+                if enabled is None:
+                    raise HTTPException(status_code=400, detail="Missing enabled parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if we're using config mode and have ipadapters configured
+                ipadapter_enabled = (self.pipeline.use_config and 
+                                    self.pipeline.config and 
+                                    'ipadapters' in self.pipeline.config)
+                
+                if not ipadapter_enabled:
+                    raise HTTPException(status_code=400, detail="IPAdapter is not available in this configuration")
+                
+                # Update IPAdapter enabled state in the pipeline
+                from streamdiffusion.config_types import IPAdapterConfig
+                self.pipeline.stream.update_stream_params(
+                    ipadapter_config=IPAdapterConfig(enabled=bool(enabled))
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"IPAdapter {'enabled' if enabled else 'disabled'} successfully"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_ipadapter_enabled: Failed to update enabled state: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update enabled state: {str(e)}")
+
         @self.app.post("/api/params")
         async def update_params(request: Request):
             """Update multiple streaming parameters in a single unified call"""
