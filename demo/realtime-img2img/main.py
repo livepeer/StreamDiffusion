@@ -2317,19 +2317,45 @@ class App:
                 ipadapter_info["enabled"] = True
                 ipadapter_info["config_loaded"] = True
                 
-                # Get info from first IPAdapter config
-                first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
-                ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
-                ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
-                ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
+                # Convert first IPAdapter config to Pydantic model for proper access
+                from streamdiffusion.config_types import IPAdapterConfig
+                first_ipadapter_dict = self.uploaded_controlnet_config['ipadapters'][0]
                 
-                # Check for style image - prioritize uploaded style image over config style image over default
-                if self.uploaded_style_image:
-                    ipadapter_info["style_image_set"] = True
-                    ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
-                elif 'style_image' in first_ipadapter:
-                    ipadapter_info["style_image_set"] = True
-                    ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                # Handle special field mappings
+                if 'type' in first_ipadapter_dict and 'is_faceid' not in first_ipadapter_dict:
+                    first_ipadapter_dict = first_ipadapter_dict.copy()
+                    first_ipadapter_dict['is_faceid'] = first_ipadapter_dict.get('type') == 'faceid'
+                    type_value = first_ipadapter_dict.pop('type', 'regular')
+                else:
+                    type_value = first_ipadapter_dict.get('type', 'regular')
+                
+                try:
+                    first_ipadapter = IPAdapterConfig(**first_ipadapter_dict)
+                    ipadapter_info["scale"] = first_ipadapter.scale
+                    ipadapter_info["model_path"] = first_ipadapter.ipadapter_model_path
+                    ipadapter_info["type"] = 'faceid' if first_ipadapter.is_faceid else type_value
+                    
+                    # Check for style image - prioritize uploaded style image over config style image over default
+                    if self.uploaded_style_image:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
+                    elif first_ipadapter.style_image:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = str(first_ipadapter.style_image)
+                except Exception:
+                    # Fallback to dictionary access if Pydantic conversion fails
+                    first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
+                    ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
+                    ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                    ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
+                    
+                    # Check for style image - prioritize uploaded style image over config style image over default
+                    if self.uploaded_style_image:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
+                    elif 'style_image' in first_ipadapter:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = first_ipadapter['style_image']
                 else:
                     # Check if default image exists
                     import os
