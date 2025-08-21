@@ -80,7 +80,7 @@ class IPAdapterModule(OrchestratorUser):
         - Registers IPAdapterEmbeddingPreprocessor with StreamParameterUpdater using style_image_key
         - Optionally processes provided style image to populate the embedding cache
         - Registers the embedding hook onto stream.embedding_hooks
-        - Sets the initial scale and mirrors it onto stream.ipadapter_scale
+        - Sets the initial scale on the IPAdapter instance
         """
         logger = __import__('logging').getLogger(__name__)
         style_key = self.config.style_image_key or "ipadapter_main"
@@ -161,25 +161,15 @@ class IPAdapterModule(OrchestratorUser):
         # Set initial scale and mirror onto stream for TRT runtime vector if needed
         try:
             ipadapter.set_scale(float(self.config.scale))
-            setattr(stream, 'ipadapter_scale', float(self.config.scale))
         except Exception:
             pass
 
-        # Compatibility: expose expected attributes/methods used by StreamParameterUpdater
+        # Expose IPAdapter instance as single source of truth
         try:
             setattr(stream, 'ipadapter', ipadapter)
-            setattr(stream, 'scale', float(self.config.scale))
-            def _update_scale(new_scale: float) -> None:
-                ipadapter.set_scale(float(new_scale))
-                setattr(stream, 'ipadapter_scale', float(new_scale))
-                try:
-                    setattr(stream, 'scale', float(new_scale))
-                except Exception:
-                    pass
-            def _update_style_image(style_image) -> None:
-                stream._param_updater.update_style_image(style_key, style_image, is_stream=False)
-            setattr(stream, 'update_scale', _update_scale)
-            setattr(stream, 'update_style_image', _update_style_image)
+            # Extend IPAdapter with our custom attributes since diffusers IPAdapter doesn't expose current state
+            setattr(ipadapter, 'weight_type', self.config.weight_type)  # For build_layer_weights
+            setattr(ipadapter, 'scale', float(self.config.scale))       # Track current scale
         except Exception:
             pass
 
@@ -241,12 +231,12 @@ class IPAdapterModule(OrchestratorUser):
             if not hasattr(stream, 'ipadapter') or stream.ipadapter is None:
                 return UnetKwargsDelta()
 
-            # Read base weight and weight type from stream
+            # Read base weight and weight type from IPAdapter instance
             try:
-                base_weight = float(getattr(stream, 'ipadapter_scale', getattr(self, 'config', None).scale if hasattr(self, 'config') else 1.0))
+                base_weight = float(getattr(stream.ipadapter, 'scale', 1.0))
             except Exception:
                 base_weight = 1.0
-            weight_type = getattr(stream, 'ipadapter_weight_type', None)
+            weight_type = getattr(stream.ipadapter, 'weight_type', None)
 
             # Determine total steps and current step index for time scheduling
             total_steps = None
