@@ -63,6 +63,28 @@ class UnifiedExportWrapper(torch.nn.Module):
                 *control_args,
                 **kwargs) -> torch.Tensor:
         """Forward pass that handles any UNet parameters via **kwargs passthrough"""
+        # Handle IP-Adapter runtime scale vector as a positional argument placed before control tensors
+        if self.use_ipadapter and self.ipadapter_wrapper is not None:
+            # ipadapter_scale is appended as the first extra positional input after the 3 base inputs
+            if len(control_args) == 0:
+                import logging
+                logging.getLogger(__name__).error("UnifiedExportWrapper: ipadapter_scale missing; required when use_ipadapter=True")
+                raise RuntimeError("UnifiedExportWrapper: ipadapter_scale tensor is required when use_ipadapter=True")
+            ipadapter_scale = control_args[0]
+            if not isinstance(ipadapter_scale, torch.Tensor):
+                import logging
+                logging.getLogger(__name__).error(f"UnifiedExportWrapper: ipadapter_scale wrong type: {type(ipadapter_scale)}")
+                raise TypeError("ipadapter_scale must be a torch.Tensor")
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"UnifiedExportWrapper: ipadapter_scale shape={tuple(ipadapter_scale.shape)}, dtype={ipadapter_scale.dtype}")
+            except Exception:
+                pass
+            # assign per-layer scale tensors into processors
+            self.ipadapter_wrapper.set_ipadapter_scale(ipadapter_scale)
+            # remove it from control args before passing to controlnet wrapper
+            control_args = control_args[1:]
+
         if self.controlnet_wrapper:
             # ControlNet wrapper handles the UNet call with all parameters
             return self.controlnet_wrapper(sample, timestep, encoder_hidden_states, *control_args, **kwargs)

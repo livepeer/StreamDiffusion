@@ -96,7 +96,8 @@ class EngineManager:
                        lora_dict: Optional[Dict[str, float]] = None,
                        ipadapter_scale: Optional[float] = None,
                        ipadapter_tokens: Optional[int] = None,
-                       controlnet_model_id: Optional[str] = None) -> Path:
+                       controlnet_model_id: Optional[str] = None,
+                       is_faceid: Optional[bool] = None) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
         
@@ -125,8 +126,10 @@ class EngineManager:
             # Create prefix (from wrapper.py lines 1005-1013)
             prefix = f"{base_name}--lcm_lora-{use_lcm_lora}--tiny_vae-{use_tiny_vae}--max_batch-{max_batch}--min_batch-{min_batch_size}"
             
-            if ipadapter_scale is not None:
-                prefix += f"--ipa{ipadapter_scale}"
+            # IP-Adapter differentiation: add type and (optionally) tokens
+            # Keep scale out of identity for runtime control, but include a type flag to separate caches
+            if is_faceid is True:
+                prefix += f"--fid"
             if ipadapter_tokens is not None:
                 prefix += f"--tokens{ipadapter_tokens}"
 
@@ -260,6 +263,10 @@ class EngineManager:
             
         if kwargs.get('use_ipadapter_trt', False):
             setattr(loaded_engine, 'ipadapter_arch', kwargs.get('unet_arch', {}))
+            # number of IP-attention layers for runtime vector sizing
+            if 'num_ip_layers' in kwargs and kwargs['num_ip_layers'] is not None:
+                setattr(loaded_engine, 'num_ip_layers', kwargs['num_ip_layers'])
+        
     
     def get_or_load_controlnet_engine(self, 
                                     model_id: str,

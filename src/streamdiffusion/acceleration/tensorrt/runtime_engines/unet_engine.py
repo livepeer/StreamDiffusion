@@ -28,6 +28,21 @@ class UNet2DConditionModelEngine:
 
         self.engine.load()
         self.engine.activate()
+        
+        # Cache expensive attribute lookups to avoid repeated getattr calls
+        self._use_ipadapter_cached = None
+        
+        # Pre-compute ControlNet input names to avoid string formatting in hot paths
+        # Support up to 20 ControlNet inputs (more than enough for typical use cases)
+        self._input_control_names = [f"input_control_{i:02d}" for i in range(20)]
+        self._output_control_names = [f"output_control_{i:02d}" for i in range(20)]
+        self._input_control_middle = "input_control_middle"
+
+    def _check_use_ipadapter(self) -> bool:
+        """Cache IP-Adapter detection to avoid repeated getattr calls"""
+        if self._use_ipadapter_cached is None:
+            self._use_ipadapter_cached = getattr(self, 'use_ipadapter', False)
+        return self._use_ipadapter_cached
 
     def __call__(
         self,
@@ -39,11 +54,6 @@ class UNet2DConditionModelEngine:
         controlnet_conditioning: Optional[Dict[str, List[torch.Tensor]]] = None,
         **kwargs,
     ) -> Any:
-        
-      
-        
-
-        
         
 
         if timestep.dtype != torch.float32:
@@ -62,6 +72,21 @@ class UNet2DConditionModelEngine:
             "timestep": timestep,
             "encoder_hidden_states": encoder_hidden_states,
         }
+
+        
+        # Handle IP-Adapter runtime scale vector if engine was built with it
+        if self._check_use_ipadapter():
+            if 'ipadapter_scale' not in kwargs:
+                logger.error("UNet2DConditionModelEngine: ipadapter_scale missing but required (use_ipadapter=True)")
+                raise RuntimeError("UNet2DConditionModelEngine: ipadapter_scale is required for IP-Adapter engines")
+            ip_scale = kwargs['ipadapter_scale']
+            if not isinstance(ip_scale, torch.Tensor):
+                logger.error(f"UNet2DConditionModelEngine: ipadapter_scale has wrong type: {type(ip_scale)}")
+                raise TypeError("ipadapter_scale must be a torch.Tensor")
+            shape_dict["ipadapter_scale"] = ip_scale.shape
+            input_dict["ipadapter_scale"] = ip_scale
+            
+
 
         # Handle ControlNet inputs if provided
         if controlnet_conditioning is not None:
@@ -108,19 +133,22 @@ class UNet2DConditionModelEngine:
             allocated_after = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM after allocation: {allocated_after:.2f}GB")
 
-        outputs = self.engine.infer(
-            input_dict,
-            self.stream,
-            use_cuda_graph=self.use_cuda_graph,
-        )
+        try:
+            outputs = self.engine.infer(
+                input_dict,
+                self.stream,
+                use_cuda_graph=self.use_cuda_graph,
+            )
+        except Exception as e:
+            logger.exception(f"UNet2DConditionModelEngine.__call__: Engine.infer failed: {e}")
+            raise
+        
         
         if self.debug_vram:
             allocated_final = torch.cuda.memory_allocated() / 1024**3
             logger.debug(f"VRAM after inference: {allocated_final:.2f}GB")
         
-        if "latent" not in outputs:
-            logger.error(f"*** ERROR: 'latent' output not found in TensorRT outputs! Available keys: {list(outputs.keys())} ***")
-            raise ValueError("TensorRT engine did not produce expected 'latent' output")
+       
         
         noise_pred = outputs["latent"]
       
@@ -144,21 +172,21 @@ class UNet2DConditionModelEngine:
         # Add input controls (down blocks)
         if 'input' in controlnet_conditioning:
             for i, tensor in enumerate(controlnet_conditioning['input']):
-                input_name = f"input_control_{i:02d}"  # Use zero-padded names
+                input_name = self._input_control_names[i]  # Use pre-computed names
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
         
         # Add output controls (up blocks) 
         if 'output' in controlnet_conditioning:
             for i, tensor in enumerate(controlnet_conditioning['output']):
-                input_name = f"output_control_{i:02d}"  # Use zero-padded names
+                input_name = self._output_control_names[i]  # Use pre-computed names
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
         
         # Add middle controls
         if 'middle' in controlnet_conditioning:
             for i, tensor in enumerate(controlnet_conditioning['middle']):
-                input_name = f"input_control_middle"  # Use consistent middle naming
+                input_name = self._input_control_middle  # Use pre-computed name
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
 
@@ -181,13 +209,13 @@ class UNet2DConditionModelEngine:
         if down_block_additional_residuals is not None:
             # Map directly to engine input names (no reversal needed for our approach)
             for i, tensor in enumerate(down_block_additional_residuals):
-                input_name = f"input_control_{i:02d}"  # Use zero-padded names to match engine
+                input_name = self._input_control_names[i]  # Use pre-computed names
                 shape_dict[input_name] = tensor.shape
                 input_dict[input_name] = tensor
         
         # Add middle block residual
         if mid_block_additional_residual is not None:
-            input_name = "input_control_middle"  # Match engine middle control name
+            input_name = self._input_control_middle  # Use pre-computed name
             shape_dict[input_name] = mid_block_additional_residual.shape
             input_dict[input_name] = mid_block_additional_residual
 

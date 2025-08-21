@@ -99,6 +99,8 @@ class ControlNetModelEngine:
         if time_ids is not None:
             input_dict["time_ids"] = time_ids
         
+
+        
         shape_dict = {name: tensor.shape for name, tensor in input_dict.items()}
         
         batch_size = sample.shape[0]
@@ -119,6 +121,7 @@ class ControlNetModelEngine:
         self.stream.synchronize()
         
         down_blocks, mid_block = self._extract_controlnet_outputs(outputs)
+        
         return down_blocks, mid_block
     
     def _extract_controlnet_outputs(self, outputs: Dict[str, torch.Tensor]) -> Tuple[List[torch.Tensor], torch.Tensor]:
@@ -134,6 +137,7 @@ class ControlNetModelEngine:
         mid_block = outputs.get("mid_block")
         return down_blocks, mid_block
     
+
 
 
 

@@ -105,7 +105,7 @@ class SDXLExportWrapper(torch.nn.Module):
                 result = self.unet(*args, **kwargs)
                 return result
             elif len(args) >= 3:
-                result = self.unet(args[0], args[1], args[2])
+                result = self.unet(*args, **kwargs)
                 return result
             else:
                 # Fallback

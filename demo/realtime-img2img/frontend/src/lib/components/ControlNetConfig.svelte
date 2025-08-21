@@ -310,20 +310,18 @@
   <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
     <button 
       on:click={() => showControlNet = !showControlNet}
-      class="w-full p-3 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg border-b border-gray-200 dark:border-gray-700"
+      class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
     >
-      <div class="flex justify-between items-center w-full">
-        <h4 class="text-sm font-semibold">ControlNet</h4>
-        <div class="flex items-center gap-2">
+      <h3 class="text-md font-medium">ControlNet</h3>
+      <span class="text-sm">{showControlNet ? '−' : '+'}</span>
+    </button>
+    {#if showControlNet}
+    <div class="p-4 pt-1">
+        <div class="flex items-center justify-end mb-2">
           <Button on:click={handleHelpClick} classList="text-xs px-2 py-1">
             Help
           </Button>
-          <span class="text-sm">{showControlNet ? '−' : '+'}</span>
         </div>
-      </div>
-    </button>
-    {#if showControlNet}
-      <div class="p-3">
         <!-- ControlNet Status -->
         <div class="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-700 rounded mb-3">
           {#if controlnetInfo?.enabled}
@@ -339,7 +337,7 @@
         {#if controlnetInfo?.enabled && controlnetInfo?.controlnets?.length > 0}
           <div class="space-y-3">
             <div class="flex items-center justify-between">
-              <h5 class="text-sm font-medium">ControlNet Configuration</h5>
+              <!--<h5 class="text-sm font-medium">ControlNet Configuration</h5>-->
               <ControlNetSelector on:controlnetAdded={handleControlNetAdded} />
             </div>
             {#each controlnetInfo.controlnets as controlnet}
@@ -418,7 +416,7 @@
             <ControlNetSelector on:controlnetAdded={handleControlNetAdded} />
           </div>
         {/if}
-      </div>
+    </div>
     {/if}
   </div>
 
@@ -426,13 +424,13 @@
   <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
     <button 
       on:click={() => showTimesteps = !showTimesteps}
-      class="w-full p-3 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg border-b border-gray-200 dark:border-gray-700"
+      class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
     >
       <h4 class="text-sm font-semibold">Timesteps</h4>
       <span class="text-sm">{showTimesteps ? '−' : '+'}</span>
     </button>
     {#if showTimesteps}
-      <div class="p-3">
+    <div class="p-4 pt-1">
         <div class="space-y-2">
           <h5 class="text-sm font-medium">Timestep Indices</h5>
           <div class="bg-gray-50 dark:bg-gray-700 rounded p-2 space-y-2">
@@ -463,7 +461,7 @@
             </p>
           </div>
         </div>
-      </div>
+    </div>
     {/if}
   </div>
 
@@ -471,13 +469,13 @@
   <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
     <button 
       on:click={() => showStreamingParams = !showStreamingParams}
-      class="w-full p-3 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg border-b border-gray-200 dark:border-gray-700"
+      class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
     >
       <h4 class="text-sm font-semibold">Streaming Parameters</h4>
       <span class="text-sm">{showStreamingParams ? '−' : '+'}</span>
     </button>
     {#if showStreamingParams}
-      <div class="p-3">
+    <div class="p-4 pt-1">
         <div class="bg-gray-50 dark:bg-gray-700 rounded p-2 space-y-3">
           <p class="text-xs text-gray-600 dark:text-gray-400">
             Real-time adjustments during inference
@@ -538,7 +536,7 @@
             </div>
           </div>
         </div>
-      </div>
+    </div>
     {/if}
   </div>
 </div>

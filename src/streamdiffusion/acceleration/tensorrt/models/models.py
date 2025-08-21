@@ -261,6 +261,7 @@ class UNet(BaseModel):
         image_width=512,
         use_ipadapter=False,
         num_image_tokens=4,
+        num_ip_layers: int = None,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
@@ -279,6 +280,7 @@ class UNet(BaseModel):
         self.unet_arch = unet_arch or {}
         self.use_ipadapter = use_ipadapter
         self.num_image_tokens = num_image_tokens
+        self.num_ip_layers = num_ip_layers
         
         # Baked-in IPAdapter configuration
         if self.use_ipadapter:
@@ -287,6 +289,8 @@ class UNet(BaseModel):
             # Could use dynamic shapes: min=77 (text only), max=93 (text + 16 tokens)
             # This would allow a single engine to handle all IPAdapter types instead of separate engines
             self.text_maxlen = text_maxlen + self.num_image_tokens
+            if self.num_ip_layers is None:
+                raise ValueError("UNet model requires num_ip_layers when use_ipadapter=True")
 
         
         if self.use_control and self.unet_arch:
@@ -389,6 +393,13 @@ class UNet(BaseModel):
     def get_input_names(self):
         """Get input names including ControlNet inputs"""
         base_names = ["sample", "timestep", "encoder_hidden_states"]
+        if self.use_ipadapter:
+            base_names.append("ipadapter_scale")
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: get_input_names with ipadapter -> {base_names}")
+            except Exception:
+                pass
         if self.use_control and self.control_inputs:
             control_names = sorted(self.control_inputs.keys())
             return base_names + control_names
@@ -404,6 +415,13 @@ class UNet(BaseModel):
             "encoder_hidden_states": {0: "2B"},
             "latent": {0: "2B", 2: "H", 3: "W"},
         }
+        if self.use_ipadapter:
+            base_axes["ipadapter_scale"] = {0: "L_ip"}
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: dynamic axes include ipadapter_scale with L_ip={getattr(self, 'num_ip_layers', None)}")
+            except Exception:
+                pass
         
         if self.use_control and self.control_inputs:
             for name, shape_spec in self.control_inputs.items():
@@ -469,6 +487,18 @@ class UNet(BaseModel):
                 (max_batch, self.text_maxlen, self.embedding_dim),
             ],
         }
+        if self.use_ipadapter:
+            # scalar per-layer vector, length fixed to num_ip_layers
+            profile["ipadapter_scale"] = [
+                (1,),
+                (self.num_ip_layers,),
+                (self.num_ip_layers,),
+            ]
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: profile ipadapter_scale min/opt/max={(1,),(self.num_ip_layers,),(self.num_ip_layers,)}")
+            except Exception:
+                pass
         
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
@@ -507,6 +537,13 @@ class UNet(BaseModel):
             "encoder_hidden_states": (2 * batch_size, self.text_maxlen, self.embedding_dim),
             "latent": (2 * batch_size, 4, latent_height, latent_width),
         }
+        if self.use_ipadapter:
+            shape_dict["ipadapter_scale"] = (self.num_ip_layers,)
+            try:
+                import logging
+                logging.getLogger(__name__).debug(f"TRT Models: shape_dict ipadapter_scale={(self.num_ip_layers,)}")
+            except Exception:
+                pass
         
         if self.use_control and self.control_inputs:
             # Use the actual calculated spatial dimensions for each ControlNet input
@@ -543,8 +580,7 @@ class UNet(BaseModel):
             torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
         
-        print(f"🔧 UNet ONNX export inputs: sample={base_inputs[0].shape}, timestep={base_inputs[1].shape}, encoder_hidden_states={base_inputs[2].shape}")
-        print(f"   embedding_dim={self.embedding_dim}, expected for model type: {'SDXL=2048' if self.embedding_dim >= 2048 else 'SD1.5=768'}")
+        
         
         if self.use_control and self.control_inputs:
             control_inputs = []
@@ -570,8 +606,13 @@ class UNet(BaseModel):
                 if len(control_inputs) % 4 == 0:
                     torch.cuda.empty_cache()
             
+            # Append ipadapter_scale if needed
+            if self.use_ipadapter:
+                base_inputs.append(torch.ones(self.num_ip_layers, dtype=torch.float32, device=self.device))
             return tuple(base_inputs + control_inputs)
         
+        if self.use_ipadapter:
+            base_inputs.append(torch.ones(self.num_ip_layers, dtype=torch.float32, device=self.device))
         return tuple(base_inputs)
 
 

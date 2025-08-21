@@ -148,10 +148,10 @@
         bind:value={currentPreprocessor}
         on:change={handlePreprocessorChange}
         id="preprocessor-selector-{controlnetIndex}"
-        class="flex-1 cursor-pointer rounded-md border border-gray-300 dark:border-gray-600 p-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+        class="text-sm flex-1 cursor-pointer rounded-md border border-gray-300 dark:border-gray-600 p-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
       >
         {#each availablePreprocessors as preprocessor}
-          <option value={preprocessor} class="bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+          <option value={preprocessor} class="bg-white dark:bg-gray-800 text-gray-900 dark:text-white ">
             {getPreprocessorDisplayName(preprocessor)}
           </option>
         {/each}

@@ -4,6 +4,7 @@
 
   export let ipadapterInfo: any = null;
   export let currentScale: number = 1.0;
+  export let currentWeightType: string = "linear";
 
   const dispatch = createEventDispatcher();
 
@@ -13,8 +14,16 @@
   let uploadStatus = '';
   let currentStyleImage: string | null = null;
 
-  // Collapsible section state
+  // Collapsible toggle handled internally for consistency
   let showIPAdapter: boolean = true;
+
+  // Available weight types
+  const weightTypes = [
+    "linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+    "weak input", "weak output", "weak middle", "strong middle", 
+    "style transfer", "composition", "strong style transfer", 
+    "style and composition", "style transfer precise", "composition precise"
+  ];
 
   async function updateIPAdapterScale(scale: number) {
     try {
@@ -45,6 +54,37 @@
     currentScale = scale;
     
     updateIPAdapterScale(scale);
+  }
+
+  async function updateIPAdapterWeightType(weightType: string) {
+    try {
+      const response = await fetch('/api/ipadapter/update-weight-type', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          weight_type: weightType,
+        }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateIPAdapterWeightType: Failed to update weight type:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateIPAdapterWeightType: Update failed:', error);
+    }
+  }
+
+  function handleWeightTypeChange(event: Event) {
+    const target = event.target as HTMLSelectElement;
+    const weightType = target.value;
+    
+    // Update local state immediately for responsiveness
+    currentWeightType = weightType;
+    
+    updateIPAdapterWeightType(weightType);
   }
 
   async function uploadStyleImage() {
@@ -104,9 +144,12 @@
     styleImageFile.click();
   }
 
-  // Update current scale when prop changes
+  // Update current scale and weight type when prop changes
   $: if (ipadapterInfo?.scale !== undefined) {
     currentScale = ipadapterInfo.scale;
+  }
+  $: if (ipadapterInfo?.weight_type !== undefined) {
+    currentWeightType = ipadapterInfo.weight_type;
   }
 </script>
 
@@ -115,13 +158,13 @@
   <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
     <button 
       on:click={() => showIPAdapter = !showIPAdapter}
-      class="w-full p-3 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg border-b border-gray-200 dark:border-gray-700"
+      class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
     >
-      <h4 class="text-sm font-semibold">IPAdapter</h4>
+      <h3 class="text-md font-medium">IPAdapter</h3>
       <span class="text-sm">{showIPAdapter ? '−' : '+'}</span>
     </button>
     {#if showIPAdapter}
-      <div class="p-3">
+    <div class="p-4 pt-1">
         <!-- IPAdapter Status -->
         <div class="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-700 rounded mb-3">
           {#if ipadapterInfo?.enabled}
@@ -224,6 +267,25 @@
               </div>
             </div>
 
+            <!-- Weight Type Control -->
+            <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
+              <h5 class="text-sm font-medium mb-2">Weight Type</h5>
+              <div class="space-y-2">
+                <select
+                  value={currentWeightType}
+                  on:change={handleWeightTypeChange}
+                  class="w-full px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  {#each weightTypes as weightType}
+                    <option value={weightType}>{weightType}</option>
+                  {/each}
+                </select>
+                <p class="text-xs text-gray-500">
+                  Controls how the IPAdapter influence is distributed across different layers of the model.
+                </p>
+              </div>
+            </div>
+
             <!-- IPAdapter Info -->
             {#if ipadapterInfo?.model_path}
               <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
@@ -239,7 +301,7 @@
             Load a configuration with IPAdapter settings to enable style-guided generation.
           </p>
         {/if}
-      </div>
+    </div>
     {/if}
   </div>
 </div>

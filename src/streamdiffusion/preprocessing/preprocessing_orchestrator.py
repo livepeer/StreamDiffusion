@@ -35,6 +35,10 @@ class PreprocessingOrchestrator:
         # Pipeline state for embedding preprocessing
         self._next_embedding_future = None
         self._next_embedding_result = None
+        
+        # Cache pipelining decision to avoid hot path checks
+        self._preprocessors_cache_key = None
+        self._has_feedback_cache = False
     
     def cleanup(self) -> None:
         """Cleanup thread pool resources"""
@@ -85,20 +89,31 @@ class PreprocessingOrchestrator:
                                        stream_width: int,
                                        stream_height: int) -> List[Optional[torch.Tensor]]:
         """
-        Process control images with inter-frame pipelining for improved performance.
+        Process control images with intelligent pipelining.
+        
+        Automatically falls back to sync processing when feedback preprocessors are detected
+        to avoid temporal artifacts, otherwise uses pipelined processing for performance.
         
         Returns:
             List of processed tensors for each ControlNet
         """
-        # Wait for previous frame preprocessing
+        # Check for feedback preprocessors that require sync processing (cached)
+        has_feedback = self._check_feedback_cached(preprocessors)
+        if has_feedback:
+            return self.process_control_images_sync(
+                control_image, preprocessors, scales, stream_width, stream_height
+            )
+        
+        # No feedback preprocessors detected - use pipelined processing
+        # Wait for previous frame preprocessing; non-blocking with short timeout
         self._wait_for_previous_preprocessing()
         
-        # Start next frame preprocessing in background
+        # Start next frame preprocessing in background using intraframe parallelism
         self._start_next_frame_preprocessing(
             control_image, preprocessors, scales, stream_width, stream_height
         )
         
-        # Apply current frame preprocessing results
+        # Apply current frame preprocessing results if available; otherwise signal no update
         return self._apply_current_frame_preprocessing(preprocessors, scales)
     
     def prepare_control_image(self,
@@ -493,8 +508,13 @@ class PreprocessingOrchestrator:
         if preprocessor is not None and hasattr(preprocessor, 'process_tensor'):
             try:
                 processed_tensor = preprocessor.process_tensor(control_tensor)
+                # Ensure NCHW shape
                 if processed_tensor.dim() == 3:
                     processed_tensor = processed_tensor.unsqueeze(0)
+                # Resize to target spatial resolution if needed to match stream dimensions
+                processed_tensor = self._resize_tensor_if_needed(
+                    processed_tensor, target_width, target_height
+                )
                 return processed_tensor.to(device=self.device, dtype=self.dtype)
             except Exception:
                 pass  # Fall through to standard processing
@@ -734,14 +754,46 @@ class PreprocessingOrchestrator:
             logger.error(f"PreprocessingOrchestrator: Preprocessor {preprocessor_key} failed: {e}")
             return None
     
+    def _check_feedback_cached(self, preprocessors: List[Optional[Any]]) -> bool:
+        """
+        _check_feedback_cached: Efficiently check for feedback preprocessors using caching
+        
+        Only performs expensive isinstance checks when preprocessor list actually changes.
+        """
+        # Create cache key from preprocessor identities
+        cache_key = tuple(id(p) for p in preprocessors)
+        
+        # Return cached result if preprocessors haven't changed
+        if cache_key == self._preprocessors_cache_key:
+            return self._has_feedback_cache
+        
+        # Preprocessors changed - recompute and cache
+        self._preprocessors_cache_key = cache_key
+        self._has_feedback_cache = False
+        
+        try:
+            from .processors.feedback import FeedbackPreprocessor
+            for prep in preprocessors:
+                if isinstance(prep, FeedbackPreprocessor):
+                    self._has_feedback_cache = True
+                    break
+        except Exception:
+            # Fallback on class name check without importing
+            for prep in preprocessors:
+                if prep is not None and prep.__class__.__name__.lower().startswith('feedback'):
+                    self._has_feedback_cache = True
+                    break
+        
+        return self._has_feedback_cache
+
     def _wait_for_previous_preprocessing(self) -> None:
         """Wait for previous frame preprocessing with optimized timeout"""
         if hasattr(self, '_next_frame_future') and self._next_frame_future is not None:
             try:
-                # Reduced timeout: 50ms for real-time performance
-                self._next_frame_result = self._next_frame_future.result(timeout=0.05)
+                # Reduced timeout: 10ms for lower latency in real-time
+                self._next_frame_result = self._next_frame_future.result(timeout=0.01)
             except concurrent.futures.TimeoutError:
-                logger.warning("PreprocessingOrchestrator: Preprocessing timeout - using previous results")
+                # Non-blocking: skip applying results this frame
                 self._next_frame_result = None
             except Exception as e:
                 logger.error(f"PreprocessingOrchestrator: Preprocessing error: {e}")

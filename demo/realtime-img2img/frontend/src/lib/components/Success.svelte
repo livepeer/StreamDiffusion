@@ -3,7 +3,7 @@
 
   let timeout = 0;
   $: if (message !== '') {
-    console.log('message', message);
+    console.log('success message', message);
     clearTimeout(timeout);
     timeout = setTimeout(() => {
       message = '';
@@ -29,9 +29,9 @@
     on:keydown={handleKeydown}
     role="button"
     tabindex="0"
-    aria-label="Dismiss warning"
+    aria-label="Dismiss success message"
   >
-    <div class="rounded bg-red-800 p-4 text-white">
+    <div class="rounded bg-green-800 p-4 text-white">
       {message}
     </div>
     <div class="bar transition-all duration-500" style="width: 0;"></div>

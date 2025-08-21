@@ -384,6 +384,8 @@ class StreamDiffusionWrapper:
 
         Supports both single prompts and prompt blending based on the prompt parameter type.
 
+        This is for legacy compatibility, use update_stream_params instead
+
         Parameters
         ----------
         prompt : Union[str, List[Tuple[str, float]]]
@@ -516,32 +518,6 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
         )
-
-    def get_normalize_prompt_weights(self) -> bool:
-        """Get the current prompt weight normalization setting."""
-        return self.stream.get_normalize_prompt_weights()
-
-    def get_normalize_seed_weights(self) -> bool:
-        """Get the current seed weight normalization setting."""
-        return self.stream.get_normalize_seed_weights()
-
-    def set_scheduler(
-        self, 
-        scheduler: Literal["lcm", "dpm++ 2m", "uni_pc", "ddim", "euler"] = None,
-        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = None,
-    ) -> None:
-        """
-        Change the scheduler and/or sampler configuration at runtime.
-        
-        Parameters
-        ----------
-        scheduler : str, optional
-            The scheduler type to use. If None, keeps current scheduler.
-        sampler : str, optional
-            The sampler type to use. If None, keeps current sampler.
-        """
-        logger.info(f"Setting scheduler to {scheduler} and sampler to {sampler}")
-        self.stream.set_scheduler(scheduler=scheduler, sampler=sampler)
 
     def __call__(
         self,
@@ -725,7 +701,6 @@ class StreamDiffusionWrapper:
         else:
             return postprocess_image(image_tensor.cpu(), output_type=output_type)[0]
 
-
     def _denormalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
         Denormalize image tensor on GPU for efficiency
@@ -739,7 +714,6 @@ class StreamDiffusionWrapper:
             Denormalized tensor on GPU, clamped to [0,1]
         """
         return (image_tensor / 2 + 0.5).clamp(0, 1)
-
 
     def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
         """
@@ -787,8 +761,6 @@ class StreamDiffusionWrapper:
 
 
         return pil_images
-
-
 
     def _load_model(
         self,
@@ -1047,20 +1019,9 @@ class StreamDiffusionWrapper:
                 # Use the explicit use_ipadapter parameter
                 has_ipadapter = use_ipadapter
                 
-                # Create IPAdapter pipeline and pre-load models for TensorRT if needed
-                ipadapter_pipeline = None
-                if has_ipadapter:
-                    try:
-                        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
-                        ipadapter_pipeline = BaseIPAdapterPipeline(
-                            stream_diffusion=stream,
-                            device=self.device,
-                            dtype=self.dtype
-                        )
-                        ipadapter_pipeline.preload_models_for_tensorrt(ipadapter_config)
-                    except Exception as e:
-                        print(f"_load_model: Error creating IPAdapter pipeline: {e}")
-                        has_ipadapter = False
+                # Determine IP-Adapter presence and token count directly from config (no legacy pipeline)
+                if has_ipadapter and not ipadapter_config:
+                    has_ipadapter = False
                 
                 try:
                     # Use model detection results already computed during model loading
@@ -1133,18 +1094,16 @@ class StreamDiffusionWrapper:
                 # Use the engine_dir parameter passed to this function, with fallback to instance variable
                 engine_dir = engine_dir if engine_dir else getattr(self, '_engine_dir', 'engines')
                 
-                # Get IPAdapter information from pipeline if available
+                # Resolve IP-Adapter runtime params from config
+                # Strength is now a runtime input, so we do NOT bake scale into engine identity
                 ipadapter_scale = None
                 ipadapter_tokens = None
-                if use_ipadapter_trt and ipadapter_pipeline:
-                    tensorrt_info = ipadapter_pipeline.get_tensorrt_info()
-                    ipadapter_scale = tensorrt_info.get('scale', 1.0)
-                    
-                    # Read token count from loaded IPAdapter instance
-                    if hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter:
-                        ipadapter_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
-                    else:
-                        ipadapter_tokens = 4  # Default fallback
+                if use_ipadapter_trt and has_ipadapter and ipadapter_config:
+                    cfg0 = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                    # scale omitted from engine naming; runtime will pass ipadapter_scale vector
+                    ipadapter_tokens = cfg0.get('num_image_tokens', 4)
+                    # Determine FaceID type from config for engine naming
+                    is_faceid = (cfg0.get('type') == 'faceid' or bool(cfg0.get('is_faceid', False)))
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
                     EngineType.UNET,
@@ -1156,7 +1115,7 @@ class StreamDiffusionWrapper:
                     use_tiny_vae=use_tiny_vae,
                     ipadapter_scale=ipadapter_scale,
                     ipadapter_tokens=ipadapter_tokens,
-                    lora_dict=lora_dict
+                    is_faceid=is_faceid if use_ipadapter_trt else None
                 )
                 vae_encoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_ENCODER,
@@ -1167,7 +1126,8 @@ class StreamDiffusionWrapper:
                     use_lcm_lora=use_lcm_lora,
                     use_tiny_vae=use_tiny_vae,
                     ipadapter_scale=ipadapter_scale,
-                    ipadapter_tokens=ipadapter_tokens
+                    ipadapter_tokens=ipadapter_tokens,
+                    is_faceid=is_faceid if use_ipadapter_trt else None
                 )
                 vae_decoder_path = engine_manager.get_engine_path(
                     EngineType.VAE_DECODER,
@@ -1178,7 +1138,8 @@ class StreamDiffusionWrapper:
                     use_lcm_lora=use_lcm_lora,
                     use_tiny_vae=use_tiny_vae,
                     ipadapter_scale=ipadapter_scale,
-                    ipadapter_tokens=ipadapter_tokens
+                    ipadapter_tokens=ipadapter_tokens,
+                    is_faceid=is_faceid if use_ipadapter_trt else None
                 )
 
                 # Check if all required engines exist
@@ -1217,13 +1178,69 @@ class StreamDiffusionWrapper:
                 num_tokens = 4  # Default for non-IPAdapter mode
                 
                 if use_ipadapter_trt:
-                    if not (ipadapter_pipeline and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter):
-                        raise RuntimeError("IPAdapter TensorRT enabled but IPAdapter failed to load. Cannot proceed without proper IPAdapter instance.")
-                    num_tokens = getattr(ipadapter_pipeline.ipadapter, 'num_tokens', 4)
+                    # Use token count resolved from configuration (default to 4)
+                    num_tokens = ipadapter_tokens if isinstance(ipadapter_tokens, int) else 4
 
                 # Compile UNet engine using EngineManager
                 logger.info(f"compile_and_load_engine: Compiling UNet engine for image size: {self.width}x{self.height}")
+                try:
+                    logger.debug(f"compile_and_load_engine: use_ipadapter_trt={use_ipadapter_trt}, num_ip_layers={num_ip_layers}, tokens={num_tokens}")
+                except Exception:
+                    pass
                 
+                # If using TensorRT with IP-Adapter, ensure processors and weights are installed BEFORE export
+                if use_ipadapter_trt and has_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
+                    try:
+                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                        cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                        ip_cfg = IPAdapterConfig(
+                            style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                            num_image_tokens=cfg.get('num_image_tokens', 4),
+                            ipadapter_model_path=cfg['ipadapter_model_path'],
+                            image_encoder_path=cfg['image_encoder_path'],
+                            style_image=cfg.get('style_image'),
+                            scale=cfg.get('scale', 1.0),
+                            is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                            insightface_model_name=cfg.get('insightface_model_name'),
+                        )
+                        ip_module_for_export = IPAdapterModule(ip_cfg)
+                        ip_module_for_export.install(stream)
+                        setattr(stream, '_ipadapter_module', ip_module_for_export)
+                        try:
+                            logger.info("Installed IP-Adapter processors prior to TensorRT export")
+                        except Exception:
+                            pass
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        logger.error("Failed to pre-install IP-Adapter prior to TensorRT export")
+
+                # NOTE: When IPAdapter is enabled, we must pass num_ip_layers. We cannot know it until after
+                # installing processors in the export wrapper. We construct the wrapper first to discover it,
+                # then construct UNet model with that value.
+
+                # Build a temporary unified wrapper to install processors and discover num_ip_layers
+                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
+                temp_wrapped_unet = UnifiedExportWrapper(
+                    stream.unet,
+                    use_controlnet=use_controlnet_trt,
+                    use_ipadapter=use_ipadapter_trt,
+                    control_input_names=None,
+                    num_tokens=num_tokens
+                )
+
+                num_ip_layers = None
+                if use_ipadapter_trt:
+                    # Access underlying IPAdapter wrapper
+                    if hasattr(temp_wrapped_unet, 'ipadapter_wrapper') and temp_wrapped_unet.ipadapter_wrapper:
+                        num_ip_layers = getattr(temp_wrapped_unet.ipadapter_wrapper, 'num_ip_layers', None)
+                        if not isinstance(num_ip_layers, int) or num_ip_layers <= 0:
+                            raise RuntimeError("Failed to determine num_ip_layers for IP-Adapter")
+                        try:
+                            logger.info(f"compile_and_load_engine: discovered num_ip_layers={num_ip_layers}")
+                        except Exception:
+                            pass
+
                 unet_model = UNet(
                     fp16=True,
                     device=stream.device,
@@ -1235,17 +1252,19 @@ class StreamDiffusionWrapper:
                     unet_arch=unet_arch if use_controlnet_trt else None,
                     use_ipadapter=use_ipadapter_trt,
                     num_image_tokens=num_tokens,
+                    num_ip_layers=num_ip_layers if use_ipadapter_trt else None,
                     image_height=self.height,
                     image_width=self.width,
                 )
 
                 # Use ControlNet wrapper if ControlNet support is enabled
                 if use_controlnet_trt:
-                    control_input_names = unet_model.get_input_names()
-                
-                # Unified compilation path 
-                from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_unified_export import UnifiedExportWrapper
+                    # Build control_input_names excluding ipadapter_scale so indices align to 3-base offset
+                    all_input_names = unet_model.get_input_names()
+                    control_input_names = [name for name in all_input_names if name != 'ipadapter_scale']
 
+                # Unified compilation path 
+                # Recreate wrapped_unet with control input names if needed (after unet_model is ready)
                 wrapped_unet = UnifiedExportWrapper(
                     stream.unet,
                     use_controlnet=use_controlnet_trt,
@@ -1322,6 +1341,7 @@ class StreamDiffusionWrapper:
                         use_controlnet_trt=use_controlnet_trt,
                         use_ipadapter_trt=use_ipadapter_trt,
                         unet_arch=unet_arch,
+                        num_ip_layers=num_ip_layers if use_ipadapter_trt else None,
                         engine_build_options={
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
@@ -1478,146 +1498,100 @@ class StreamDiffusionWrapper:
             # Use stream's current resolution for fallback image
             self.nsfw_fallback_img = Image.new("RGB", (stream.height, stream.width), (0, 0, 0))
 
-        # Apply ControlNet patch if needed
+        # Install modules via hooks instead of patching (wrapper keeps forwarding updates only)
         if use_controlnet and controlnet_config:
-            # Pass engine_manager and cuda_stream if TensorRT is being used
-            if acceleration == "tensorrt":
-                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl, engine_manager, cuda_stream)
-            else:
-                stream = self._apply_controlnet_patch(stream, controlnet_config, acceleration, engine_dir, self._detected_model_type, self._is_sdxl)
-
-        # Apply IPAdapter patch if needed (after ControlNet)
-        if use_ipadapter and ipadapter_config:
-            self._apply_ipadapter_patch(stream, ipadapter_config)
-
-        return stream
-
-    def _apply_controlnet_patch(self, stream: StreamDiffusion, controlnet_config: Union[Dict[str, Any], List[Dict[str, Any]]], acceleration: str = "none", engine_dir: str = "engines", model_type: str = "SD15", is_sdxl: bool = False, engine_manager = None, cuda_stream = None) -> Any:
-        """
-        Apply ControlNet patch to StreamDiffusion using detected model type
-
-        Args:
-            stream: Base StreamDiffusion instance
-            controlnet_config: ControlNet configuration(s)
-            model_type: Detected model type from original UNet
-
-        Returns:
-            ControlNet-enabled pipeline (ControlNetPipeline or SDXLTurboControlNetPipeline)
-        """
-        # Use provided model type (detected before TensorRT conversion)
-        if is_sdxl:
-            from streamdiffusion.controlnet.controlnet_sdxlturbo_pipeline import SDXLTurboControlNetPipeline
-            controlnet_pipeline = SDXLTurboControlNetPipeline(stream, self.device, self.dtype)
-        else:  # SD15, SD21, etc. all use same ControlNet pipeline
-            from streamdiffusion.controlnet.controlnet_pipeline import ControlNetPipeline
-            controlnet_pipeline = ControlNetPipeline(stream, self.device, self.dtype)
-
-        # Check if we should use TensorRT ControlNet acceleration
-        use_controlnet_tensorrt = (acceleration == "tensorrt")
-
-        # Set the detected model type to avoid re-detection from TensorRT engine
-        controlnet_pipeline._detected_model_type = model_type
-        controlnet_pipeline._is_sdxl = is_sdxl
-
-        # Initialize ControlNet engine management if using TensorRT acceleration
-        if use_controlnet_tensorrt and engine_manager is not None:
-            from streamdiffusion.acceleration.tensorrt.engine_manager import EngineType
-            # Use the same unified EngineManager for ControlNet engines
-            # Create a ControlNet-specific subdirectory for organization
-            controlnet_engine_dir = os.path.join(engine_dir, "controlnet")
-            
-            # Store unified engine manager on the pipeline for later use
-            controlnet_pipeline._engine_manager = engine_manager
-            controlnet_pipeline._controlnet_engine_dir = controlnet_engine_dir
-            controlnet_pipeline._use_tensorrt = True
-            
-            # Also set engine manager on stream where ControlNet pipeline expects to find it
-            # Create a wrapper that provides the old interface but uses EngineManager internally
-            class ControlNetEnginePoolWrapper:
-                def __init__(self, engine_manager, controlnet_engine_dir, cuda_stream):
-                    self.engine_manager = engine_manager
-                    self.engine_dir = controlnet_engine_dir
-                    self.cuda_stream = cuda_stream
-
-                def load_engine(self, model_id, model_type="sd15", batch_size=1):
-                    engine_path = self.engine_manager.get_engine_path(
-                        EngineType.CONTROLNET,
-                        model_id_or_path="",  # Not used for ControlNet
-                        max_batch=batch_size,
-                        min_batch_size=1,
-                        mode="",  # Not used for ControlNet
-                        use_lcm_lora=False,  # Not used for ControlNet
-                        use_tiny_vae=False,  # Not used for ControlNet
-                        controlnet_model_id=model_id
-                    )
-                    if not os.path.exists(engine_path):
-                        raise FileNotFoundError(f"ControlNet engine not found at {engine_path}")
-                    return self.engine_manager.load_engine(
-                        EngineType.CONTROLNET,
-                        engine_path,
-                        model_type=model_type,
-                        batch_size=batch_size,
-                        cuda_stream=self.cuda_stream,
-                        use_cuda_graph=True
-                    )
-                
-                def get_or_load_engine(self, model_id, pytorch_model, model_type="sd15", batch_size=1):
-                    """get_or_load_engine: Compatibility wrapper for ControlNet pipeline"""
-                    return self.engine_manager.get_or_load_controlnet_engine(
-                        model_id=model_id,
-                        pytorch_model=pytorch_model,
-                        model_type=model_type,
-                        batch_size=batch_size,
-                        cuda_stream=self.cuda_stream,
-                        use_cuda_graph=True
-                    )
-            
-            stream.controlnet_engine_pool = ControlNetEnginePoolWrapper(engine_manager, controlnet_engine_dir, cuda_stream)
-            logger.info("get_or_load_controlnet_engine: Initialized ControlNet TensorRT engine management with unified EngineManager")
-        else:
-            controlnet_pipeline._use_tensorrt = False
-            logger.info("Loading ControlNet in PyTorch mode (no TensorRT acceleration)")
-
-
-        # Setup ControlNets from config
-        if not isinstance(controlnet_config, list):
-            controlnet_config = [controlnet_config]
-
-
-        for config in controlnet_config:
-            model_id = config.get('model_id')
-            if not model_id:
-                continue
-
-            preprocessor = config.get('preprocessor', None)
-            conditioning_scale = config.get('conditioning_scale', 1.0)
-            enabled = config.get('enabled', True)
-            preprocessor_params = config.get('preprocessor_params', None)
-            control_image = config.get('control_image', None)  # Extract control image from config
-
             try:
-                # Pass config dictionary directly
-                cn_config = {
-                    'model_id': model_id,
-                    'preprocessor': preprocessor,
-                    'conditioning_scale': conditioning_scale,
-                    'enabled': enabled,
-                    'preprocessor_params': preprocessor_params or {}
-                }
+                from streamdiffusion.modules.controlnet_module import ControlNetModule, ControlNetConfig
+                cn_module = ControlNetModule(device=self.device, dtype=self.dtype)
+                cn_module.install(stream)
+                # Normalize to list of configs
+                configs = controlnet_config if isinstance(controlnet_config, list) else [controlnet_config]
+                for cfg in configs:
+                    if not cfg.get('model_id'):
+                        continue
+                    cn_cfg = ControlNetConfig(
+                        model_id=cfg['model_id'],
+                        preprocessor=cfg.get('preprocessor'),
+                        conditioning_scale=cfg.get('conditioning_scale', 1.0),
+                        enabled=cfg.get('enabled', True),
+                        preprocessor_params=cfg.get('preprocessor_params'),
+                    )
+                    cn_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))
+                # Expose for later updates if needed by caller code
+                stream._controlnet_module = cn_module
 
-                # Add ControlNet with control image if provided (immediate during initialization)
-                controlnet_pipeline.add_controlnet(cn_config, control_image, immediate=True)
-                logger.info(f"_apply_controlnet_patch: Successfully added ControlNet: {model_id}")
-            except Exception as e:
-                logger.error(f"_apply_controlnet_patch: Failed to add ControlNet {model_id}: {e}")
+                # If TensorRT UNet is active, proactively compile/load ControlNet TRT engines for each model
+                #TODO: make unet cnet trt acceleration independent and configurable
+                try:
+                    use_trt_unet = hasattr(stream, 'unet') and hasattr(stream.unet, 'engine')
+                except Exception:
+                    use_trt_unet = False
+                if use_trt_unet:
+                    try:
+                        compiled_cn_engines = []
+                        for cfg, cn_model in zip(configs, cn_module.controlnets):
+                            if not cfg or not cfg.get('model_id') or cn_model is None:
+                                continue
+                            try:
+                                engine = engine_manager.get_or_load_controlnet_engine(
+                                    model_id=cfg['model_id'],
+                                    pytorch_model=cn_model,
+                                    model_type=model_type,
+                                    batch_size=stream.trt_unet_batch_size,
+                                    cuda_stream=cuda_stream,
+                                    use_cuda_graph=False,
+                                    unet=None,
+                                    model_path=cfg['model_id']
+                                )
+                                try:
+                                    setattr(engine, 'model_id', cfg['model_id'])
+                                except Exception:
+                                    pass
+                                compiled_cn_engines.append(engine)
+                            except Exception as e:
+                                logger.warning(f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}")
+                        if compiled_cn_engines:
+                            setattr(stream, 'controlnet_engines', compiled_cn_engines)
+                            try:
+                                logger.info(f"Compiled/loaded {len(compiled_cn_engines)} ControlNet TensorRT engine(s)")
+                            except Exception:
+                                pass
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        logger.warning("ControlNet TensorRT engine build step encountered an issue; continuing with PyTorch ControlNet")
+            except Exception:
                 import traceback
                 traceback.print_exc()
+                logger.error("Failed to install ControlNetModule")
+                raise
 
-        return controlnet_pipeline
+        if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
+            try:
+                from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                # Use first config if list provided
+                cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                ip_cfg = IPAdapterConfig(
+                    style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                    num_image_tokens=cfg.get('num_image_tokens', 4),
+                    ipadapter_model_path=cfg['ipadapter_model_path'],
+                    image_encoder_path=cfg['image_encoder_path'],
+                    style_image=cfg.get('style_image'),
+                    scale=cfg.get('scale', 1.0),
+                    is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                    insightface_model_name=cfg.get('insightface_model_name'),
+                )
+                ip_module = IPAdapterModule(ip_cfg)
+                ip_module.install(stream)
+                # Expose for later updates
+                stream._ipadapter_module = ip_module
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                logger.error("Failed to install IPAdapterModule")
+                raise
 
-
-    
-
+        return stream
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
         """Forward get_last_processed_image call to the underlying ControlNet pipeline"""
@@ -1625,15 +1599,7 @@ class StreamDiffusionWrapper:
             raise RuntimeError("get_last_processed_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
         return self.stream.get_last_processed_image(index)
-    
-    def update_control_image_efficient(self, control_image: Union[str, Image.Image, np.ndarray, torch.Tensor], index: Optional[int] = None) -> None:
-        """Forward update_control_image_efficient call to the underlying ControlNet pipeline"""
-        if not self.use_controlnet:
-            raise RuntimeError("update_control_image_efficient: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        return self.stream.update_control_image_efficient(control_image, index)
-    
-    
+        
     def cleanup_controlnets(self) -> None:
         """Cleanup ControlNet resources including background threads and VRAM"""
         if not self.use_controlnet:
@@ -1642,97 +1608,114 @@ class StreamDiffusionWrapper:
         if hasattr(self, 'stream') and self.stream and hasattr(self.stream, 'cleanup'):
             self.stream.cleanup_controlnets()
 
-    def update_seed_blending(
-        self,
-        seed_list: List[Tuple[int, float]],
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update seed blending with multiple weighted seeds.
+    def update_control_image(self, index: int, image: Union[str, Image.Image, torch.Tensor]) -> None:
+        """Update control image for specific ControlNet index"""
+        if not self.use_controlnet:
+            raise RuntimeError("update_control_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
 
-        Parameters
-        ----------
-        seed_list : List[Tuple[int, float]]
-            List of seeds with weights. Each tuple contains (seed_value, weight).
-            Example: [(123, 0.6), (456, 0.4)]
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_stream_params(
-            seed_list=seed_list,
-            seed_interpolation_method=interpolation_method
-        )
+        self.stream._controlnet_module.update_control_image_efficient(image, index=index)
 
-    def update_prompt_weights(
-        self,
-        prompt_weights: List[float],
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Update weights for current prompt list without re-encoding prompts.
 
-        Parameters
-        ----------
-        prompt_weights : List[float]
-            New weights for the current prompt list.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.update_prompt_weights(prompt_weights, prompt_interpolation_method)
-
-    def update_seed_weights(
-        self,
-        seed_weights: List[float],
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update weights for current seed list without regenerating noise.
-
-        Parameters
-        ----------
-        seed_weights : List[float]
-            New weights for the current seed list.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_seed_weights(seed_weights, interpolation_method)
-
-    def get_current_prompts(self) -> List[Tuple[str, float]]:
-        """
-        Get the current prompt list with weights.
-
-        Returns
-        -------
-        List[Tuple[str, float]]
-            Current prompt list with weights.
-        """
-        return self.stream._param_updater.get_current_prompts()
-
-    def get_current_seeds(self) -> List[Tuple[int, float]]:
-        """
-        Get the current seed list with weights.
-
-        Returns
-        -------
-        List[Tuple[int, float]]
-            Current seed list with weights.
-        """
-        return self.stream._param_updater.get_current_seeds()
-
-    def get_cache_info(self) -> Dict:
-        """
-        Get cache statistics for prompt and seed blending.
-
-        Returns
-        -------
-        Dict
-            Cache information including hits, misses, and cache sizes.
-        """
-        return self.stream._param_updater.get_cache_info()
+    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
+        """Update IPAdapter style image"""
+        if not self.use_ipadapter:
+            raise RuntimeError("update_style_image: IPAdapter support not enabled. Set use_ipadapter=True in constructor.")
+        self.stream.update_style_image(image)
+        
 
     def clear_caches(self) -> None:
         """Clear all cached prompt embeddings and seed noise tensors."""
         self.stream._param_updater.clear_caches()
+
+    def get_stream_state(self, include_caches: bool = False) -> Dict[str, Any]:
+        """Get a unified snapshot of the current stream state.
+
+        Args:
+            include_caches: When True, include cache statistics in the response
+
+        Returns:
+            Dict[str, Any]: Consolidated state including prompts/seeds, runtime settings,
+                            module configs, and basic pipeline info.
+        """
+        stream = self.stream
+        updater = stream._param_updater
+
+        # Prompts / Seeds
+        prompts = updater.get_current_prompts()
+        seeds = updater.get_current_seeds()
+
+        # Normalization flags
+        normalize_prompt_weights = updater.get_normalize_prompt_weights()
+        normalize_seed_weights = updater.get_normalize_seed_weights()
+
+        # Core runtime params
+        guidance_scale = getattr(stream, 'guidance_scale', None)
+        delta = getattr(stream, 'delta', None)
+        t_index_list = list(getattr(stream, 't_list', []))
+        current_seed = getattr(stream, 'current_seed', None)
+        num_inference_steps = None
+        try:
+            if hasattr(stream, 'timesteps') and stream.timesteps is not None:
+                num_inference_steps = int(len(stream.timesteps))
+        except Exception:
+            pass
+
+        # Resolution and model/pipeline info
+        state: Dict[str, Any] = {
+            'width': getattr(stream, 'width', None),
+            'height': getattr(stream, 'height', None),
+            'latent_width': getattr(stream, 'latent_width', None),
+            'latent_height': getattr(stream, 'latent_height', None),
+            'device': getattr(stream, 'device', None).type if hasattr(getattr(stream, 'device', None), 'type') else getattr(stream, 'device', None),
+            'dtype': str(getattr(stream, 'dtype', None)),
+            'model_type': getattr(stream, 'model_type', None),
+            'is_sdxl': getattr(stream, 'is_sdxl', None),
+            'is_turbo': getattr(stream, 'is_turbo', None),
+            'cfg_type': getattr(stream, 'cfg_type', None),
+            'use_denoising_batch': getattr(stream, 'use_denoising_batch', None),
+            'batch_size': getattr(stream, 'batch_size', None),
+        }
+
+        # Blending state
+        state.update({
+            'prompt_list': prompts,
+            'seed_list': seeds,
+            'normalize_prompt_weights': normalize_prompt_weights,
+            'normalize_seed_weights': normalize_seed_weights,
+            'negative_prompt': getattr(updater, '_current_negative_prompt', ""),
+        })
+
+        # Core runtime knobs
+        state.update({
+            'guidance_scale': guidance_scale,
+            'delta': delta,
+            't_index_list': t_index_list,
+            'current_seed': current_seed,
+            'num_inference_steps': num_inference_steps,
+        })
+
+        # Module configs (ControlNet, IP-Adapter)
+        try:
+            controlnet_config = updater._get_current_controlnet_config()
+        except Exception:
+            controlnet_config = []
+        try:
+            ipadapter_config = updater._get_current_ipadapter_config()
+        except Exception:
+            ipadapter_config = None
+        state.update({
+            'controlnet_config': controlnet_config,
+            'ipadapter_config': ipadapter_config,
+        })
+
+        # Optional caches
+        if include_caches:
+            try:
+                state['caches'] = updater.get_cache_info()
+            except Exception:
+                state['caches'] = None
+
+        return state
     
     def cleanup_gpu_memory(self) -> None:
         """Comprehensive GPU memory cleanup for model switching."""
@@ -1940,162 +1923,3 @@ class StreamDiffusionWrapper:
                 logger.info(f"   Reduced resolution: {old_width}x{old_height} -> {self.width}x{self.height}")
         
         logger.info("   Next model load will rebuild engines with these smaller settings")
-
-    def update_prompt_at_index(
-        self,
-        index: int,
-        new_prompt: str,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Update a specific prompt by index without changing other prompts.
-
-        Parameters
-        ----------
-        index : int
-            Index of the prompt to update.
-        new_prompt : str
-            New prompt text.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.update_prompt_at_index(index, new_prompt, prompt_interpolation_method)
-
-    def add_prompt(
-        self,
-        prompt: str,
-        weight: float = 1.0,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Add a new prompt to the current blending configuration.
-
-        Parameters
-        ----------
-        prompt : str
-            Prompt text to add.
-        weight : float
-            Weight for the new prompt, by default 1.0.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.add_prompt(prompt, weight, prompt_interpolation_method)
-
-    def remove_prompt_at_index(
-        self,
-        index: int,
-        prompt_interpolation_method: Literal["linear", "slerp"] = "slerp"
-    ) -> None:
-        """
-        Remove a prompt from the current blending configuration by index.
-
-        Parameters
-        ----------
-        index : int
-            Index of the prompt to remove.
-        prompt_interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between remaining prompt embeddings, by default "slerp".
-        """
-        self.stream._param_updater.remove_prompt_at_index(index, prompt_interpolation_method)
-
-    def update_seed_at_index(
-        self,
-        index: int,
-        new_seed: int,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Update a specific seed by index without changing other seeds.
-
-        Parameters
-        ----------
-        index : int
-            Index of the seed to update.
-        new_seed : int
-            New seed value.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.update_seed_at_index(index, new_seed, interpolation_method)
-
-    def add_seed(
-        self,
-        seed: int,
-        weight: float = 1.0,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Add a new seed to the current blending configuration.
-
-        Parameters
-        ----------
-        seed : int
-            Seed value to add.
-        weight : float
-            Weight for the new seed, by default 1.0.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.add_seed(seed, weight, interpolation_method)
-
-    def remove_seed_at_index(
-        self,
-        index: int,
-        interpolation_method: Literal["linear", "slerp"] = "linear"
-    ) -> None:
-        """
-        Remove a seed from the current blending configuration by index.
-
-        Parameters
-        ----------
-        index : int
-            Index of the seed to remove.
-        interpolation_method : Literal["linear", "slerp"]
-            Method for interpolating between remaining seed noise tensors, by default "linear".
-        """
-        self.stream._param_updater.remove_seed_at_index(index, interpolation_method)
-
-    def _apply_ipadapter_patch(self, stream, ipadapter_config: Union[Dict[str, Any], List[Dict[str, Any]]]):
-        """
-        Apply IPAdapter functionality to existing stream (add attributes instead of wrapping)
-        
-        Args:
-            stream: Existing StreamDiffusion or ControlNet pipeline
-            ipadapter_config: IPAdapter configuration
-        """
-        from streamdiffusion.ipadapter import BaseIPAdapterPipeline
-        
-        # Get the underlying StreamDiffusion object
-        underlying_stream = stream.stream if hasattr(stream, 'stream') else stream
-        
-        # Create IPAdapter pipeline for the functionality
-        ipadapter_pipeline = BaseIPAdapterPipeline(
-            stream_diffusion=underlying_stream,
-            device=self.device,
-            dtype=self.dtype
-        )
-        
-        # Add IPAdapter functionality to the existing stream by setting attributes
-        stream.ipadapter = None  # Will be set when configured
-        stream.update_scale = ipadapter_pipeline.update_scale
-        stream.update_style_image = ipadapter_pipeline.update_style_image
-        
-        # Configure the IPAdapter if config provided
-        if ipadapter_config:
-            if isinstance(ipadapter_config, list):
-                # Use first config if multiple provided
-                config = ipadapter_config[0]
-            else:
-                config = ipadapter_config
-                
-            if config.get('enabled', True):
-                ipadapter_pipeline.set_ipadapter(
-                    ipadapter_model_path=config['ipadapter_model_path'],
-                    image_encoder_path=config['image_encoder_path'],
-                    style_image=config.get('style_image'),
-                    scale=config.get('scale', 1.0)
-                )
-                # Copy the configured IPAdapter to the stream
-                stream.ipadapter = ipadapter_pipeline.ipadapter
-                stream.scale = ipadapter_pipeline.scale
-                stream.style_image = ipadapter_pipeline.style_image

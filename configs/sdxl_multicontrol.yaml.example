@@ -1,0 +1,75 @@
+# StreamDiffusion SDXL Multi-ControlNet + IPAdapter Configuration
+# Demonstrates: TensorRT pose processing, canny edge detection, and SDXL IPAdapter integration
+
+# Base model configuration
+model_id: "stabilityai/stable-diffusion-xl-base-1.0"
+# model_id: "C:\\_dev\\models\\your_sdxl_model.safetensors"
+
+# StreamDiffusion core parameters
+t_index_list: [20, 32]      # SDXL optimized timesteps
+width: 1024                 # SDXL native resolution
+height: 1024
+device: "cuda"
+dtype: "float16"
+
+# Generation parameters  
+prompt: "masterpiece, highest quality, cinematic lighting, detailed artwork"
+
+# Seed blending configuration - interpolates between multiple seeds for variation
+seed_blending:
+  seed_list:
+    - [42, 1.0]      # Primary seed with full weight
+    - [789, 0.4]     # Secondary seed with partial weight
+    - [1337, 0.2]    # Tertiary seed with low weight
+
+negative_prompt: "blurry, low quality, distorted, 3d render, oversaturated"
+guidance_scale: 1.0         # SDXL typically uses moderate guidance
+num_inference_steps: 25     # SDXL optimized step count
+seed: 42                    # Base seed (used with seed_blending above)
+
+# Temporal consistency and optimization
+frame_buffer_size: 1
+delta: 0.7
+use_denoising_batch: true
+use_lcm_lora: false         # SDXL has built-in optimizations
+use_taesd: true             # Use Tiny AutoEncoder for SDXL
+use_tiny_vae: true
+acceleration: "tensorrt"    # "xformers" for non-TensorRT setups
+cfg_type: "self"
+safety_checker: false
+
+# Engine directory for TensorRT
+engine_dir: "./engines/sdxl"
+
+# Enable multi-modal conditioning
+use_controlnet: true
+use_ipadapter: true
+
+# IPAdapter configuration for SDXL style conditioning
+ipadapters:
+  - ipadapter_model_path: "h94/IP-Adapter/sdxl_models/ip-adapter_sdxl.safetensors"
+    image_encoder_path: "h94/IP-Adapter/sdxl_models/image_encoder"
+    # style_image: "path/to/your/style/image.jpg"  # Optional: specify style image
+    scale: 0.7
+    enabled: true
+
+# ControlNet configurations
+controlnets:
+  # TensorRT Pose ControlNet (requires TensorRT engine)
+  - model_id: "thibaud/controlnet-openpose-sdxl-1.0"
+    conditioning_scale: 0.4
+    preprocessor: "pose_tensorrt"
+    preprocessor_params:
+      engine_path: "C:\\_dev\\models\\tensorrt\\yolo_nas_pose_l_0.8-fp16.engine"  # REQUIRED: Path to TensorRT engine
+      detect_resolution: 640    # Must match engine input size
+      image_resolution: 512
+    enabled: true
+
+  # Canny ControlNet for structural guidance
+  - model_id: "diffusers/controlnet-canny-sdxl-1.0" 
+    conditioning_scale: 0.3
+    preprocessor: "canny"
+    preprocessor_params:
+      low_threshold: 100
+      high_threshold: 200
+    enabled: true

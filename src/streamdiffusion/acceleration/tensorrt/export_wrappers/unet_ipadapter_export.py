@@ -3,6 +3,8 @@ from diffusers import UNet2DConditionModel
 from typing import Optional, Dict, Any, List
 
 from ....model_detection import detect_model, detect_model_from_diffusers_unet
+from diffusers_ipadapter.ip_adapter.attention_processor import TRTIPAttnProcessor, TRTIPAttnProcessor2_0
+
 
 class IPAdapterUNetExportWrapper(torch.nn.Module):
     """
@@ -23,6 +25,10 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         # Convert to float32 BEFORE installing processors (to avoid resetting them)
         self.unet = self.unet.to(dtype=torch.float32)
         
+        # Track installed TRT processors
+        self._ip_trt_processors: List[torch.nn.Module] = []
+        self.num_ip_layers: int = 0
+
         # Check if IPAdapter processors are already installed (from pre-loading)
         if self._has_ipadapter_processors():
             self._ensure_processor_dtype_consistency()
@@ -51,19 +57,47 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         try:
             processors = self.unet.attn_processors
             updated_processors = {}
+            self._ip_trt_processors = []
+            ip_layer_index = 0
             
             for name, processor in processors.items():
                 processor_class = processor.__class__.__name__
-                if 'IPAttn' in processor_class or 'IPAttnProcessor' in processor_class:
-                    # Convert IPAdapter processors to float32 for ONNX consistency
-                    # This preserves the weights while updating dtype
-                    updated_processors[name] = processor.to(dtype=torch.float32)
+                if 'TRTIPAttn' in processor_class:
+                    # Already TRT processors: ensure dtype and record
+                    proc = processor.to(dtype=torch.float32)
+                    proc._scale_index = ip_layer_index
+                    self._ip_trt_processors.append(proc)
+                    ip_layer_index += 1
+                    updated_processors[name] = proc
+                elif 'IPAttn' in processor_class or 'IPAttnProcessor' in processor_class:
+                    # Replace standard processors with TRT variants, preserving weights where applicable
+                    hidden_size = getattr(processor, 'hidden_size', None)
+                    cross_attention_dim = getattr(processor, 'cross_attention_dim', None)
+                    num_tokens = getattr(processor, 'num_tokens', self.num_image_tokens)
+                    if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
+                        from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor2_0 as AttnProcessor
+                        IPProcClass = TRTIPAttnProcessor2_0
+                    else:
+                        from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor
+                        IPProcClass = TRTIPAttnProcessor
+                    proc = IPProcClass(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, num_tokens=num_tokens)
+                    # Copy IP projection weights if present
+                    if hasattr(processor, 'to_k_ip') and hasattr(processor, 'to_v_ip') and hasattr(proc, 'to_k_ip'):
+                        with torch.no_grad():
+                            proc.to_k_ip.weight.copy_(processor.to_k_ip.weight.to(dtype=torch.float32))
+                            proc.to_v_ip.weight.copy_(processor.to_v_ip.weight.to(dtype=torch.float32))
+                    proc = proc.to(self.unet.device, dtype=torch.float32)
+                    proc._scale_index = ip_layer_index
+                    self._ip_trt_processors.append(proc)
+                    ip_layer_index += 1
+                    updated_processors[name] = proc
                 else:
                     # Keep standard processors as-is
                     updated_processors[name] = processor
             
             # Update all processors to ensure consistency
             self.unet.set_attn_processor(updated_processors)
+            self.num_ip_layers = len(self._ip_trt_processors)
                 
         except Exception as e:
             print(f"IPAdapterUNetExportWrapper: Error updating processor dtypes: {e}")
@@ -78,14 +112,17 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         # Import IPAdapter attention processors from installed package
         try:
             if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
-                from diffusers_ipadapter.ip_adapter.attention_processor import IPAttnProcessor2_0 as IPAttnProcessor, AttnProcessor2_0 as AttnProcessor
+                from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor2_0 as AttnProcessor
+                IPProcClass = TRTIPAttnProcessor2_0
             else:
-                from diffusers_ipadapter.ip_adapter.attention_processor import IPAttnProcessor, AttnProcessor
+                from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor
+                IPProcClass = TRTIPAttnProcessor
             
             # Install attention processors with proper configuration
             processor_names = list(self.unet.attn_processors.keys())
             
             attn_procs = {}
+            ip_layer_index = 0
             for name in processor_names:
                 cross_attention_dim = None if name.endswith("attn1.processor") else self.unet.config.cross_attention_dim
                 
@@ -107,14 +144,20 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
                     # Self-attention layers use standard processors
                     attn_procs[name] = AttnProcessor()
                 else:
-                    # Cross-attention layers use IPAdapter processors
-                    attn_procs[name] = IPAttnProcessor(
-                        hidden_size=hidden_size, 
+                    # Cross-attention layers use TRTIPAttn processors (runtime scale tensor)
+                    proc = IPProcClass(
+                        hidden_size=hidden_size,
                         cross_attention_dim=cross_attention_dim,
-                        num_tokens=self.num_image_tokens
-                    ).to(self.unet.device, dtype=torch.float32)  # Force float32 for ONNX
+                        num_tokens=self.num_image_tokens,
+                    ).to(self.unet.device, dtype=torch.float32)
+                    # record mapping index
+                    proc._scale_index = ip_layer_index
+                    self._ip_trt_processors.append(proc)
+                    ip_layer_index += 1
+                    attn_procs[name] = proc
             
             self.unet.set_attn_processor(attn_procs)
+            self.num_ip_layers = len(self._ip_trt_processors)
             
 
             
@@ -126,7 +169,30 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
             traceback.print_exc()
             raise e
     
-    def forward(self, sample, timestep, encoder_hidden_states):
+    def set_ipadapter_scale(self, ipadapter_scale: torch.Tensor) -> None:
+        """Assign per-layer scale tensor to installed TRTIPAttn processors."""
+        if not isinstance(ipadapter_scale, torch.Tensor):
+            import logging
+            logging.getLogger(__name__).error(f"IPAdapterUNetExportWrapper: ipadapter_scale wrong type: {type(ipadapter_scale)}")
+            raise TypeError("ipadapter_scale must be a torch.Tensor")
+        if self.num_ip_layers <= 0 or not self._ip_trt_processors:
+            raise RuntimeError("No TRTIPAttn processors installed")
+        if ipadapter_scale.ndim != 1 or ipadapter_scale.shape[0] != self.num_ip_layers:
+            import logging
+            logging.getLogger(__name__).error(f"IPAdapterUNetExportWrapper: ipadapter_scale has wrong shape {tuple(ipadapter_scale.shape)}, expected=({self.num_ip_layers},)")
+            raise ValueError(f"ipadapter_scale must have shape [{self.num_ip_layers}]")
+
+        # Ensure float32 for ONNX export stability
+        scale_vec = ipadapter_scale.to(dtype=torch.float32)
+        try:
+            import logging
+            logging.getLogger(__name__).debug(f"IPAdapterUNetExportWrapper: scale_vec min={float(scale_vec.min().item())}, max={float(scale_vec.max().item())}")
+        except Exception:
+            pass
+        for proc in self._ip_trt_processors:
+            proc._scale_tensor = scale_vec[proc._scale_index]
+
+    def forward(self, sample, timestep, encoder_hidden_states, ipadapter_scale: torch.Tensor = None):
         """
         Forward pass with concatenated embeddings (text + image).
         
@@ -153,6 +219,11 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         # Ensure dtype consistency for ONNX export
         if encoder_hidden_states.dtype != torch.float32:
             encoder_hidden_states = encoder_hidden_states.to(torch.float32)
+
+        # Set per-layer scale tensor
+        if ipadapter_scale is None:
+            raise RuntimeError("IPAdapterUNetExportWrapper.forward requires ipadapter_scale tensor")
+        self.set_ipadapter_scale(ipadapter_scale)
         
         # Pass concatenated embeddings to UNet with baked-in IPAdapter processors
         return self.unet(

@@ -4,7 +4,7 @@
   import HandTracking from './HandTracking.svelte';
   import GamepadControl from './GamepadControl.svelte';
 
-  let showInputControls: boolean = false;
+  // Toggle moved to parent page
   
   // Microphone state
   let microphoneAccess: boolean = false;
@@ -45,6 +45,14 @@
   let controlnetInfo: any = null;
   let promptBlendingConfig: any = null;
   let seedBlendingConfig: any = null;
+  
+  function nudgeControl(index: number, field: string, delta: number, step: number, min?: number, max?: number) {
+    const control = inputControlConfigs[index] as any;
+    const current = parseFloat(control[field] ?? 0) || 0;
+    const next = current + delta * step;
+    const clamped = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, parseFloat(next.toFixed(3))));
+    updateControlParameter(index, field, clamped);
+  }
   
   // Dynamic parameter options - built from API responses
   let parameterOptions: Array<{value: string, label: string, min: number, max: number, category?: string}> = [];
@@ -157,6 +165,14 @@
         label: 'IPAdapter Scale',
         min: 0.0,
         max: 2.0,
+        category: 'ipadapter'
+      });
+      
+      parameters.push({
+        value: 'ipadapter_weight_type',
+        label: 'IPAdapter Weight Type',
+        min: 0,
+        max: 14, // 15 weight types (0-14)
         category: 'ipadapter'
       });
     }
@@ -435,6 +451,23 @@
           await updatePromptWeightParameter(control, scaledValue);
         } else if (control.parameter_name.startsWith('seed_weight_')) {
           await updateSeedWeightParameter(control, scaledValue);
+        } else if (control.parameter_name === 'ipadapter_weight_type') {
+          // Convert numeric value to weight type string
+          const weightTypes = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                             "weak input", "weak output", "weak middle", "strong middle", 
+                             "style transfer", "composition", "strong style transfer", 
+                             "style and composition", "style transfer precise", "composition precise"];
+          const index = Math.round(scaledValue) % weightTypes.length;
+          const weightType = weightTypes[index];
+          
+          const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+          if (endpoint) {
+            await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ weight_type: weightType })
+            });
+          }
         } else {
           const endpoint = getParameterUpdateEndpoint(control.parameter_name);
           if (endpoint) {
@@ -574,7 +607,8 @@
       'delta': '/api/update-delta', 
       'num_inference_steps': '/api/update-num-inference-steps',
       'seed': '/api/update-seed',
-      'ipadapter_scale': '/api/ipadapter/update-scale'
+      'ipadapter_scale': '/api/ipadapter/update-scale',
+      'ipadapter_weight_type': '/api/ipadapter/update-weight-type'
     };
     return endpoints[parameterName] || null;
   }
@@ -603,7 +637,8 @@
       'delta': 'delta',
       'num_inference_steps': 'num_inference_steps', 
       'seed': 'seed',
-      'ipadapter_scale': 'scale'
+      'ipadapter_scale': 'scale',
+      'ipadapter_weight_type': 'weight_type'
     };
     return keys[parameterName] || parameterName;
   }
@@ -702,6 +737,23 @@
             await updatePromptWeightParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('seed_weight_')) {
             await updateSeedWeightParameter(control, control.pendingValue);
+          } else if (control.parameter_name === 'ipadapter_weight_type') {
+            // Convert numeric value to weight type string
+            const weightTypes = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                               "weak input", "weak output", "weak middle", "strong middle", 
+                               "style transfer", "composition", "strong style transfer", 
+                               "style and composition", "style transfer precise", "composition precise"];
+            const index = Math.round(control.pendingValue) % weightTypes.length;
+            const weightType = weightTypes[index];
+            
+            const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+            if (endpoint) {
+              await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ weight_type: weightType })
+              });
+            }
           } else {
             const endpoint = getParameterUpdateEndpoint(control.parameter_name);
             if (endpoint) {
@@ -744,6 +796,23 @@
             await updatePromptWeightParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('seed_weight_')) {
             await updateSeedWeightParameter(control, control.pendingValue);
+          } else if (control.parameter_name === 'ipadapter_weight_type') {
+            // Convert numeric value to weight type string
+            const weightTypes = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                               "weak input", "weak output", "weak middle", "strong middle", 
+                               "style transfer", "composition", "strong style transfer", 
+                               "style and composition", "style transfer precise", "composition precise"];
+            const index = Math.round(control.pendingValue) % weightTypes.length;
+            const weightType = weightTypes[index];
+            
+            const endpoint = getParameterUpdateEndpoint(control.parameter_name);
+            if (endpoint) {
+              await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ weight_type: weightType })
+              });
+            }
           } else {
             const endpoint = getParameterUpdateEndpoint(control.parameter_name);
             if (endpoint) {
@@ -868,21 +937,9 @@
   }
 </script>
 
-<div class="input-control-panel">
-  <div class="panel-header">
-    <button 
-      class="toggle-button"
-      on:click={() => showInputControls = !showInputControls}
-      class:expanded={showInputControls}
-    >
-      Input Controls {showInputControls ? '−' : '+'}
-    </button>
-  </div>
-
-  {#if showInputControls}
-    <div class="panel-content">
+<div class="space-y-4">
       <!-- Microphone Access Status -->
-      <div class="mic-status">
+      <div class="mic-status bg-gray-50 dark:bg-gray-700 rounded p-3">
         <div class="flex items-center justify-between">
           <span class="text-sm">Microphone Access:</span>
           <span class="status-badge" class:active={microphoneAccess}>
@@ -900,7 +957,7 @@
       </div>
 
       <!-- Hand Tracking Access Status -->
-      <div class="hand-tracking-status">
+      <div class="hand-tracking-status bg-gray-50 dark:bg-gray-700 rounded p-3">
         <div class="flex items-center justify-between">
           <span class="text-sm">Hand Tracking Access:</span>
           <span class="status-badge" class:active={handTrackingAccess}>
@@ -918,7 +975,7 @@
       </div>
 
       <!-- Gamepad Access Status -->
-      <div class="gamepad-status">
+      <div class="gamepad-status bg-gray-50 dark:bg-gray-700 rounded p-3">
         <div class="flex items-center justify-between">
           <span class="text-sm">Gamepad Access:</span>
           <span class="status-badge" class:active={gamepadAccess}>
@@ -976,7 +1033,7 @@
       {:else}
         <div class="controls-list">
           {#each inputControlConfigs as control, index}
-            <div class="control-form">
+            <div class="control-form bg-gray-50 dark:bg-gray-700 rounded p-3 space-y-3">
               <div class="control-header">
                 <div class="control-title">
                   <strong>
@@ -1008,10 +1065,12 @@
               <div class="control-config">
                 <div class="form-grid">
                   <div class="form-group">
-                    <label>Parameter:</label>
-                                         <select 
+                    <label for={`param-${index}`}>Parameter:</label>
+                     <select 
+                       id={`param-${index}`}
                        bind:value={control.parameter_name}
                        on:change={(e) => updateControlParameter(index, 'parameter_name', (e.target as HTMLSelectElement).value)}
+                       class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
                      >
                        {#each parameterOptions as option}
                          <option value={option.value}>{option.label}</option>
@@ -1019,56 +1078,106 @@
                      </select>
                    </div>
                    
-                   <div class="form-group">
-                     <label>Min Value:</label>
-                     <input 
-                       type="number" 
-                       bind:value={control.min_value}
-                       on:input={(e) => updateControlParameter(index, 'min_value', parseFloat((e.target as HTMLInputElement).value))}
-                       step="0.1" 
-                     />
-                   </div>
+                    <div class="form-group">
+                      <label for={`min-${index}`}>Min Value:</label>
+                      <div class="flex items-center gap-2">
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'min_value', -1, 0.1)}
+                        >-</button>
+                        <input 
+                          type="number" 
+                          id={`min-${index}`}
+                          bind:value={control.min_value}
+                          on:input={(e) => updateControlParameter(index, 'min_value', parseFloat((e.target as HTMLInputElement).value))}
+                          step="0.1" 
+                          class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                        />
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'min_value', 1, 0.1)}
+                        >+</button>
+                      </div>
+                    </div>
                    
-                   <div class="form-group">
-                     <label>Max Value:</label>
-                     <input 
-                       type="number" 
-                       bind:value={control.max_value}
-                       on:input={(e) => updateControlParameter(index, 'max_value', parseFloat((e.target as HTMLInputElement).value))}
-                       step="0.1" 
-                     />
-                   </div>
+                    <div class="form-group">
+                      <label for={`max-${index}`}>Max Value:</label>
+                      <div class="flex items-center gap-2">
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'max_value', -1, 0.1)}
+                        >-</button>
+                        <input 
+                          type="number" 
+                          id={`max-${index}`}
+                          bind:value={control.max_value}
+                          on:input={(e) => updateControlParameter(index, 'max_value', parseFloat((e.target as HTMLInputElement).value))}
+                          step="0.1" 
+                          class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                        />
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'max_value', 1, 0.1)}
+                        >+</button>
+                      </div>
+                    </div>
                    
-                   <div class="form-group">
-                     <label>Sensitivity:</label>
-                     <input 
-                       type="number" 
-                       bind:value={control.sensitivity}
-                       on:input={(e) => updateControlParameter(index, 'sensitivity', parseFloat((e.target as HTMLInputElement).value))}
-                       step="0.1" 
-                       min="0.1" 
-                       max="10" 
-                     />
-                   </div>
+                    <div class="form-group">
+                      <label for={`sens-${index}`}>Sensitivity:</label>
+                      <div class="flex items-center gap-2">
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'sensitivity', -1, 0.1, 0.1, 10)}
+                        >-</button>
+                        <input 
+                          type="number" 
+                          id={`sens-${index}`}
+                          bind:value={control.sensitivity}
+                          on:input={(e) => updateControlParameter(index, 'sensitivity', parseFloat((e.target as HTMLInputElement).value))}
+                          step="0.1" 
+                          min="0.1" 
+                          max="10" 
+                          class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                        />
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'sensitivity', 1, 0.1, 0.1, 10)}
+                        >+</button>
+                      </div>
+                    </div>
                    
-                   <div class="form-group">
-                     <label>Update Rate (s):</label>
-                     <input 
-                       type="number" 
-                       bind:value={control.update_rate}
-                       on:input={(e) => updateControlParameter(index, 'update_rate', parseFloat((e.target as HTMLInputElement).value))}
-                       step="0.05" 
-                       min="0.05" 
-                       max="1.0" 
-                     />
-                   </div>
+                    <div class="form-group">
+                      <label for={`rate-${index}`}>Update Rate (s):</label>
+                      <div class="flex items-center gap-2">
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'update_rate', -1, 0.05, 0.05, 1.0)}
+                        >-</button>
+                        <input 
+                          type="number" 
+                          id={`rate-${index}`}
+                          bind:value={control.update_rate}
+                          on:input={(e) => updateControlParameter(index, 'update_rate', parseFloat((e.target as HTMLInputElement).value))}
+                          step="0.05" 
+                          min="0.05" 
+                          max="1.0" 
+                          class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                        />
+                        <button
+                          class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          on:click={() => nudgeControl(index, 'update_rate', 1, 0.05, 0.05, 1.0)}
+                        >+</button>
+                      </div>
+                    </div>
                    
                                        {#if control.type === 'hand_tracking'}
                       <div class="form-group">
-                        <label>Hand Index:</label>
+                        <label for={`hand-${index}`}>Hand Index:</label>
                         <select 
+                          id={`hand-${index}`}
                           bind:value={control.hand_index}
                           on:change={(e) => updateControlParameter(index, 'hand_index', parseInt((e.target as HTMLSelectElement).value))}
+                          class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
                         >
                           <option value={0}>Hand 0</option>
                           <option value={1}>Hand 1</option>
@@ -1091,10 +1200,12 @@
                     
                     {#if control.type === 'gamepad'}
                       <div class="form-group">
-                        <label>Gamepad Index:</label>
+                        <label for={`gpad-${index}`}>Gamepad Index:</label>
                         <select 
+                          id={`gpad-${index}`}
                           bind:value={control.gamepad_index}
                           on:change={(e) => updateControlParameter(index, 'gamepad_index', parseInt((e.target as HTMLSelectElement).value))}
+                          class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
                         >
                           <option value={0}>Gamepad 0</option>
                           <option value={1}>Gamepad 1</option>
@@ -1104,10 +1215,12 @@
                       </div>
                       
                       <div class="form-group">
-                        <label>Axis Index:</label>
+                        <label for={`axis-${index}`}>Axis Index:</label>
                         <select 
+                          id={`axis-${index}`}
                           bind:value={control.axis_index}
                           on:change={(e) => updateControlParameter(index, 'axis_index', parseInt((e.target as HTMLSelectElement).value))}
+                          class="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
                         >
                           <option value={0}>Axis 0 (Left Stick X)</option>
                           <option value={1}>Axis 1 (Left Stick Y)</option>
@@ -1119,15 +1232,27 @@
                       </div>
                       
                       <div class="form-group">
-                        <label>Deadzone:</label>
-                        <input 
-                          type="number" 
-                          bind:value={control.deadzone}
-                          on:input={(e) => updateControlParameter(index, 'deadzone', parseFloat((e.target as HTMLInputElement).value))}
-                          step="0.01" 
-                          min="0.0" 
-                          max="0.5" 
-                        />
+                        <label for={`dead-${index}`}>Deadzone:</label>
+                        <div class="flex items-center gap-2">
+                          <button
+                            class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                            on:click={() => nudgeControl(index, 'deadzone', -1, 0.01, 0.0, 0.5)}
+                          >-</button>
+                          <input 
+                            type="number" 
+                            id={`dead-${index}`}
+                            bind:value={control.deadzone}
+                            on:input={(e) => updateControlParameter(index, 'deadzone', parseFloat((e.target as HTMLInputElement).value))}
+                            step="0.01" 
+                            min="0.0" 
+                            max="0.5" 
+                            class="flex-1 px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                          />
+                          <button
+                            class="px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
+                            on:click={() => nudgeControl(index, 'deadzone', 1, 0.01, 0.0, 0.5)}
+                          >+</button>
+                        </div>
                       </div>
                       
                       <div class="form-group">
@@ -1175,48 +1300,15 @@
            {/each}
         </div>
       {/if}
-    </div>
-  {/if}
 </div>
 
 <style>
-  .input-control-panel {
-    border: 1px solid #374151;
-    border-radius: 0.5rem;
-    margin-bottom: 1rem;
-    background: #1f2937;
-  }
-
-  .panel-header {
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid #374151;
-  }
-
-  .toggle-button {
-    background: none;
-    border: none;
-    color: #f3f4f6;
-    cursor: pointer;
-    font-weight: 500;
-    width: 100%;
-    text-align: left;
-    font-size: 0.9rem;
-  }
-
-  .toggle-button:hover {
-    color: #93c5fd;
-  }
-
-  .panel-content {
-    padding: 1rem;
-  }
+  /* removed legacy .panel-content */
 
   .mic-status {
     padding: 0.75rem;
-    border: 1px solid #374151;
     border-radius: 0.25rem;
     margin-bottom: 1rem;
-    background: #111827;
   }
 
   .status-message {
@@ -1248,9 +1340,7 @@
   }
 
   .control-form {
-    border: 1px solid #374151;
     border-radius: 0.5rem;
-    background: #111827;
   }
 
   .control-header {
@@ -1353,10 +1443,6 @@
     margin-top: 0.25rem;
   }
 
-  .mt-2 {
-    margin-top: 0.5rem;
-  }
-
   .italic {
     font-style: italic;
   }
@@ -1371,17 +1457,13 @@
 
   .hand-tracking-status {
     padding: 1rem;
-    border: 1px solid #374151;
     border-radius: 0.5rem;
     margin-bottom: 1rem;
-    background: #111827;
   }
 
   .gamepad-status {
     padding: 1rem;
-    border: 1px solid #374151;
     border-radius: 0.5rem;
     margin-bottom: 1rem;
-    background: #111827;
   }
 </style> 

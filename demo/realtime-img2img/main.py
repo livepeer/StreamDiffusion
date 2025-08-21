@@ -136,15 +136,23 @@ class App:
 
             # Map parameter names to pipeline update methods
             if parameter_name == 'guidance_scale':
-                self.pipeline.stream.update_stream_params(guidance_scale=value)
+                self.pipeline.update_stream_params(guidance_scale=value)
             elif parameter_name == 'delta':
-                self.pipeline.stream.update_stream_params(delta=value)
+                self.pipeline.update_stream_params(delta=value)
             elif parameter_name == 'num_inference_steps':
-                self.pipeline.stream.update_stream_params(num_inference_steps=int(value))
+                self.pipeline.update_stream_params(num_inference_steps=int(value))
             elif parameter_name == 'seed':
-                self.pipeline.stream.update_stream_params(seed=int(value))
+                self.pipeline.update_stream_params(seed=int(value))
             elif parameter_name == 'ipadapter_scale':
-                self.pipeline.stream.update_stream_params(ipadapter_scale=value)
+                self.pipeline.update_stream_params(ipadapter_config={'scale': value})
+            elif parameter_name == 'ipadapter_weight_type':
+                # For weight type, we need to convert the numeric value to a string
+                weight_types = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                               "weak input", "weak output", "weak middle", "strong middle", 
+                               "style transfer", "composition", "strong style transfer", 
+                               "style and composition", "style transfer precise", "composition precise"]
+                index = int(value) % len(weight_types)
+                self.pipeline.update_ipadapter_weight_type(weight_types[index])
             elif parameter_name.startswith('controlnet_') and parameter_name.endswith('_strength'):
                 # Handle ControlNet strength parameters
                 import re
@@ -155,8 +163,8 @@ class App:
                     current_config = self._get_current_controlnet_config()
                     if current_config and index < len(current_config):
                         current_config[index]['conditioning_scale'] = float(value)
-                        # Apply the updated config
-                        self.pipeline.stream.apply_controlnet_config(current_config)
+                        # Apply the updated config via unified API
+                        self.pipeline.update_stream_params(controlnet_config=current_config)
             elif parameter_name.startswith('controlnet_') and '_preprocessor_' in parameter_name:
                 # Handle ControlNet preprocessor parameters
                 match = re.match(r'controlnet_(\d+)_preprocessor_(.+)', parameter_name)
@@ -176,27 +184,25 @@ class App:
                 match = re.match(r'prompt_weight_(\d+)', parameter_name)
                 if match:
                     index = int(match.group(1))
-                    # Get current prompt list and update specific weight
-                    current_prompts = self.pipeline.get_current_prompts()
+                    # Get current prompt list from unified state and update specific weight
+                    state = self.pipeline.stream.get_stream_state()
+                    current_prompts = state.get('prompt_list', [])
                     if current_prompts and index < len(current_prompts):
-                        # Create updated prompt list with new weight
-                        updated_prompts = current_prompts.copy()
-                        updated_prompts[index] = (updated_prompts[index][0], value)
-                        # Update prompt list with new weights
-                        self.pipeline.update_prompt_weights([weight for _, weight in updated_prompts])
+                        updated_prompts = list(current_prompts)
+                        updated_prompts[index] = (updated_prompts[index][0], float(value))
+                        self.pipeline.update_stream_params(prompt_list=updated_prompts)
             elif parameter_name.startswith('seed_weight_'):
                 # Handle seed blending weights  
                 match = re.match(r'seed_weight_(\d+)', parameter_name)
                 if match:
                     index = int(match.group(1))
-                    # Get current seed list and update specific weight
-                    current_seeds = self.pipeline.get_current_seeds()
+                    # Get current seed list from unified state and update specific weight
+                    state = self.pipeline.stream.get_stream_state()
+                    current_seeds = state.get('seed_list', [])
                     if current_seeds and index < len(current_seeds):
-                        # Create updated seed list with new weight
-                        updated_seeds = current_seeds.copy()
-                        updated_seeds[index] = (updated_seeds[index][0], value)
-                        # Update seed list with new weights
-                        self.pipeline.update_seed_weights([weight for _, weight in updated_seeds])
+                        updated_seeds = list(current_seeds)
+                        updated_seeds[index] = (updated_seeds[index][0], float(value))
+                        self.pipeline.update_stream_params(seed_list=updated_seeds)
             else:
                 logger.warning(f"_handle_input_parameter_update: Unknown parameter {parameter_name}")
 
@@ -215,7 +221,7 @@ class App:
             
         stream = self.pipeline.stream
         
-        # Check if stream is ControlNet pipeline directly
+        # Module-aware: module installs expose preprocessors on stream
         if hasattr(stream, 'preprocessors'):
             return stream
             
@@ -223,6 +229,9 @@ class App:
         if hasattr(stream, 'stream') and hasattr(stream.stream, 'preprocessors'):
             return stream.stream
             
+        # New module path on stream
+        if hasattr(stream, '_controlnet_module'):
+            return stream._controlnet_module
         return None
 
     def _get_current_controlnet_config(self):
@@ -358,6 +367,27 @@ class App:
                         logger.info("stream: Creating default pipeline...")
                         self.pipeline = self._create_default_pipeline()
                     logger.info("stream: Pipeline created successfully")
+                    try:
+                        acc = getattr(self.args, 'acceleration', None)
+                        logger.debug(f"stream: acceleration={acc}, use_config={getattr(self.pipeline, 'use_config', False)}")
+                        stream_obj = getattr(self.pipeline, 'stream', None)
+                        unet_obj = getattr(stream_obj, 'unet', None)
+                        is_trt = unet_obj is not None and hasattr(unet_obj, 'engine') and hasattr(unet_obj, 'stream')
+                        logger.debug(f"stream: unet_is_trt={is_trt}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
+                        if is_trt:
+                            logger.debug(f"stream: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
+                        if hasattr(stream_obj, 'ipadapter_scale'):
+                            try:
+                                scale_val = getattr(stream_obj, 'ipadapter_scale')
+                                if hasattr(scale_val, 'shape'):
+                                    logger.debug(f"stream: ipadapter_scale tensor shape={tuple(scale_val.shape)}")
+                                else:
+                                    logger.debug(f"stream: ipadapter_scale scalar={scale_val}")
+                            except Exception:
+                                pass
+                        logger.debug(f"stream: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                    except Exception:
+                        logger.exception("stream: failed to log pipeline state after creation")
                 
                 # Recreate pipeline if config changed (but not resolution - that's handled separately)
                 elif self.config_needs_reload or (self.uploaded_controlnet_config and not (self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config)) or (self.uploaded_controlnet_config and not self.pipeline.use_config):
@@ -394,8 +424,34 @@ class App:
                             continue
                         
                         try:
+                            try:
+                                stream_obj = getattr(self.pipeline, 'stream', None)
+                                unet_obj = getattr(stream_obj, 'unet', None)
+                                is_trt = unet_obj is not None and hasattr(unet_obj, 'engine') and hasattr(unet_obj, 'stream')
+                                logger.debug(f"generate: calling predict; acceleration={getattr(self.args, 'acceleration', None)}, is_trt={is_trt}, mode={getattr(self.pipeline, 'pipeline_mode', None)}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}, has_controlnet={(self.pipeline.use_config and self.pipeline.config and 'controlnets' in self.pipeline.config) if getattr(self.pipeline, 'use_config', False) else False}")
+                                img = getattr(params, 'image', None)
+                                if isinstance(img, torch.Tensor):
+                                    logger.debug(f"generate: params.image tensor shape={tuple(img.shape)}, dtype={img.dtype}")
+                                else:
+                                    logger.debug(f"generate: params.image type={type(img).__name__}")
+                                if is_trt:
+                                    logger.debug(f"generate: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
+                                    try:
+                                        base_scale = getattr(stream_obj, 'ipadapter_scale', None)
+                                        if base_scale is not None:
+                                            if hasattr(base_scale, 'shape'):
+                                                logger.debug(f"generate: base ipadapter_scale shape={tuple(base_scale.shape)}")
+                                            else:
+                                                logger.debug(f"generate: base ipadapter_scale scalar={base_scale}")
+                                        logger.debug(f"generate: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                logger.exception("generate: pre-predict logging failed")
+
                             image = self.pipeline.predict(params)
                             if image is None:
+                                logger.error("generate: predict returned None image; skipping frame")
                                 continue
                             
                             # Use appropriate frame conversion based on output type
@@ -404,6 +460,7 @@ class App:
                             else:
                                 frame = pil_to_frame(image)
                         except Exception as e:
+                            logger.exception(f"generate: predict failed with exception: {e}")
                             continue
                         
                         # Update FPS counter
@@ -479,40 +536,40 @@ class App:
             current_delta = DEFAULT_SETTINGS.get('delta', 0.7)
             current_num_inference_steps = DEFAULT_SETTINGS.get('num_inference_steps', 50)
             current_seed = DEFAULT_SETTINGS.get('seed', 2)
+            # Negative prompt (for UI)
+            current_negative_prompt = DEFAULT_SETTINGS.get('negative_prompt', '')
             
-            if self.pipeline:
-                current_guidance_scale = getattr(self.pipeline.stream, 'guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
-                current_delta = getattr(self.pipeline.stream, 'delta', DEFAULT_SETTINGS.get('delta', 0.7))
-                current_num_inference_steps = getattr(self.pipeline.stream, 'num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
-                # Get seed from generator if available
-                if hasattr(self.pipeline.stream, 'generator') and self.pipeline.stream.generator is not None:
-                    # We can't directly get seed from generator, but we'll use the configured value
-                    current_seed = getattr(self.pipeline.stream, 'current_seed', DEFAULT_SETTINGS.get('seed', 2))
+            if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+                state = self.pipeline.stream.get_stream_state()
+                current_guidance_scale = state.get('guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
+                current_delta = state.get('delta', DEFAULT_SETTINGS.get('delta', 0.7))
+                current_num_inference_steps = state.get('num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
+                current_seed = state.get('current_seed', DEFAULT_SETTINGS.get('seed', 2))
+                # try to get negative prompt from pipeline if available
+                try:
+                    current_negative_prompt = getattr(self.pipeline, 'negative_prompt', current_negative_prompt)
+                except Exception:
+                    pass
             elif self.uploaded_controlnet_config:
                 current_guidance_scale = self.uploaded_controlnet_config.get('guidance_scale', DEFAULT_SETTINGS.get('guidance_scale', 1.1))
                 current_delta = self.uploaded_controlnet_config.get('delta', DEFAULT_SETTINGS.get('delta', 0.7))
                 current_num_inference_steps = self.uploaded_controlnet_config.get('num_inference_steps', DEFAULT_SETTINGS.get('num_inference_steps', 50))
                 current_seed = self.uploaded_controlnet_config.get('seed', DEFAULT_SETTINGS.get('seed', 2))
+                current_negative_prompt = self.uploaded_controlnet_config.get('negative_prompt', current_negative_prompt)
             
             # Get prompt and seed blending configuration from uploaded config or pipeline
             prompt_blending_config = None
             seed_blending_config = None
             
             # First try to get from current pipeline if available
-            if self.pipeline:
-                try:
-                    current_prompts = self.pipeline.stream.get_current_prompts()
-                    if current_prompts and len(current_prompts) > 0:
-                        prompt_blending_config = current_prompts
-                except:
-                    pass
-                    
-                try:
-                    current_seeds = self.pipeline.stream.get_current_seeds()
-                    if current_seeds and len(current_seeds) > 0:
-                        seed_blending_config = current_seeds
-                except:
-                    pass
+            if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+                state = self.pipeline.stream.get_stream_state()
+                current_prompts = state.get('prompt_list', [])
+                current_seeds = state.get('seed_list', [])
+                if current_prompts:
+                    prompt_blending_config = current_prompts
+                if current_seeds:
+                    seed_blending_config = current_seeds
             
             # If not available from pipeline, get from uploaded config and normalize
             if not prompt_blending_config:
@@ -525,19 +582,51 @@ class App:
             normalize_prompt_weights = True  # default
             normalize_seed_weights = True    # default
             
-            if self.pipeline:
-                normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
+            if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+                state = self.pipeline.stream.get_stream_state()
+                normalize_prompt_weights = state.get('normalize_prompt_weights', True)
+                normalize_seed_weights = state.get('normalize_seed_weights', True)
             elif self.uploaded_controlnet_config:
                 normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
                 normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
             
+            # Determine current model id for UI badge
+            model_id_for_ui = ''
+            if self.pipeline and hasattr(self.pipeline, 'config') and self.pipeline.config:
+                model_id_for_ui = self.pipeline.config.get('model_id', '')
+            elif self.uploaded_controlnet_config and 'model_id' in self.uploaded_controlnet_config:
+                model_id_for_ui = self.uploaded_controlnet_config['model_id']
+            else:
+                model_id_for_ui = DEFAULT_SETTINGS.get('model_id', '')
+
+            # Build config values for UI defaults from uploaded config
+            config_values = {}
+            if self.uploaded_controlnet_config:
+                for key in [
+                    'prompt',
+                    'negative_prompt',
+                    'guidance_scale',
+                    'delta',
+                    'num_inference_steps',
+                    'seed',
+                    'frame_buffer_size',
+                    'use_denoising_batch',
+                    'use_lcm_lora',
+                    'use_tiny_vae',
+                    'use_taesd',
+                    'cfg_type',
+                    'safety_checker',
+                ]:
+                    if key in self.uploaded_controlnet_config:
+                        config_values[key] = self.uploaded_controlnet_config[key]
+
             return JSONResponse(
                 {
                     "info": info_schema,
                     "input_params": input_params,
                     "max_queue_size": self.args.max_queue_size,
                     "page_content": page_content if info.page_content else "",
+                    "pipeline_active": bool(self.pipeline) and hasattr(self.pipeline, 'stream'),
                     "controlnet": controlnet_info,
                     "ipadapter": ipadapter_info,
                     "config_prompt": config_prompt,
@@ -547,11 +636,14 @@ class App:
                     "delta": current_delta,
                     "num_inference_steps": current_num_inference_steps,
                     "seed": current_seed,
+                    "negative_prompt": current_negative_prompt,
                     "current_resolution": current_resolution,
                     "prompt_blending": prompt_blending_config,
                     "seed_blending": seed_blending_config,
                     "normalize_prompt_weights": normalize_prompt_weights,
                     "normalize_seed_weights": normalize_seed_weights,
+                    "model_id": model_id_for_ui,
+                    "config_values": config_values,
                 }
             )
 
@@ -583,6 +675,8 @@ class App:
                 
                 # Get config prompt if available
                 config_prompt = config_data.get('prompt', None)
+                # Get negative prompt if available
+                config_negative_prompt = config_data.get('negative_prompt', None)
                 
                 # Get t_index_list from config if available
                 t_index_list = config_data.get('t_index_list', DEFAULT_SETTINGS.get('t_index_list', [35, 45]))
@@ -641,6 +735,26 @@ class App:
                 response_ipadapter_info = self._get_ipadapter_info()
 
                 
+                # Prepare config_values for UI defaults
+                config_values = {}
+                for key in [
+                    'prompt',
+                    'negative_prompt',
+                    'guidance_scale',
+                    'delta',
+                    'num_inference_steps',
+                    'seed',
+                    'frame_buffer_size',
+                    'use_denoising_batch',
+                    'use_lcm_lora',
+                    'use_tiny_vae',
+                    'use_taesd',
+                    'cfg_type',
+                    'safety_checker',
+                ]:
+                    if key in config_data:
+                        config_values[key] = config_data[key]
+
                 return JSONResponse({
                     "status": "success",
                     "message": "ControlNet configuration uploaded successfully",
@@ -648,6 +762,8 @@ class App:
                     "controlnet": self._get_controlnet_info(),
                     "ipadapter": response_ipadapter_info,  # Include updated IPAdapter info
                     "config_prompt": config_prompt,
+                    "negative_prompt": config_negative_prompt,
+                    "model_id": config_data.get('model_id', ''),
                     "t_index_list": t_index_list,
                     "acceleration": config_acceleration,
                     "guidance_scale": config_guidance_scale,
@@ -659,6 +775,7 @@ class App:
                     "current_resolution": current_resolution,  # Include updated resolution
                     "normalize_prompt_weights": config_normalize_weights,
                     "normalize_seed_weights": config_normalize_weights,
+                    "config_values": config_values,
                 })
                 
             except Exception as e:
@@ -674,51 +791,28 @@ class App:
         async def get_current_blending_config():
             """Get current prompt and seed blending configurations"""
             try:
-                # Get normalized configurations (same logic as settings endpoint)
-                prompt_blending_config = None
-                seed_blending_config = None
-                
-                # First try to get from current pipeline if available
-                if self.pipeline:
-                    try:
-                        current_prompts = self.pipeline.stream.get_current_prompts()
-                        if current_prompts and len(current_prompts) > 0:
-                            prompt_blending_config = current_prompts
-                    except Exception:
-                        pass
-                        
-                    try:
-                        current_seeds = self.pipeline.stream.get_current_seeds()
-                        if current_seeds and len(current_seeds) > 0:
-                            seed_blending_config = current_seeds
-                    except:
-                        pass
-                
-                # If not available from pipeline, get from uploaded config and normalize
-                if not prompt_blending_config:
-                    prompt_blending_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
-                
-                if not seed_blending_config:
-                    seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
-                
-                # Get normalization settings
-                normalize_prompt_weights = True
-                normalize_seed_weights = True
-                
-                if self.pipeline:
-                    normalize_prompt_weights = self.pipeline.stream.get_normalize_prompt_weights()
-                    normalize_seed_weights = self.pipeline.stream.get_normalize_seed_weights()
-                elif self.uploaded_controlnet_config:
-                    normalize_prompt_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                    normalize_seed_weights = self.uploaded_controlnet_config.get('normalize_weights', True)
-                
+                if self.pipeline and hasattr(self.pipeline, 'stream') and hasattr(self.pipeline.stream, 'get_stream_state'):
+                    state = self.pipeline.stream.get_stream_state(include_caches=False)
+                    return JSONResponse({
+                        "prompt_blending": state.get("prompt_list", []),
+                        "seed_blending": state.get("seed_list", []),
+                        "normalize_prompt_weights": state.get("normalize_prompt_weights", True),
+                        "normalize_seed_weights": state.get("normalize_seed_weights", True),
+                        "has_config": self.uploaded_controlnet_config is not None,
+                        "pipeline_active": True
+                    })
+
+                # Fallback to uploaded config normalization when pipeline not initialized
+                prompt_blending_config = self._normalize_prompt_config(self.uploaded_controlnet_config)
+                seed_blending_config = self._normalize_seed_config(self.uploaded_controlnet_config)
+                normalize_weights = self.uploaded_controlnet_config.get('normalize_weights', True) if self.uploaded_controlnet_config else True
                 return JSONResponse({
                     "prompt_blending": prompt_blending_config,
                     "seed_blending": seed_blending_config,
-                    "normalize_prompt_weights": normalize_prompt_weights,
-                    "normalize_seed_weights": normalize_seed_weights,
+                    "normalize_prompt_weights": normalize_weights,
+                    "normalize_seed_weights": normalize_weights,
                     "has_config": self.uploaded_controlnet_config is not None,
-                    "pipeline_active": self.pipeline is not None
+                    "pipeline_active": False
                 })
                 
             except Exception as e:
@@ -988,20 +1082,20 @@ class App:
                 # Read file content
                 content = await file.read()
                 
-                # Save temporarily and load as PIL Image
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-                    tmp.write(content)
-                    tmp_path = tmp.name
-                
+                tmp_path = None
                 try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                        tmp.write(content)
+                        tmp_path = tmp.name
+
                     # Load and validate image
                     from PIL import Image
                     style_image = Image.open(tmp_path).convert("RGB")
-                    
+
                     # Store the uploaded style image persistently FIRST
                     self.uploaded_style_image = style_image
                     print(f"upload_style_image: Stored style image with size: {style_image.size}")
-                    
+
                     # If pipeline exists and has IPAdapter, update it immediately
                     pipeline_updated = False
                     if self.pipeline and getattr(self.pipeline, 'has_ipadapter', False):
@@ -1010,10 +1104,11 @@ class App:
                         if success:
                             pipeline_updated = True
                             print("upload_style_image: Successfully applied to existing pipeline")
-                            
+
                             # Force prompt re-encoding to apply new style image embeddings
                             try:
-                                current_prompts = self.pipeline.stream.get_current_prompts()
+                                state = self.pipeline.stream.get_stream_state()
+                                current_prompts = state.get('prompt_list', [])
                                 if current_prompts:
                                     print("upload_style_image: Forcing prompt re-encoding to apply new style image")
                                     self.pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
@@ -1026,7 +1121,7 @@ class App:
                         print(f"upload_style_image: Pipeline exists but has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
                     else:
                         print("upload_style_image: No pipeline exists yet")
-                    
+
                     # Return success
                     message = "Style image uploaded successfully"
                     if pipeline_updated:
@@ -1038,13 +1133,12 @@ class App:
                         "status": "success",
                         "message": message
                     })
-                    
                 finally:
-                    # Clean up temp file
-                    try:
-                        os.unlink(tmp_path)
-                    except:
-                        pass
+                    if tmp_path:
+                        try:
+                            os.unlink(tmp_path)
+                        except:
+                            pass
                 
             except HTTPException:
                 raise
@@ -1129,11 +1223,71 @@ class App:
                 logging.error(f"update_ipadapter_scale: Failed to update scale: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update scale: {str(e)}")
 
+        @self.app.post("/api/ipadapter/update-weight-type")
+        async def update_ipadapter_weight_type(request: Request):
+            """Update IPAdapter weight type in real-time"""
+            try:
+                data = await request.json()
+                weight_type = data.get("weight_type")
+                
+                if weight_type is None:
+                    raise HTTPException(status_code=400, detail="Missing weight_type parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if we're using config mode and have ipadapters configured
+                ipadapter_enabled = (self.pipeline.use_config and 
+                                    self.pipeline.config and 
+                                    'ipadapters' in self.pipeline.config)
+                
+                if not ipadapter_enabled:
+                    raise HTTPException(status_code=400, detail="IPAdapter is not enabled")
+                
+                # Update IPAdapter weight type in the pipeline
+                success = self.pipeline.update_ipadapter_weight_type(weight_type)
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Updated IPAdapter weight type to {weight_type}"
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to update weight type in pipeline")
+                
+            except Exception as e:
+                logging.error(f"update_ipadapter_weight_type: Failed to update weight type: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update weight type: {str(e)}")
+
         @self.app.post("/api/params")
         async def update_params(request: Request):
             """Update multiple streaming parameters in a single unified call"""
             try:
                 data = await request.json()
+                
+                # Allow updating resolution even when pipeline is not initialized.
+                # We save the new values so they take effect on the next stream start.
+                if "resolution" in data and not self.pipeline:
+                    resolution = data["resolution"]
+                    if isinstance(resolution, dict) and "width" in resolution and "height" in resolution:
+                        width, height = int(resolution["width"]), int(resolution["height"])
+                        self.new_width = width
+                        self.new_height = height
+                    elif isinstance(resolution, str):
+                        # Handle string format like "512x768 (2:3)" or "512x768"
+                        resolution_part = resolution.split(' ')[0]
+                        try:
+                            width, height = map(int, resolution_part.split('x'))
+                            self.new_width = width
+                            self.new_height = height
+                        except ValueError:
+                            raise HTTPException(status_code=400, detail="Invalid resolution format")
+                    else:
+                        raise HTTPException(status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string")
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Resolution set to {self.new_width}x{self.new_height}. It will be applied when streaming starts."
+                    })
                 
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
@@ -1228,7 +1382,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(guidance_scale=guidance_scale)
+                self.pipeline.update_stream_params(guidance_scale=guidance_scale)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1250,7 +1404,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(delta=delta)
+                self.pipeline.update_stream_params(delta=delta)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1272,7 +1426,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(num_inference_steps=num_inference_steps)
+                self.pipeline.update_stream_params(num_inference_steps=num_inference_steps)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1294,7 +1448,7 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                self.pipeline.stream.update_stream_params(seed=seed)
+                self.pipeline.update_stream_params(seed=seed)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1459,24 +1613,37 @@ class App:
                 # Create new preprocessor instance
                 from src.streamdiffusion.preprocessing.processors import get_preprocessor
                 new_preprocessor_instance = get_preprocessor(new_preprocessor)
-                
+
+                # Resolve stream object and preprocessor list regardless of module or stream facade
+                stream_obj = getattr(cn_pipeline, '_stream', None)
+                if stream_obj is None:
+                    stream_obj = getattr(self.pipeline, 'stream', None)
+                if stream_obj is None:
+                    raise HTTPException(status_code=500, detail="Pipeline stream not available")
+
+                preproc_list = getattr(cn_pipeline, 'preprocessors', None)
+                if preproc_list is None:
+                    preproc_list = getattr(stream_obj, 'preprocessors', None)
+                if preproc_list is None:
+                    raise HTTPException(status_code=500, detail="ControlNet preprocessors not available")
+
                 # Set system parameters
                 system_params = {
-                    'device': cn_pipeline.device,
-                    'dtype': cn_pipeline.dtype,
-                    'image_width': cn_pipeline.stream.width,
-                    'image_height': cn_pipeline.stream.height,
+                    'device': stream_obj.device,
+                    'dtype': stream_obj.dtype,
+                    'image_width': stream_obj.width,
+                    'image_height': stream_obj.height,
                 }
                 system_params.update(preprocessor_params)
                 new_preprocessor_instance.params.update(system_params)
-                
+
                 # Set pipeline reference for feedback preprocessor
                 if hasattr(new_preprocessor_instance, 'set_pipeline_ref'):
-                    new_preprocessor_instance.set_pipeline_ref(cn_pipeline.stream)
-                
+                    new_preprocessor_instance.set_pipeline_ref(stream_obj)
+
                 # Replace the preprocessor
-                old_preprocessor = cn_pipeline.preprocessors[controlnet_index]
-                cn_pipeline.preprocessors[controlnet_index] = new_preprocessor_instance
+                old_preprocessor = preproc_list[controlnet_index]
+                preproc_list[controlnet_index] = new_preprocessor_instance
                 
                 logger.info(f"switch_preprocessor: Successfully switched ControlNet {controlnet_index} from {type(old_preprocessor).__name__ if old_preprocessor else 'None'} to {type(new_preprocessor_instance).__name__}")
                 
@@ -1508,22 +1675,25 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Update preprocessor parameters using consolidated API
-                current_config = self._get_current_controlnet_config()
-                
-                if not current_config:
-                    raise HTTPException(status_code=400, detail="No ControlNet configuration available")
-                
-                if controlnet_index >= len(current_config):
-                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range (max: {len(current_config)-1})")
-                
-                # Update preprocessor_params for the specified controlnet
-                if 'preprocessor_params' not in current_config[controlnet_index]:
-                    current_config[controlnet_index]['preprocessor_params'] = {}
-                current_config[controlnet_index]['preprocessor_params'].update(preprocessor_params)
-                
-                # Apply the updated configuration
-                self.pipeline.update_stream_params(controlnet_config=current_config)
+                # Fast path: update module preprocessor directly when available
+                cn_pipeline = self._get_controlnet_pipeline()
+                preproc_list = getattr(cn_pipeline, 'preprocessors', None)
+                if preproc_list is None:
+                    raise HTTPException(status_code=400, detail="ControlNet preprocessors not available")
+
+                if controlnet_index >= len(preproc_list):
+                    raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range (max: {len(preproc_list)-1})")
+
+                target_preproc = preproc_list[controlnet_index]
+                if target_preproc is None:
+                    raise HTTPException(status_code=400, detail="ControlNet preprocessor is not set")
+
+                # Merge params: update both the params map and setattr when attribute exists
+                if hasattr(target_preproc, 'params') and isinstance(target_preproc.params, dict):
+                    target_preproc.params.update(preprocessor_params)
+                for name, value in preprocessor_params.items():
+                    if hasattr(target_preproc, name):
+                        setattr(target_preproc, name, value)
                 
                 return JSONResponse({
                     "status": "success",
@@ -1550,16 +1720,9 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Get current prompt blending configuration using the same logic as the blending/current endpoint
-                current_prompts = None
-                try:
-                    current_prompts = self.pipeline.stream.get_current_prompts()
-                except Exception:
-                    pass
-                
-                # If not available from pipeline, get from uploaded config and normalize
-                if not current_prompts:
-                    current_prompts = self._normalize_prompt_config(self.uploaded_controlnet_config)
+                # Get current prompt blending configuration via unified getter, fallback to uploaded config
+                state = self.pipeline.stream.get_stream_state()
+                current_prompts = state.get('prompt_list') or self._normalize_prompt_config(self.uploaded_controlnet_config)
                     
                 if current_prompts and index < len(current_prompts):
                     # Create updated prompt list with new weight
@@ -1603,16 +1766,9 @@ class App:
                 if not self.pipeline:
                     raise HTTPException(status_code=400, detail="Pipeline is not initialized")
                 
-                # Get current seed blending configuration using the same logic as the blending/current endpoint
-                current_seeds = None
-                try:
-                    current_seeds = self.pipeline.stream.get_current_seeds()
-                except Exception:
-                    pass
-                
-                # If not available from pipeline, get from uploaded config and normalize
-                if not current_seeds:
-                    current_seeds = self._normalize_seed_config(self.uploaded_controlnet_config)
+                # Get current seed blending configuration via unified getter, fallback to uploaded config
+                state = self.pipeline.stream.get_stream_state()
+                current_seeds = state.get('seed_list') or self._normalize_seed_config(self.uploaded_controlnet_config)
                     
                 if current_seeds and index < len(current_seeds):
                     # Create updated seed list with new weight
@@ -1651,10 +1807,14 @@ class App:
                 if not cn_pipeline:
                     raise HTTPException(status_code=400, detail="ControlNet pipeline not found")
                 
-                if controlnet_index >= len(cn_pipeline.preprocessors):
+                # Module-aware: allow accessing module's preprocessors list
+                preprocessors = getattr(cn_pipeline, 'preprocessors', None)
+                if preprocessors is None:
+                    raise HTTPException(status_code=400, detail="ControlNet preprocessors not available")
+                if controlnet_index >= len(preprocessors):
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
-                current_preprocessor = cn_pipeline.preprocessors[controlnet_index]
+                current_preprocessor = preprocessors[controlnet_index]
                 if not current_preprocessor:
                     return JSONResponse({
                         "preprocessor": None,
@@ -1668,7 +1828,7 @@ class App:
                 # Extract current values, using defaults if not set
                 current_values = {}
                 for param_name, param_meta in user_param_meta.items():
-                    if param_name in current_preprocessor.params:
+                    if hasattr(current_preprocessor, 'params') and param_name in current_preprocessor.params:
                         current_values[param_name] = current_preprocessor.params[param_name]
                     else:
                         current_values[param_name] = param_meta.get("default")
@@ -2007,7 +2167,8 @@ class App:
                     
                     # Force prompt re-encoding to apply style image embeddings
                     try:
-                        current_prompts = new_pipeline.stream.get_current_prompts()
+                        state = new_pipeline.stream.get_stream_state()
+                        current_prompts = state.get('prompt_list', [])
                         if current_prompts:
                             print("_create_pipeline_with_config: Forcing prompt re-encoding to apply style image")
                             new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
@@ -2104,7 +2265,8 @@ class App:
             "scale": 1.0,
             "model_path": None,
             "style_image_set": False,
-            "style_image_path": None
+            "style_image_path": None,
+            "type": "regular"
         }
         
         # Check uploaded config first
@@ -2117,6 +2279,7 @@ class App:
                 first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
                 ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
                 
                 # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
@@ -2143,6 +2306,7 @@ class App:
                 first_ipadapter = self.pipeline.config['ipadapters'][0]
                 ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
                 ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
                 
                 # Check for style image - prioritize uploaded style image over config style image over default
                 if self.uploaded_style_image:
@@ -2275,7 +2439,8 @@ class App:
                         
                         # Force prompt re-encoding to apply style image embeddings
                         try:
-                            current_prompts = new_pipeline.stream.get_current_prompts()
+                            state = new_pipeline.stream.get_stream_state()
+                            current_prompts = state.get('prompt_list', [])
                             if current_prompts:
                                 print("_update_resolution: Forcing prompt re-encoding to apply style image")
                                 new_pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")

@@ -9,6 +9,7 @@ from .external import ExternalPreprocessor
 from .soft_edge import SoftEdgePreprocessor
 from .hed import HEDPreprocessor
 from .ipadapter_embedding import IPAdapterEmbeddingPreprocessor
+from .faceid_embedding import FaceIDEmbeddingPreprocessor
 from .feedback import FeedbackPreprocessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
@@ -117,6 +118,7 @@ __all__ = [
     "SoftEdgePreprocessor",
     "HEDPreprocessor",
     "IPAdapterEmbeddingPreprocessor",
+    "FaceIDEmbeddingPreprocessor",
     "FeedbackPreprocessor",
     "get_preprocessor",
     "register_preprocessor",

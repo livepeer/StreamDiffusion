@@ -26,14 +26,12 @@ class SDXLControlNetExportWrapper(torch.nn.Module):
             except:
                 self.dtype = torch.float16
     
-    def forward(self, sample, timestep, encoder_hidden_states, controlnet_cond, conditioning_scale):
+    def forward(self, sample, timestep, encoder_hidden_states, controlnet_cond, conditioning_scale, text_embeds, time_ids):
         """Forward pass that handles SDXL ControlNet requirements and produces 9 down blocks"""
-        batch_size = sample.shape[0]
-        
-        # Create proper added_cond_kwargs for SDXL
+        # Use the provided SDXL conditioning
         added_cond_kwargs = {
-            'text_embeds': torch.randn(batch_size, 1280, dtype=self.dtype, device=self.device),
-            'time_ids': torch.randn(batch_size, 6, dtype=self.dtype, device=self.device)
+            'text_embeds': text_embeds,
+            'time_ids': time_ids
         }
         
         # Call the ControlNet with proper arguments including conditioning_scale

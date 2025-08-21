@@ -60,12 +60,34 @@
           promptInitialized = true;
           console.log('BlendingControl: Initialized with current prompt:', initPrompt);
         }
-             } else if (promptBlendingConfig && Array.isArray(promptBlendingConfig) && !hasPendingPromptChanges) {
-         // Only update if the number of prompts changed (structural change, not just weight change)
-         // and we don't have pending local changes
-         if (promptBlendingConfig.length !== promptList.length) {
+      } else if (promptBlendingConfig && Array.isArray(promptBlendingConfig) && !hasPendingPromptChanges) {
+         // Update when structure changed OR when prompt texts changed (but avoid overwriting local edits)
+         const structureChanged = promptBlendingConfig.length !== promptList.length;
+         let textsChanged = false;
+         if (!structureChanged) {
+           for (let i = 0; i < promptList.length; i++) {
+             const newText = promptBlendingConfig[i]?.[0] ?? '';
+             const currText = promptList[i]?.[0] ?? '';
+             if (newText !== currText) {
+               textsChanged = true;
+               break;
+             }
+           }
+         }
+         if (structureChanged || textsChanged) {
            promptList = [...promptBlendingConfig];
-           console.log('BlendingControl: Updated prompt list due to structure change:', promptList);
+           console.log('BlendingControl: Updated prompt list from config change:', promptList);
+         }
+       } else if (!promptBlendingConfig && !hasPendingPromptChanges) {
+         // No external prompt blending structure provided. If only the base prompt changed
+         // (e.g., via YAML upload), reflect it in the first prompt entry to keep UI in sync.
+         const newPrompt = currentPrompt && currentPrompt.trim() ? currentPrompt : 'a beautiful landscape';
+         if (promptList.length === 0) {
+           promptList = [[newPrompt, 1.0]];
+         } else if (promptList[0][0] !== newPrompt) {
+           promptList[0][0] = newPrompt;
+           promptList = [...promptList];
+           console.log('BlendingControl: Synced first prompt with current prompt:', newPrompt);
          }
        }
     }

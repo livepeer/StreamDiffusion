@@ -12,6 +12,7 @@
   import ResolutionPicker from '$lib/components/ResolutionPicker.svelte';
   import Spinner from '$lib/icons/spinner.svelte';
   import Warning from '$lib/components/Warning.svelte';
+  import Success from '$lib/components/Success.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
   import { getPipelineValues, deboucedPipelineValues, pipelineValues } from '$lib/store';
@@ -24,6 +25,7 @@
   let controlnetInfo: any = null;
   let ipadapterInfo: any = null;
   let ipadapterScale: number = 1.0;
+  let ipadapterWeightType: string = "linear";
   let tIndexList: number[] = [35, 45];
   let guidanceScale: number = 1.1;
   let delta: number = 0.7;
@@ -39,6 +41,9 @@
   let currentQueueSize: number = 0;
   let queueCheckerRunning: boolean = false;
   let warningMessage: string = '';
+  let successMessage: string = '';
+  let selectedModelId: string = '';
+  let pipelineActive: boolean = false;
 
   let currentResolution: ResolutionInfo;
   let apiError: string = '';
@@ -62,6 +67,7 @@
   // Panel state management
   let showPromptBlending: boolean = true; // Default to expanded since it's the unified blending interface
   let showResolutionPicker: boolean = true; // Default to expanded
+  let showInputControls: boolean = true; // Standardized toggle state moved here
   let leftPanelCollapsed: boolean = false;
   let rightPanelCollapsed: boolean = false;
 
@@ -107,6 +113,7 @@
 
       pipelineParams = settings.input_params.properties;
       pipelineInfo = settings.info.properties;
+      pipelineActive = settings.pipeline_active || false;
       
       // Initialize prompt value in store if not already set
       if (!($pipelineValues.prompt)) {
@@ -118,7 +125,16 @@
       
       controlnetInfo = settings.controlnet || null;
       ipadapterInfo = settings.ipadapter || null;
+      selectedModelId = settings.model_id || '';
+      // Apply config_values (from YAML) into the pipelineValues store for immediate UI sync
+      if (settings.config_values) {
+        pipelineValues.update(values => ({
+          ...values,
+          ...settings.config_values
+        }));
+      }
       ipadapterScale = settings.ipadapter?.scale || 1.0;
+      ipadapterWeightType = settings.ipadapter?.weight_type || "linear";
       tIndexList = settings.t_index_list || [35, 45];
       guidanceScale = settings.guidance_scale || 1.1;
       delta = settings.delta || 0.7;
@@ -135,13 +151,26 @@
       console.log('getSettings: promptBlendingConfig:', promptBlendingConfig);
       console.log('getSettings: current prompt in store:', $pipelineValues.prompt);
       
-      // Update prompt in store if config prompt is available
+      // Update prompt in store if config prompt is available (fallback to settings.prompt)
       if (settings.config_prompt) {
         pipelineValues.update(values => ({
           ...values,
           prompt: settings.config_prompt
         }));
         console.log('getSettings: Updated prompt from config_prompt:', settings.config_prompt);
+      } else if (settings.prompt) {
+        pipelineValues.update(values => ({
+          ...values,
+          prompt: settings.prompt
+        }));
+        console.log('getSettings: Updated prompt from prompt:', settings.prompt);
+      }
+      // Update negative prompt if provided
+      if (settings.negative_prompt !== undefined) {
+        pipelineValues.update(values => ({
+          ...values,
+          negative_prompt: settings.negative_prompt
+        }));
       }
       
       // Set initial resolution value if available
@@ -224,23 +253,28 @@
       
       if (response.ok) {
         const result = await response.json();
-        console.log('Resolution updated successfully:', result.detail);
-
-        // Show success message - no restart needed for real-time updates
-        if (result.detail) {
-          warningMessage = result.detail;
-          // Clear message after a few seconds
+        console.log('handleResolutionUpdate: Resolution updated successfully:', result.message);
+        
+        // Show success toast/message instead of warning
+        if (result.message) {
+          successMessage = result.message;
           setTimeout(() => {
-            warningMessage = '';
+            successMessage = '';
           }, 3000);
         }
       } else {
         const result = await response.json();
-        console.error('Failed to update resolution:', result.detail);
-        warningMessage = 'Failed to update resolution: ' + result.detail;
+        console.error('handleResolutionUpdate: Failed to update resolution:', result.detail);
+        // If the pipeline isn't active and server still returns the old error, convert to friendly info
+        if (!pipelineActive && /Pipeline is not initialized/i.test(result.detail || '')) {
+          successMessage = 'Resolution updated and will be applied when streaming starts.';
+          setTimeout(() => { successMessage = ''; }, 3000);
+        } else {
+          warningMessage = 'Failed to update resolution: ' + result.detail;
+        }
       }
     } catch (error: unknown) {
-      console.error('Failed to update resolution:', error);
+      console.error('handleResolutionUpdate: Failed to update resolution:', error);
       warningMessage = 'Failed to update resolution: ' + (error instanceof Error ? error.message : String(error));
     }
   }
@@ -290,8 +324,15 @@
   let previousResolution: string = '';
   $: {
     if ($pipelineValues.resolution && $pipelineValues.resolution !== previousResolution && previousResolution !== '') {
-      previousResolution = $pipelineValues.resolution;
-      handleResolutionUpdate($pipelineValues.resolution);
+      const nextResolution = $pipelineValues.resolution;
+      previousResolution = nextResolution;
+      if (pipelineActive) {
+        handleResolutionUpdate(nextResolution);
+      } else {
+        // No pipeline yet: don't call backend, just inform the user
+        successMessage = 'Resolution set to ' + nextResolution.split(' ')[0] + '. It will be applied when streaming starts.';
+        setTimeout(() => { successMessage = ''; }, 3000);
+      }
     } else if ($pipelineValues.resolution && previousResolution === '') {
       previousResolution = $pipelineValues.resolution;
     }
@@ -365,22 +406,20 @@
   // Pipeline configuration upload
   let fileInput: HTMLInputElement;
   let uploading = false;
-  let uploadStatus = '';
 
   async function uploadConfig() {
     if (!fileInput.files || fileInput.files.length === 0) {
-      uploadStatus = 'Please select a YAML file';
+      warningMessage = 'Please select a YAML file';
       return;
     }
 
     const file = fileInput.files[0];
     if (!file.name.endsWith('.yaml') && !file.name.endsWith('.yml')) {
-      uploadStatus = 'Please select a YAML file (.yaml or .yml)';
+      warningMessage = 'Please select a YAML file (.yaml or .yml)';
       return;
     }
 
     uploading = true;
-    uploadStatus = 'Uploading configuration...';
 
     try {
       const formData = new FormData();
@@ -394,7 +433,7 @@
       const result = await response.json();
 
       if (response.ok) {
-        uploadStatus = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
         fileInput.value = '';
         
         // Update ControlNet info
@@ -406,6 +445,10 @@
         if (result.ipadapter) {
           ipadapterInfo = result.ipadapter;
           ipadapterScale = result.ipadapter.scale || 1.0;
+        }
+        // Update model badge if present
+        if (result.model_id) {
+          selectedModelId = result.model_id;
         }
         
         // Update streaming parameters
@@ -425,6 +468,14 @@
           seed = result.seed;
         }
         
+        // Apply config_values (from YAML upload) into the pipelineValues store
+        if (result.config_values) {
+          pipelineValues.update(values => ({
+            ...values,
+            ...result.config_values
+          }));
+        }
+
         // Update normalization settings
         if (result.normalize_prompt_weights !== undefined) {
           normalizePromptWeights = result.normalize_prompt_weights;
@@ -444,11 +495,23 @@
           console.log('uploadConfig: Updated seed blending config:', seedBlendingConfig);
         }
         
-        // Update main prompt if config prompt is available
+        // Update main prompt if config prompt is available (fallback to result.prompt)
         if (result.config_prompt) {
           pipelineValues.update(values => ({
             ...values,
             prompt: result.config_prompt
+          }));
+        } else if (result.prompt) {
+          pipelineValues.update(values => ({
+            ...values,
+            prompt: result.prompt
+          }));
+        }
+        // Update negative prompt if provided
+        if (result.negative_prompt !== undefined) {
+          pipelineValues.update(values => ({
+            ...values,
+            negative_prompt: result.negative_prompt
           }));
         }
         
@@ -461,15 +524,13 @@
           console.log('uploadConfig: Updated resolution to:', result.current_resolution);
         }
         
-        setTimeout(() => {
-          uploadStatus = '';
-        }, 4000);
+        // Success toast will auto-dismiss
       } else {
-        uploadStatus = `Error: ${result.detail || 'Failed to load configuration'}`;
+        warningMessage = `Error: ${result.detail || 'Failed to load configuration'}`;
       }
     } catch (error) {
       console.error('uploadConfig: Upload failed:', error);
-      uploadStatus = 'Upload failed. Please try again.';
+      warningMessage = 'Upload failed. Please try again.';
     } finally {
       uploading = false;
     }
@@ -571,6 +632,7 @@
 
 <main class="h-screen flex flex-col overflow-hidden">
   <Warning bind:message={warningMessage}></Warning>
+  <Success bind:message={successMessage}></Success>
   
   <!-- Header Section -->
   <header class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex-shrink-0">
@@ -618,14 +680,19 @@
         </Button>
       </div>
     </div>
-      
-    {#if uploadStatus}
-      <div class="mt-1 text-center">
-        <p class="text-xs {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
-          {uploadStatus}
-        </p>
+
+    <div class="flex items-center gap-2 justify-end">
+      {#if selectedModelId}
+      <div class="flex items-center gap-2 px-3 py-1 bg-blue-100 dark:bg-blue-900 rounded-lg ml-2">
+        <span class="text-xs font-semibold text-blue-800 dark:text-blue-200">Model</span>
+        <span class="text-sm font-medium text-blue-900 dark:text-blue-100 truncate max-w-[260px]" title={selectedModelId}>
+          {selectedModelId}
+        </span>
       </div>
-    {/if}
+      {/if}
+    </div>
+      
+    
   </header>
 
   {#if pipelineParams}
@@ -674,7 +741,7 @@
                 <span class="text-sm">{showResolutionPicker ? '−' : '+'}</span>
               </button>
               {#if showResolutionPicker}
-                <div class="p-4 pt-0">
+                <div class="p-4 pt-1">
                   <ResolutionPicker {currentResolution} {pipelineParams} />
                 </div>
               {/if}
@@ -690,7 +757,7 @@
                 <span class="text-sm">{showPromptBlending ? '−' : '+'}</span>
               </button>
               {#if showPromptBlending}
-                <div class="p-4 pt-0">
+                <div class="p-4 pt-1">
                   <BlendingControl
                     {promptBlendingConfig}
                     {seedBlendingConfig}
@@ -704,21 +771,31 @@
 
             <!-- Input Control Section -->
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-              <InputControl />
+              <button 
+                on:click={() => showInputControls = !showInputControls}
+                class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700 rounded-t-lg"
+              >
+                <h3 class="text-md font-medium">Input Controls</h3>
+                <span class="text-sm">{showInputControls ? '−' : '+'}</span>
+              </button>
+              {#if showInputControls}
+                <div class="p-4 pt-1">
+                  <InputControl />
+                </div>
+              {/if}
             </div>
           </div>
         </div>
 
         <!-- Left Resizer -->
-        <button
-          type="button"
+        <div
           class="w-1 bg-gray-300 dark:bg-gray-600 hover:bg-blue-500 cursor-col-resize flex-shrink-0 transition-colors"
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize left panel"
           on:mousedown={(e) => startDrag(e, 'left')}
           title="Drag to resize"
-        ></button>
+        ></div>
       {:else}
         <!-- Collapsed Left Panel Toggle -->
         <div class="flex flex-col items-center py-4 pr-2">
@@ -765,15 +842,14 @@
       <!-- Right Panel - Advanced Controls -->
       {#if !rightPanelCollapsed}
         <!-- Right Resizer -->
-        <button
-          type="button"
+        <div
           class="w-1 bg-gray-300 dark:bg-gray-600 hover:bg-blue-500 cursor-col-resize flex-shrink-0 transition-colors"
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize right panel"
           on:mousedown={(e) => startDrag(e, 'right')}
           title="Drag to resize"
-        ></button>
+        ></div>
 
         <div
           class="flex flex-col gap-4 overflow-y-auto pl-2"
@@ -801,10 +877,11 @@
             on:tIndexListUpdated={(e) => handleTIndexListUpdate(e.detail)}
             on:controlnetConfigChanged={getSettings}
           ></ControlNetConfig>
-          
-          <IPAdapterConfig
-            {ipadapterInfo}
+
+          <IPAdapterConfig 
+            {ipadapterInfo} 
             currentScale={ipadapterScale}
+            currentWeightType={ipadapterWeightType}
           ></IPAdapterConfig>
         </div>
       {:else}

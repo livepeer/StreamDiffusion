@@ -212,7 +212,7 @@ class ControlNetSDXLTRT(ControlNetTRT):
         latent_height, latent_width = self.check_dims(batch_size, image_height, image_width)
         dtype = torch.float16 if self.fp16 else torch.float32
         
-        # Base inputs for ControlNet (wrapper expects these 5 inputs including conditioning_scale)
+        # SDXL ControlNet inputs (wrapper expects 7 inputs including SDXL conditioning)
         base_inputs = (
             torch.randn(batch_size, self.unet_dim, latent_height, latent_width, 
                        dtype=dtype, device=self.device),  # sample
@@ -222,13 +222,15 @@ class ControlNetSDXLTRT(ControlNetTRT):
             torch.randn(batch_size, 3, image_height, image_width, 
                        dtype=dtype, device=self.device),  # controlnet_cond
             torch.tensor(1.0, dtype=torch.float32, device=self.device),  # conditioning_scale
+            torch.randn(batch_size, 1280, dtype=dtype, device=self.device),  # text_embeds
+            torch.randn(batch_size, 6, dtype=dtype, device=self.device),     # time_ids
         )
         
         return base_inputs
     
     def get_input_names(self):
         """Override to provide SDXL-specific input names"""
-        return ["sample", "timestep", "encoder_hidden_states", "controlnet_cond", "conditioning_scale"]
+        return ["sample", "timestep", "encoder_hidden_states", "controlnet_cond", "conditioning_scale", "text_embeds", "time_ids"]
     
     def get_output_names(self):
         """Override to provide SDXL-specific output names that match wrapper return format"""
