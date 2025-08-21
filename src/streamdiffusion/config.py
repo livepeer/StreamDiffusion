@@ -191,7 +191,7 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> IPAdapterConfig:
     
     # Take the first IPAdapter config (wrapper expects single config)
     if not config['ipadapters']:
-        raise ValueError("No IPAdapter configurations found")
+        raise ValueError("_prepare_ipadapter_configs: No IPAdapter configurations found")
     
     ip_config = config['ipadapters'][0]  # Use first config
     
@@ -286,8 +286,11 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if not isinstance(controlnet, dict):
                 raise ValueError(f"_validate_config: ControlNet {i} must be a dictionary")
             
-            if 'model_id' not in controlnet:
-                raise ValueError(f"_validate_config: ControlNet {i} missing required 'model_id'")
+            try:
+                # Validate by attempting to create ControlNetConfig - this will catch validation errors
+                ControlNetConfig(**controlnet)
+            except Exception as e:
+                raise ValueError(f"_validate_config: ControlNet {i} validation failed: {e}")
     
     # Validate ipadapters if present
     if 'ipadapters' in config:
@@ -298,11 +301,17 @@ def _validate_config(config: Dict[str, Any]) -> None:
             if not isinstance(ipadapter, dict):
                 raise ValueError(f"_validate_config: IPAdapter {i} must be a dictionary")
             
-            if 'ipadapter_model_path' not in ipadapter:
-                raise ValueError(f"_validate_config: IPAdapter {i} missing required 'ipadapter_model_path'")
-            
-            if 'image_encoder_path' not in ipadapter:
-                raise ValueError(f"_validate_config: IPAdapter {i} missing required 'image_encoder_path'")
+            try:
+                # Handle special field mappings before validation
+                ipadapter_copy = ipadapter.copy()
+                if 'type' in ipadapter_copy and 'is_faceid' not in ipadapter_copy:
+                    ipadapter_copy['is_faceid'] = ipadapter_copy.get('type') == 'faceid'
+                    ipadapter_copy.pop('type', None)
+                
+                # Validate by attempting to create IPAdapterConfig - this will catch validation errors
+                IPAdapterConfig(**ipadapter_copy)
+            except Exception as e:
+                raise ValueError(f"_validate_config: IPAdapter {i} validation failed: {e}")
 
     # Validate prompt blending configuration if present
     if 'prompt_blending' in config:
