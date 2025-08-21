@@ -383,16 +383,14 @@ class App:
                         logger.debug(f"stream: unet_is_trt={is_trt}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
                         if is_trt:
                             logger.debug(f"stream: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
-                        if hasattr(stream_obj, 'ipadapter_scale'):
-                            try:
-                                scale_val = getattr(stream_obj, 'ipadapter_scale')
-                                if hasattr(scale_val, 'shape'):
-                                    logger.debug(f"stream: ipadapter_scale tensor shape={tuple(scale_val.shape)}")
-                                else:
-                                    logger.debug(f"stream: ipadapter_scale scalar={scale_val}")
-                            except Exception:
-                                pass
-                        logger.debug(f"stream: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                        try:
+                            stream_state = self.pipeline.get_stream_state()
+                            ipadapter_config = stream_state.get('ipadapter_config', {})
+                            if ipadapter_config:
+                                logger.debug(f"stream: ipadapter_scale={ipadapter_config.get('scale')}")
+                                logger.debug(f"stream: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
+                        except Exception:
+                            pass
                     except Exception:
                         logger.exception("stream: failed to log pipeline state after creation")
                 
@@ -444,13 +442,11 @@ class App:
                                 if is_trt:
                                     logger.debug(f"generate: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
                                     try:
-                                        base_scale = getattr(stream_obj, 'ipadapter_scale', None)
-                                        if base_scale is not None:
-                                            if hasattr(base_scale, 'shape'):
-                                                logger.debug(f"generate: base ipadapter_scale shape={tuple(base_scale.shape)}")
-                                            else:
-                                                logger.debug(f"generate: base ipadapter_scale scalar={base_scale}")
-                                        logger.debug(f"generate: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                                        stream_state = self.pipeline.get_stream_state()
+                                        ipadapter_config = stream_state.get('ipadapter_config', {})
+                                        if ipadapter_config:
+                                            logger.debug(f"generate: base ipadapter_scale={ipadapter_config.get('scale')}")
+                                            logger.debug(f"generate: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
                                     except Exception:
                                         pass
                             except Exception:
