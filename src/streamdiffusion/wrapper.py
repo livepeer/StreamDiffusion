@@ -1579,11 +1579,11 @@ class StreamDiffusionWrapper:
         self.stream._controlnet_module.update_control_image_efficient(image, index=index)
 
 
-    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
-        """Update IPAdapter style image"""
+    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor], style_image_key: str = "ipadapter_main", is_stream: bool = False) -> None:
+        """Update IPAdapter style image using sophisticated logic"""
         if not self.use_ipadapter:
             raise RuntimeError("update_style_image: IPAdapter support not enabled. Set use_ipadapter=True in constructor.")
-        self.stream.update_style_image(image)
+        self.stream._param_updater.update_style_image(style_image_key, image, is_stream=is_stream)
         
 
     def clear_caches(self) -> None:
