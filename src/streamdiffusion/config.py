@@ -4,6 +4,7 @@ import yaml
 import json
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
+from .config_types import ControlNetConfig, IPAdapterConfig
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load StreamDiffusion configuration from YAML or JSON file"""
@@ -173,44 +174,37 @@ def _extract_prepare_params(config: Dict[str, Any]) -> Dict[str, Any]:
     
     return prepare_params
 
-def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[ControlNetConfig]:
     """Prepare ControlNet configurations for wrapper"""
+    
     controlnet_configs = []
-    pipeline_type = config.get('pipeline_type', 'sd1.5')
     for cn_config in config['controlnets']:
-        controlnet_config = {
-            'model_id': cn_config['model_id'],
-            'preprocessor': cn_config.get('preprocessor', 'passthrough'),
-            'conditioning_scale': cn_config.get('conditioning_scale', 1.0),
-            'enabled': cn_config.get('enabled', True),
-            'preprocessor_params': cn_config.get('preprocessor_params'),
-            'pipeline_type': pipeline_type,
-            'control_guidance_start': cn_config.get('control_guidance_start', 0.0),
-            'control_guidance_end': cn_config.get('control_guidance_end', 1.0),
-        }
+        # Convert dict to pydantic model with validation
+        controlnet_config = ControlNetConfig(**cn_config)
         controlnet_configs.append(controlnet_config)
     
     return controlnet_configs
 
 
-def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Prepare IPAdapter configurations for wrapper"""
-    ipadapter_configs = []
+def _prepare_ipadapter_configs(config: Dict[str, Any]) -> IPAdapterConfig:
+    """Prepare IPAdapter configurations for wrapper (returns single config, not list)"""
     
-    for ip_config in config['ipadapters']:
-        ipadapter_config = {
-            'ipadapter_model_path': ip_config['ipadapter_model_path'],
-            'image_encoder_path': ip_config['image_encoder_path'],
-            'style_image': ip_config.get('style_image'),
-            'scale': ip_config.get('scale', 1.0),
-            'enabled': ip_config.get('enabled', True),
-            # Preserve FaceID options from config for downstream wrapper/module handling
-            'type': ip_config.get('type', 'regular'),
-            'insightface_model_name': ip_config.get('insightface_model_name'),
-        }
-        ipadapter_configs.append(ipadapter_config)
+    # Take the first IPAdapter config (wrapper expects single config)
+    if not config['ipadapters']:
+        raise ValueError("No IPAdapter configurations found")
     
-    return ipadapter_configs
+    ip_config = config['ipadapters'][0]  # Use first config
+    
+    # Handle special field mappings
+    if 'type' in ip_config and 'is_faceid' not in ip_config:
+        ip_config = ip_config.copy()  # Don't modify original
+        ip_config['is_faceid'] = ip_config.get('type') == 'faceid'
+        ip_config.pop('type', None)  # Remove original field
+    
+    # Convert dict to pydantic model with validation
+    ipadapter_config = IPAdapterConfig(**ip_config)
+    
+    return ipadapter_config
 
 
 def create_prompt_blending_config(

@@ -1,27 +1,21 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from diffusers.models import ControlNetModel
 import logging
+from pydantic import BaseModel, Field
 
 from streamdiffusion.hooks import StepCtx, UnetKwargsDelta, UnetHook
 from streamdiffusion.preprocessing.preprocessing_orchestrator import (
     PreprocessingOrchestrator,
 )
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+from streamdiffusion.config_types import ControlNetConfig
 
 
-@dataclass
-class ControlNetConfig:
-    model_id: str
-    preprocessor: Optional[str] = None
-    conditioning_scale: float = 1.0
-    enabled: bool = True
-    preprocessor_params: Optional[Dict[str, Any]] = None
 
 
 class ControlNetModule(OrchestratorUser):

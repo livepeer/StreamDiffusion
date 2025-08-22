@@ -1,30 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional, Tuple, Any
 import torch
+from pydantic import BaseModel, Field
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
-
-
-@dataclass
-class IPAdapterConfig:
-    """Minimal config for constructing an IP-Adapter module instance.
-
-    This module focuses only on embedding composition (step 2 of migration).
-    Runtime installation and wrapper wiring will come in later steps.
-    """
-    style_image_key: Optional[str] = None
-    num_image_tokens: int = 4  # e.g., 4 for standard, 16 for plus
-    ipadapter_model_path: Optional[str] = None
-    image_encoder_path: Optional[str] = None
-    style_image: Optional[Any] = None
-    scale: float = 1.0
-    # FaceID support
-    is_faceid: bool = False
-    insightface_model_name: Optional[str] = None
+from streamdiffusion.config_types import IPAdapterConfig
 
 
 class IPAdapterModule(OrchestratorUser):

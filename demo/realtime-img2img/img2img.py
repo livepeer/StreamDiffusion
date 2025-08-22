@@ -12,6 +12,7 @@ sys.path.append(
 from streamdiffusion import StreamDiffusionWrapper
 # Import the config system functions
 from streamdiffusion import load_config, create_wrapper_from_config
+from streamdiffusion.config_types import IPAdapterConfig
 
 import torch
 import yaml
@@ -280,7 +281,8 @@ class Pipeline:
         try:
             # Update scale via unified config system (no direct method needed)
             if scale is not None:
-                self.stream.update_stream_params(ipadapter_config={'scale': scale})
+                config = IPAdapterConfig(scale=scale)
+                self.stream.update_stream_params(ipadapter_config=config)
             
             # Update style image via direct method
             if style_image is not None:
@@ -306,7 +308,8 @@ class Pipeline:
         try:
             # Use unified updater on wrapper
             if hasattr(self.stream, 'update_stream_params'):
-                self.stream.update_stream_params(ipadapter_config={ 'weight_type': weight_type })
+                config = IPAdapterConfig(weight_type=weight_type)
+                self.stream.update_stream_params(ipadapter_config=config)
                 return True
             # Direct attribute set as last resort
             if hasattr(self.stream, 'ipadapter_weight_type'):
