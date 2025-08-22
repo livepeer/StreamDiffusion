@@ -18,6 +18,7 @@ import torch
 import tempfile
 from pathlib import Path
 import yaml
+from streamdiffusion.config_types import ControlNetConfig, IPAdapterConfig
 
 from config import config, Args
 from util import pil_to_frame, pt_to_frame, bytes_to_pil, bytes_to_pt
@@ -127,6 +128,8 @@ class App:
             self.pipeline = None
         logger.info("App cleanup: Completed application cleanup")
 
+
+
     def _handle_input_parameter_update(self, parameter_name: str, value: float) -> None:
         """Handle parameter updates from input controls"""
         try:
@@ -144,7 +147,8 @@ class App:
             elif parameter_name == 'seed':
                 self.pipeline.update_stream_params(seed=int(value))
             elif parameter_name == 'ipadapter_scale':
-                self.pipeline.update_stream_params(ipadapter_config={'scale': value})
+                config = IPAdapterConfig(style_image_key='ipadapter_main', scale=value)
+                self.pipeline.update_stream_params(ipadapter_config=config)
             elif parameter_name == 'ipadapter_weight_type':
                 # For weight type, we need to convert the numeric value to a string
                 weight_types = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
@@ -163,8 +167,9 @@ class App:
                     current_config = self._get_current_controlnet_config()
                     if current_config and index < len(current_config):
                         current_config[index]['conditioning_scale'] = float(value)
-                        # Apply the updated config via unified API
-                        self.pipeline.update_stream_params(controlnet_config=current_config)
+                        # Convert to pydantic models and apply via unified API
+                        pydantic_configs = [ControlNetConfig(**cfg) for cfg in current_config]
+                        self.pipeline.update_stream_params(controlnet_config=pydantic_configs)
             elif parameter_name.startswith('controlnet_') and '_preprocessor_' in parameter_name:
                 # Handle ControlNet preprocessor parameters
                 match = re.match(r'controlnet_(\d+)_preprocessor_(.+)', parameter_name)
@@ -178,7 +183,9 @@ class App:
                         if 'preprocessor_params' not in current_config[controlnet_index]:
                             current_config[controlnet_index]['preprocessor_params'] = {}
                         current_config[controlnet_index]['preprocessor_params'][param_name] = value
-                        self.pipeline.update_stream_params(controlnet_config=current_config)
+                        # Convert to pydantic models and apply via unified API
+                        pydantic_configs = [ControlNetConfig(**cfg) for cfg in current_config]
+                        self.pipeline.update_stream_params(controlnet_config=pydantic_configs)
             elif parameter_name.startswith('prompt_weight_'):
                 # Handle prompt blending weights
                 match = re.match(r'prompt_weight_(\d+)', parameter_name)
@@ -376,16 +383,14 @@ class App:
                         logger.debug(f"stream: unet_is_trt={is_trt}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
                         if is_trt:
                             logger.debug(f"stream: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
-                        if hasattr(stream_obj, 'ipadapter_scale'):
-                            try:
-                                scale_val = getattr(stream_obj, 'ipadapter_scale')
-                                if hasattr(scale_val, 'shape'):
-                                    logger.debug(f"stream: ipadapter_scale tensor shape={tuple(scale_val.shape)}")
-                                else:
-                                    logger.debug(f"stream: ipadapter_scale scalar={scale_val}")
-                            except Exception:
-                                pass
-                        logger.debug(f"stream: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                        try:
+                            stream_state = self.pipeline.get_stream_state()
+                            ipadapter_config = stream_state.get('ipadapter_config', {})
+                            if ipadapter_config:
+                                logger.debug(f"stream: ipadapter_scale={ipadapter_config.get('scale')}")
+                                logger.debug(f"stream: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
+                        except Exception:
+                            pass
                     except Exception:
                         logger.exception("stream: failed to log pipeline state after creation")
                 
@@ -437,13 +442,11 @@ class App:
                                 if is_trt:
                                     logger.debug(f"generate: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
                                     try:
-                                        base_scale = getattr(stream_obj, 'ipadapter_scale', None)
-                                        if base_scale is not None:
-                                            if hasattr(base_scale, 'shape'):
-                                                logger.debug(f"generate: base ipadapter_scale shape={tuple(base_scale.shape)}")
-                                            else:
-                                                logger.debug(f"generate: base ipadapter_scale scalar={base_scale}")
-                                        logger.debug(f"generate: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                                        stream_state = self.pipeline.get_stream_state()
+                                        ipadapter_config = stream_state.get('ipadapter_config', {})
+                                        if ipadapter_config:
+                                            logger.debug(f"generate: base ipadapter_scale={ipadapter_config.get('scale')}")
+                                            logger.debug(f"generate: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
                                     except Exception:
                                         pass
                             except Exception:
@@ -855,7 +858,8 @@ class App:
                 logger.info(f"update_controlnet_strength: Updating ControlNet {controlnet_index} strength from {old_strength} to {strength}")
                 logger.info(f"update_controlnet_strength: Sending config: {current_config}")
                 
-                self.pipeline.update_stream_params(controlnet_config=current_config)
+                pydantic_configs = [ControlNetConfig(**cfg) for cfg in current_config]
+                self.pipeline.update_stream_params(controlnet_config=pydantic_configs)
                 logger.info(f"update_controlnet_strength: update_stream_params call completed")
                     
                 return JSONResponse({
@@ -963,7 +967,8 @@ class App:
                 try:
                     current_config = self._get_current_controlnet_config()
                     current_config.append(new_controlnet)
-                    self.pipeline.update_stream_params(controlnet_config=current_config)
+                    pydantic_configs = [ControlNetConfig(**cfg) for cfg in current_config]
+                    self.pipeline.update_stream_params(controlnet_config=pydantic_configs)
                     logger.info(f"add_controlnet: Successfully added ControlNet using consolidated API")
                 except Exception as e:
                     logger.error(f"add_controlnet: Failed to add ControlNet: {e}")
@@ -1049,7 +1054,8 @@ class App:
                     
                     # Remove the controlnet at the specified index
                     current_config.pop(index)
-                    self.pipeline.update_stream_params(controlnet_config=current_config)
+                    pydantic_configs = [ControlNetConfig(**cfg) for cfg in current_config]
+                    self.pipeline.update_stream_params(controlnet_config=pydantic_configs)
                     logger.info(f"remove_controlnet: Successfully removed ControlNet using consolidated API")
                 except Exception as e:
                     logger.error(f"remove_controlnet: Failed to remove ControlNet: {e}")
@@ -1258,6 +1264,42 @@ class App:
             except Exception as e:
                 logging.error(f"update_ipadapter_weight_type: Failed to update weight type: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update weight type: {str(e)}")
+
+        @self.app.post("/api/ipadapter/update-enabled")
+        async def update_ipadapter_enabled(request: Request):
+            """Enable or disable IPAdapter in real-time"""
+            try:
+                data = await request.json()
+                enabled = data.get("enabled")
+                
+                if enabled is None:
+                    raise HTTPException(status_code=400, detail="Missing enabled parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if we're using config mode and have ipadapters configured
+                ipadapter_enabled = (self.pipeline.use_config and 
+                                    self.pipeline.config and 
+                                    'ipadapters' in self.pipeline.config)
+                
+                if not ipadapter_enabled:
+                    raise HTTPException(status_code=400, detail="IPAdapter is not available in this configuration")
+                
+                # Update IPAdapter enabled state in the pipeline
+                from streamdiffusion.config_types import IPAdapterConfig
+                self.pipeline.stream.update_stream_params(
+                    ipadapter_config=IPAdapterConfig(enabled=bool(enabled))
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"IPAdapter {'enabled' if enabled else 'disabled'} successfully"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_ipadapter_enabled: Failed to update enabled state: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update enabled state: {str(e)}")
 
         @self.app.post("/api/params")
         async def update_params(request: Request):
@@ -2275,19 +2317,45 @@ class App:
                 ipadapter_info["enabled"] = True
                 ipadapter_info["config_loaded"] = True
                 
-                # Get info from first IPAdapter config
-                first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
-                ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
-                ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
-                ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
+                # Convert first IPAdapter config to Pydantic model for proper access
+                from streamdiffusion.config_types import IPAdapterConfig
+                first_ipadapter_dict = self.uploaded_controlnet_config['ipadapters'][0]
                 
-                # Check for style image - prioritize uploaded style image over config style image over default
-                if self.uploaded_style_image:
-                    ipadapter_info["style_image_set"] = True
-                    ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
-                elif 'style_image' in first_ipadapter:
-                    ipadapter_info["style_image_set"] = True
-                    ipadapter_info["style_image_path"] = first_ipadapter['style_image']
+                # Handle special field mappings
+                if 'type' in first_ipadapter_dict and 'is_faceid' not in first_ipadapter_dict:
+                    first_ipadapter_dict = first_ipadapter_dict.copy()
+                    first_ipadapter_dict['is_faceid'] = first_ipadapter_dict.get('type') == 'faceid'
+                    type_value = first_ipadapter_dict.pop('type', 'regular')
+                else:
+                    type_value = first_ipadapter_dict.get('type', 'regular')
+                
+                try:
+                    first_ipadapter = IPAdapterConfig(**first_ipadapter_dict)
+                    ipadapter_info["scale"] = first_ipadapter.scale
+                    ipadapter_info["model_path"] = first_ipadapter.ipadapter_model_path
+                    ipadapter_info["type"] = 'faceid' if first_ipadapter.is_faceid else type_value
+                    
+                    # Check for style image - prioritize uploaded style image over config style image over default
+                    if self.uploaded_style_image:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
+                    elif first_ipadapter.style_image:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = str(first_ipadapter.style_image)
+                except Exception:
+                    # Fallback to dictionary access if Pydantic conversion fails
+                    first_ipadapter = self.uploaded_controlnet_config['ipadapters'][0]
+                    ipadapter_info["scale"] = first_ipadapter.get('scale', DEFAULT_SETTINGS.get('ipadapter_scale', 1.0))
+                    ipadapter_info["model_path"] = first_ipadapter.get('ipadapter_model_path')
+                    ipadapter_info["type"] = first_ipadapter.get('type', 'regular')
+                    
+                    # Check for style image - prioritize uploaded style image over config style image over default
+                    if self.uploaded_style_image:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = "/api/ipadapter/uploaded-style-image"  # URL to fetch uploaded image
+                    elif 'style_image' in first_ipadapter:
+                        ipadapter_info["style_image_set"] = True
+                        ipadapter_info["style_image_path"] = first_ipadapter['style_image']
                 else:
                     # Check if default image exists
                     import os

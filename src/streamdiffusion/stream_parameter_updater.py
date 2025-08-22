@@ -7,6 +7,7 @@ import gc
 import logging
 logger = logging.getLogger(__name__)
 from .preprocessing.orchestrator_user import OrchestratorUser
+from .config_types import ControlNetConfig, IPAdapterConfig
 
 class CacheStats:
     """Helper class to track cache statistics"""
@@ -243,8 +244,8 @@ class StreamParameterUpdater(OrchestratorUser):
         seed_list: Optional[List[Tuple[int, float]]] = None,
         seed_interpolation_method: Literal["linear", "slerp"] = "linear",
         normalize_seed_weights: Optional[bool] = None,
-        controlnet_config: Optional[List[Dict[str, Any]]] = None,
-        ipadapter_config: Optional[Dict[str, Any]] = None,
+        controlnet_config: Optional[List[ControlNetConfig]] = None,
+        ipadapter_config: Optional[IPAdapterConfig] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -956,7 +957,7 @@ class StreamParameterUpdater(OrchestratorUser):
         # Recompute blended noise
         self._apply_seed_blending(interpolation_method)
 
-    def _update_controlnet_config(self, desired_config: List[Dict[str, Any]]) -> None:
+    def _update_controlnet_config(self, desired_config: List[ControlNetConfig]) -> None:
         """
         Update ControlNet configuration by diffing current vs desired state.
         
@@ -974,11 +975,11 @@ class StreamParameterUpdater(OrchestratorUser):
         
         # Simple approach: detect what changed and apply minimal updates
         current_models = {i: getattr(cn, 'model_id', f'controlnet_{i}') for i, cn in enumerate(controlnet_pipeline.controlnets)}
-        desired_models = {cfg['model_id']: cfg for cfg in desired_config}
+        desired_models = {cfg.model_id: cfg for cfg in desired_config}
         
         # Reorder to match desired order (module supports stable reordering)
         try:
-            desired_order = [cfg['model_id'] for cfg in desired_config if 'model_id' in cfg]
+            desired_order = [cfg.model_id for cfg in desired_config if cfg.model_id]
             if hasattr(controlnet_pipeline, 'reorder_controlnets_by_model_ids'):
                 controlnet_pipeline.reorder_controlnets_by_model_ids(desired_order)
         except Exception:
@@ -999,49 +1000,39 @@ class StreamParameterUpdater(OrchestratorUser):
         
         # Add new controlnets and update existing ones
         for desired_cfg in desired_config:
-            model_id = desired_cfg['model_id']
+            model_id = desired_cfg.model_id
             existing_index = next((i for i, mid in current_models.items() if mid == model_id), None)
             
             if existing_index is None:
                 # Add new controlnet
                 logger.info(f"_update_controlnet_config: Adding ControlNet {model_id}")
                 try:
-                    # Prefer module path: construct ControlNetConfig
-                    try:
-                        from .modules.controlnet_module import ControlNetConfig  # type: ignore
-                        cn_cfg = ControlNetConfig(
-                            model_id=desired_cfg.get('model_id'),
-                            preprocessor=desired_cfg.get('preprocessor'),
-                            conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
-                            enabled=desired_cfg.get('enabled', True),
-                            preprocessor_params=desired_cfg.get('preprocessor_params'),
-                        )
-                        controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
-                    except Exception:
-                        # No fallback
-                        raise
+                    # desired_cfg is already a ControlNetConfig pydantic model
+                    controlnet_pipeline.add_controlnet(desired_cfg, None)
+                except Exception:
+                    # No fallback
+                    raise
                 except Exception as e:
                     logger.error(f"_update_controlnet_config: add_controlnet failed for {model_id}: {e}")
             else:
                 # Update existing controlnet
-                if 'conditioning_scale' in desired_cfg:
-                    current_scale = current_config[existing_index].get('conditioning_scale', 1.0)
-                    desired_scale = desired_cfg['conditioning_scale']
-                    
-                    if current_scale != desired_scale:
-                        logger.info(f"_update_controlnet_config: Updating {model_id} scale: {current_scale} → {desired_scale}")
-                        if hasattr(controlnet_pipeline, 'controlnet_scales') and 0 <= existing_index < len(controlnet_pipeline.controlnet_scales):
-                            controlnet_pipeline.controlnet_scales[existing_index] = float(desired_scale)
+                current_scale = current_config[existing_index].conditioning_scale
+                desired_scale = desired_cfg.conditioning_scale
+                
+                if current_scale != desired_scale:
+                    logger.info(f"_update_controlnet_config: Updating {model_id} scale: {current_scale} → {desired_scale}")
+                    if hasattr(controlnet_pipeline, 'controlnet_scales') and 0 <= existing_index < len(controlnet_pipeline.controlnet_scales):
+                        controlnet_pipeline.controlnet_scales[existing_index] = float(desired_scale)
                 
                 # Enable/disable toggle
-                if 'enabled' in desired_cfg and hasattr(controlnet_pipeline, 'enabled_list'):
+                if hasattr(controlnet_pipeline, 'enabled_list'):
                     if 0 <= existing_index < len(controlnet_pipeline.enabled_list):
-                        controlnet_pipeline.enabled_list[existing_index] = bool(desired_cfg['enabled'])
+                        controlnet_pipeline.enabled_list[existing_index] = bool(desired_cfg.enabled)
 
-                if 'preprocessor_params' in desired_cfg and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
+                if desired_cfg.preprocessor_params and hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[existing_index]:
                     preprocessor = controlnet_pipeline.preprocessors[existing_index]
-                    preprocessor.params.update(desired_cfg['preprocessor_params'])
-                    for param_name, param_value in desired_cfg['preprocessor_params'].items():
+                    preprocessor.params.update(desired_cfg.preprocessor_params)
+                    for param_name, param_value in desired_cfg.preprocessor_params.items():
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
 
@@ -1067,12 +1058,12 @@ class StreamParameterUpdater(OrchestratorUser):
                 return self.wrapper.stream.stream
         return None
 
-    def _get_current_controlnet_config(self) -> List[Dict[str, Any]]:
+    def _get_current_controlnet_config(self) -> List[ControlNetConfig]:
         """
         Get current ControlNet configuration state.
         
         Returns:
-            List of current ControlNet configurations
+            List of current ControlNet configurations as pydantic models
         """
         controlnet_pipeline = self._get_controlnet_pipeline()
         if not controlnet_pipeline or not hasattr(controlnet_pipeline, 'controlnets') or not controlnet_pipeline.controlnets:
@@ -1088,17 +1079,28 @@ class StreamParameterUpdater(OrchestratorUser):
                     enabled_val = bool(controlnet_pipeline.enabled_list[i])
             except Exception:
                 enabled_val = True
-            config = {
-                'model_id': model_id,
-                'conditioning_scale': scale,
-                'preprocessor_params': getattr(controlnet_pipeline.preprocessors[i], 'params', {}) if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i] else {},
-                'enabled': enabled_val,
-            }
+            
+            # Get preprocessor info
+            preprocessor_name = None
+            preprocessor_params = {}
+            if hasattr(controlnet_pipeline, 'preprocessors') and controlnet_pipeline.preprocessors[i]:
+                preprocessor = controlnet_pipeline.preprocessors[i]
+                preprocessor_name = getattr(preprocessor, 'name', None)
+                preprocessor_params = getattr(preprocessor, 'params', {})
+            
+            # Create pydantic model
+            config = ControlNetConfig(
+                model_id=model_id,
+                preprocessor=preprocessor_name,
+                conditioning_scale=scale,
+                enabled=enabled_val,
+                preprocessor_params=preprocessor_params if preprocessor_params else None,
+            )
             current_config.append(config)
         
         return current_config
 
-    def _update_ipadapter_config(self, desired_config: Dict[str, Any]) -> None:
+    def _update_ipadapter_config(self, desired_config: IPAdapterConfig) -> None:
         """
         Update IPAdapter configuration.
         
@@ -1114,64 +1116,79 @@ class StreamParameterUpdater(OrchestratorUser):
             return
         
         # Update scale if provided
-        if 'scale' in desired_config:
-            current_scale = getattr(ipadapter_pipeline, 'scale', 1.0)
-            desired_scale = desired_config['scale']
+        if desired_config.scale is not None:
+            desired_scale = float(desired_config.scale)
+            # Get current scale from IPAdapter instance
+            current_scale = getattr(self.stream.ipadapter, 'scale', 1.0) if hasattr(self.stream, 'ipadapter') else 1.0
             
             if current_scale != desired_scale:
                 logger.info(f"_update_ipadapter_config: Updating scale: {current_scale} → {desired_scale}")
-                # If a weight_type is active, apply per-layer vector at the new base scale
-                try:
-                    weight_type = getattr(self.stream, 'ipadapter_weight_type', None)
-                    if weight_type is not None and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None:
+                
+                # Get weight_type from IPAdapter instance
+                weight_type = getattr(self.stream.ipadapter, 'weight_type', None) if hasattr(self.stream, 'ipadapter') else None
+                
+                # Apply scale with weight type consideration
+                if weight_type is not None and hasattr(self.stream, 'ipadapter'):
+                    try:
                         from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
                         ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
                         num_layers = len(ip_procs)
-                        weights = build_layer_weights(num_layers, float(desired_scale), weight_type)
+                        weights = build_layer_weights(num_layers, desired_scale, weight_type)
                         if weights is not None:
-                            ipadapter_pipeline.ipadapter.set_scale(weights)
+                            self.stream.ipadapter.set_scale(weights)
                         else:
-                            ipadapter_pipeline.ipadapter.set_scale(float(desired_scale))
-                        # Keep pipeline/stream scales in sync
-                        ipadapter_pipeline.scale = float(desired_scale)
-                        try:
-                            setattr(self.stream, 'ipadapter_scale', float(desired_scale))
-                        except Exception:
-                            pass
-                    else:
-                        # No weight_type: uniform scale
-                        ipadapter_pipeline.update_scale(desired_scale)
-                except Exception:
-                    # Do not introduce fallback mechanisms
-                    raise
-        
+                            self.stream.ipadapter.set_scale(desired_scale)
+                        # Update our tracking attribute
+                        setattr(self.stream.ipadapter, 'scale', desired_scale)
+                    except Exception:
+                        # Fallback to simple scale
+                        self.stream.ipadapter.set_scale(desired_scale)
+                        setattr(self.stream.ipadapter, 'scale', desired_scale)
+                else:
+                    # Simple uniform scale
+                    if hasattr(self.stream, 'ipadapter'):
+                        self.stream.ipadapter.set_scale(desired_scale)
+                        setattr(self.stream.ipadapter, 'scale', desired_scale)
+
+        # Update enabled state if provided
+        if hasattr(desired_config, 'enabled') and desired_config.enabled is not None:
+            enabled_state = bool(desired_config.enabled)
+            # Update IPAdapter instance
+            if hasattr(self.stream, 'ipadapter'):
+                current_enabled = getattr(self.stream.ipadapter, 'enabled', True)
+                if current_enabled != enabled_state:
+                    logger.info(f"_update_ipadapter_config: Updating enabled state: {current_enabled} → {enabled_state}")
+                    setattr(self.stream.ipadapter, 'enabled', enabled_state)
 
         # Update weight type if provided (affects per-layer distribution and/or per-step factor)
-        if 'weight_type' in desired_config:
-            weight_type = desired_config['weight_type']
-            try:
-                setattr(self.stream, 'ipadapter_weight_type', weight_type)
-            except Exception:
-                pass
-            # For PyTorch UNet, immediately apply a per-layer scale vector so layers reflect selection types
-            try:
-                is_tensorrt_engine = hasattr(self.stream.unet, 'engine') and hasattr(self.stream.unet, 'stream')
-                if not is_tensorrt_engine and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None:
-                    # Compute per-layer vector using Diffusers_IPAdapter helper
-                    from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
-                    # Count installed IP layers by scanning processors with _ip_layer_index
-                    ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
-                    num_layers = len(ip_procs)
-                    base_weight = float(getattr(self.stream, 'ipadapter_scale', getattr(ipadapter_pipeline, 'scale', 1.0)))
-                    weights = build_layer_weights(num_layers, base_weight, weight_type)
-                    # If None, keep uniform base scale; else set per-layer vector
-                    if weights is not None:
-                        ipadapter_pipeline.ipadapter.set_scale(weights)
-                    else:
-                        ipadapter_pipeline.ipadapter.set_scale(base_weight)
-            except Exception:
-                # Do not add fallback mechanisms
-                raise
+        if desired_config.weight_type is not None:
+            weight_type = desired_config.weight_type
+            # Update IPAdapter instance
+            if hasattr(self.stream, 'ipadapter'):
+                setattr(self.stream.ipadapter, 'weight_type', weight_type)
+                
+                # For PyTorch UNet, immediately apply a per-layer scale vector so layers reflect selection types
+                try:
+                    is_tensorrt_engine = hasattr(self.stream.unet, 'engine') and hasattr(self.stream.unet, 'stream')
+                    if not is_tensorrt_engine:
+                        # Compute per-layer vector using Diffusers_IPAdapter helper
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                        # Count installed IP layers by scanning processors with _ip_layer_index
+                        ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
+                        num_layers = len(ip_procs)
+                        # Get base weight from IPAdapter instance
+                        base_weight = float(getattr(self.stream.ipadapter, 'scale', 1.0))
+                        weights = build_layer_weights(num_layers, base_weight, weight_type)
+                        # If None, keep uniform base scale; else set per-layer vector
+                        if weights is not None:
+                            self.stream.ipadapter.set_scale(weights)
+                        else:
+                            self.stream.ipadapter.set_scale(base_weight)
+                        # Keep our tracking attribute in sync
+                        setattr(self.stream.ipadapter, 'scale', base_weight)
+                except Exception:
+                    # Do not add fallback mechanisms
+                    raise
 
     def _get_ipadapter_pipeline(self):
         """
@@ -1199,25 +1216,39 @@ class StreamParameterUpdater(OrchestratorUser):
 
     def _get_current_ipadapter_config(self) -> Optional[Dict[str, Any]]:
         """
-        Get current IPAdapter configuration by introspecting the pipeline state.
+        Get current IPAdapter configuration by introspecting the IPAdapter instance.
         
         Returns:
             Current IPAdapter configuration dict or None if no IPAdapter
         """
-        ipadapter_pipeline = self._get_ipadapter_pipeline()
-        if not ipadapter_pipeline:
-            return None
-        
-        config = {
-            'scale': getattr(ipadapter_pipeline, 'scale', 1.0),
-            'enabled': hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None
-        }
-        
-        # Add style image info if available
-        if hasattr(ipadapter_pipeline, 'style_image') and ipadapter_pipeline.style_image:
-            config['has_style_image'] = True
-        else:
-            config['has_style_image'] = False
+        # Get config from IPAdapter instance
+        if hasattr(self.stream, 'ipadapter') and self.stream.ipadapter is not None:
+            ipadapter = self.stream.ipadapter
             
-        return config
+            config = {
+                'scale': getattr(ipadapter, 'scale', 1.0),
+                'weight_type': getattr(ipadapter, 'weight_type', None),
+                'enabled': getattr(ipadapter, 'enabled', True),  # Check actual enabled state
+            }
+            
+            # Add static initialization fields
+            if hasattr(self.stream, '_ipadapter_module'):
+                module_config = self.stream._ipadapter_module.config
+                config.update({
+                    'style_image_key': module_config.style_image_key,
+                    'num_image_tokens': module_config.num_image_tokens,
+                    'is_faceid': module_config.is_faceid,
+                })
+            
+            # Check if style image is set
+            ipadapter_pipeline = self._get_ipadapter_pipeline()
+            if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'style_image') and ipadapter_pipeline.style_image:
+                config['has_style_image'] = True
+            else:
+                config['has_style_image'] = False
+            
+            return config
+        
+        # No IPAdapter instance found
+        return None
 
