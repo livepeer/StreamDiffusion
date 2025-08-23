@@ -4,15 +4,7 @@ from typing import List, Optional, Union, Any, Dict, Tuple, Literal
 import numpy as np
 import PIL.Image
 import torch
-from diffusers import (
-    LCMScheduler, 
-    StableDiffusionPipeline, 
-    DPMSolverMultistepScheduler,
-    UniPCMultistepScheduler,
-    DDIMScheduler,
-    EulerDiscreteScheduler,
-    TCDScheduler,
-)
+from diffusers import LCMScheduler, TCDScheduler, StableDiffusionPipeline
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import (
     retrieve_latents,
@@ -43,7 +35,7 @@ class StreamDiffusion:
         lora_dict: Optional[Dict[str, float]] = None,
         normalize_prompt_weights: bool = True,
         normalize_seed_weights: bool = True,
-        scheduler: Literal["lcm", "tcd", "dpm++ 2m", "uni_pc", "ddim", "euler"] = "lcm",
+        scheduler: Literal["lcm", "tcd"] = "lcm",
         sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
     ) -> None:
         self.device = pipe.device
@@ -70,7 +62,15 @@ class StreamDiffusion:
         self.is_turbo = detection_result['is_turbo']
         self.detection_confidence = detection_result['confidence']
     
-        if use_denoising_batch:
+        # TCD scheduler is incompatible with denoising batch optimization due to Strategic Stochastic Sampling
+        # Force sequential processing for TCD
+        if scheduler == "tcd":
+            logger.info("TCD scheduler detected: Disabling denoising batch optimization for compatibility")
+            self.use_denoising_batch = False
+            self.batch_size = frame_buffer_size
+            self.trt_unet_batch_size = frame_buffer_size
+        elif use_denoising_batch:
+            self.use_denoising_batch = True
             self.batch_size = self.denoising_steps_num * frame_buffer_size
             if self.cfg_type == "initialize":
                 self.trt_unet_batch_size = (
@@ -83,13 +83,12 @@ class StreamDiffusion:
             else:
                 self.trt_unet_batch_size = self.denoising_steps_num * frame_buffer_size
         else:
+            self.use_denoising_batch = False
             self.trt_unet_batch_size = self.frame_bff_size
             self.batch_size = frame_buffer_size
 
         self.t_list = t_index_list
-
         self.do_add_noise = do_add_noise
-        self.use_denoising_batch = use_denoising_batch
 
         self.similar_image_filter = False
         self.similar_filter = SimilarImageFilter()
@@ -97,8 +96,6 @@ class StreamDiffusion:
 
         self.pipe = pipe
         self.image_processor = VaeImageProcessor(pipe.vae_scale_factor)
-
-        # Initialize scheduler based on configuration
         self.scheduler = self._initialize_scheduler(scheduler, sampler, pipe.scheduler.config)
         
         self.text_encoder = pipe.text_encoder
@@ -111,7 +108,6 @@ class StreamDiffusion:
         if self.is_sdxl:
             self.add_text_embeds = None
             self.add_time_ids = None
-            logger.log(logging.INFO, f"[PIPELINE] SDXL Detected: Using {scheduler} scheduler with {sampler} sampler")
 
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
@@ -131,7 +127,29 @@ class StreamDiffusion:
         self._cached_batch_size: Optional[int] = None
         self._cached_cfg_type: Optional[str] = None
         self._cached_guidance_scale: Optional[float] = None
+
+    def _initialize_scheduler(self, scheduler_type: str, sampler_type: str, config):
+        """Initialize scheduler based on type and sampler configuration."""
+        # Map sampler types to configuration parameters
+        sampler_config = {
+            "simple": {"timestep_spacing": "linspace"},
+            "sgm uniform": {"timestep_spacing": "trailing"},
+            "normal": {},  # Default configuration
+            "ddim": {"timestep_spacing": "leading"},
+            "beta": {"beta_schedule": "scaled_linear"},
+            "karras": {},  # Karras sigmas handled per scheduler
+        }
         
+        # Get sampler-specific configuration
+        sampler_params = sampler_config.get(sampler_type, {})
+        
+        if scheduler_type == "lcm":
+            return LCMScheduler.from_config(config, **sampler_params)
+        elif scheduler_type == "tcd":
+            return TCDScheduler.from_config(config, **sampler_params)
+        else:
+            logger.warning(f"Unknown scheduler type '{scheduler_type}', falling back to LCM")
+            return LCMScheduler.from_config(config, **sampler_params)
 
     def _check_unet_tensorrt(self) -> bool:
         """Cache TensorRT detection to avoid repeated hasattr calls"""
@@ -196,69 +214,7 @@ class StreamDiffusion:
             'time_ids': add_time_ids
         }
 
-    def _initialize_scheduler(self, scheduler_type: str, sampler_type: str, config):
-        """Initialize scheduler based on type and sampler configuration."""
-        # Map sampler types to configuration parameters
-        sampler_config = {
-            "simple": {"timestep_spacing": "linspace"},
-            "sgm uniform": {"timestep_spacing": "trailing"},  # SGM Uniform is typically trailing
-            "normal": {},  # Default configuration
-            "ddim": {"timestep_spacing": "leading"},  # DDIM default per documentation
-            "beta": {"beta_schedule": "scaled_linear"},
-            "karras": {},  # Karras sigmas will be enabled in scheduler-specific code
-        }
-        
-        # Get sampler-specific configuration
-        sampler_params = sampler_config.get(sampler_type, {})
 
-        print(f"Sampler params: {sampler_params}")
-        print(f"Scheduler type: {scheduler_type}")
-        
-        # Create scheduler based on type
-        if scheduler_type == "lcm":
-            return LCMScheduler.from_config(config, **sampler_params)
-        elif scheduler_type == "tcd":
-            return TCDScheduler.from_config(config, **sampler_params)
-        elif scheduler_type == "dpm++ 2m":
-            # DPM++ 2M typically uses solver_order=2 and algorithm_type="dpmsolver++"
-            return DPMSolverMultistepScheduler.from_config(
-                config,
-                solver_order=2,
-                algorithm_type="dpmsolver++",
-                use_karras_sigmas=(sampler_type == "karras"),  # Enable Karras sigmas if requested
-                **sampler_params
-            )
-        elif scheduler_type == "uni_pc":
-            # UniPC: solver_order=2 for guided sampling, solver_type="bh2" by default
-            return UniPCMultistepScheduler.from_config(
-                config,
-                solver_order=2,  # Good default for guided sampling
-                solver_type="bh2",  # Default from documentation
-                disable_corrector=[],  # No corrector disabled by default
-                use_karras_sigmas=(sampler_type == "karras"),  # Enable Karras sigmas if requested
-                **sampler_params
-            )
-        elif scheduler_type == "ddim":
-            # DDIM defaults to leading timestep spacing, but trailing can be better
-            return DDIMScheduler.from_config(
-                config,
-                set_alpha_to_one=True,  # Default per documentation
-                steps_offset=0,  # Default per documentation
-                prediction_type="epsilon",  # Default per documentation
-                **sampler_params
-            )
-        elif scheduler_type == "euler":
-            # Euler can use Karras sigmas for improved quality
-            return EulerDiscreteScheduler.from_config(
-                config,
-                use_karras_sigmas=(sampler_type == "karras"),  # Enable Karras sigmas if requested
-                prediction_type="epsilon",  # Default per documentation
-                **sampler_params
-            )
-        else:
-            # Default to LCM
-            logger.warning(f"Unknown scheduler type '{scheduler_type}', falling back to LCM")
-            return LCMScheduler.from_config(config, **sampler_params)
 
     def load_lcm_lora(
         self,
@@ -495,42 +451,12 @@ class StreamDiffusion:
 
         # make sub timesteps list based on the indices in the t_list list and the values in the timesteps list
         self.sub_timesteps = []
-        max_timestep_index = len(self.timesteps) - 1
-        
         for t in self.t_list:
-            # Clamp t_index to valid range to prevent index out of bounds
-            if t > max_timestep_index:
-                logger.warning(f"t_index {t} is out of bounds for scheduler with {len(self.timesteps)} timesteps. Clamping to {max_timestep_index}")
-                t = max_timestep_index
-            elif t < 0:
-                logger.warning(f"t_index {t} is negative. Clamping to 0")
-                t = 0
-                
-            timestep_value = self.timesteps[t]
-            # Convert tensor timesteps to scalar values for indexing operations
-            if isinstance(timestep_value, torch.Tensor):
-                timestep_scalar = timestep_value.cpu().item()
-            else:
-                timestep_scalar = timestep_value
-            self.sub_timesteps.append(timestep_scalar)
+            self.sub_timesteps.append(self.timesteps[t])
 
-        # Create tensor version for UNet calls
-        # Handle both integer and floating-point timesteps from different schedulers
-        # Some schedulers like Euler may return floating-point timesteps
-        if len(self.sub_timesteps) > 0:
-            # Always create the tensor from scalar values to avoid device issues
-            try:
-                # Try integer first for compatibility
-                sub_timesteps_tensor = torch.tensor(
-                    self.sub_timesteps, dtype=torch.long, device=self.device
-                )
-            except (TypeError, ValueError):
-                # Fallback for floating-point values
-                sub_timesteps_tensor = torch.tensor(
-                    self.sub_timesteps, dtype=torch.float32, device=self.device
-                )
-        else:
-            sub_timesteps_tensor = torch.tensor([], dtype=torch.long, device=self.device)
+        sub_timesteps_tensor = torch.tensor(
+            self.sub_timesteps, dtype=torch.long, device=self.device
+        )
         self.sub_timesteps_tensor = torch.repeat_interleave(
             sub_timesteps_tensor,
             repeats=self.frame_bff_size if self.use_denoising_batch else 1,
@@ -566,25 +492,8 @@ class StreamDiffusion:
         alpha_prod_t_sqrt_list = []
         beta_prod_t_sqrt_list = []
         for timestep in self.sub_timesteps:
-            # Convert floating-point timesteps to integers for tensor indexing
-            if isinstance(timestep, float):
-                timestep_idx = int(round(timestep))
-            else:
-                timestep_idx = timestep
-            
-            # Ensure timestep_idx is within bounds
-            max_idx = len(self.scheduler.alphas_cumprod) - 1
-            if timestep_idx > max_idx:
-                logger.warning(f"Timestep index {timestep_idx} out of bounds for alphas_cumprod (max: {max_idx}). Clamping to {max_idx}")
-                timestep_idx = max_idx
-            elif timestep_idx < 0:
-                logger.warning(f"Timestep index {timestep_idx} is negative. Clamping to 0")
-                timestep_idx = 0
-            
-            # Access scheduler tensors and move to device as needed
-            alpha_cumprod = self.scheduler.alphas_cumprod[timestep_idx].to(device=self.device, dtype=self.dtype)
-            alpha_prod_t_sqrt = alpha_cumprod.sqrt()
-            beta_prod_t_sqrt = (1 - alpha_cumprod).sqrt()
+            alpha_prod_t_sqrt = self.scheduler.alphas_cumprod[timestep].sqrt()
+            beta_prod_t_sqrt = (1 - self.scheduler.alphas_cumprod[timestep]).sqrt()
             alpha_prod_t_sqrt_list.append(alpha_prod_t_sqrt)
             beta_prod_t_sqrt_list.append(beta_prod_t_sqrt)
         alpha_prod_t_sqrt = (
@@ -610,8 +519,9 @@ class StreamDiffusion:
         #NOTE: this is a hack. Pipeline needs a major refactor along with stream parameter updater. 
         self.update_prompt(prompt)
 
-        # Only collapse tensors to a single element for non-batched LCM path.
-        if (not self.use_denoising_batch) and self._uses_lcm_logic():
+        # Only collapse tensors to scalars for LCM non-batched mode
+        # TCD needs to keep tensor dimensions for iteration
+        if not self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler):
             self.sub_timesteps_tensor = self.sub_timesteps_tensor[0]
             self.alpha_prod_t_sqrt = self.alpha_prod_t_sqrt[0]
             self.beta_prod_t_sqrt = self.beta_prod_t_sqrt[0]
@@ -621,26 +531,14 @@ class StreamDiffusion:
         self.c_out = self.c_out.to(self.device)
 
     def _get_scheduler_scalings(self, timestep):
-        """
-        Get LCM-specific scaling factors for boundary conditions.
-        Only used for LCMScheduler - other schedulers handle scaling in their step() method.
-        """
+        """Get LCM/TCD-specific scaling factors for boundary conditions."""
         if isinstance(self.scheduler, LCMScheduler):
             c_skip, c_out = self.scheduler.get_scalings_for_boundary_condition_discrete(timestep)
-            # Ensure returned values are tensors on the correct device
-            if not isinstance(c_skip, torch.Tensor):
-                c_skip = torch.tensor(c_skip, device=self.device, dtype=self.dtype)
-            else:
-                c_skip = c_skip.to(device=self.device, dtype=self.dtype)
-            if not isinstance(c_out, torch.Tensor):
-                c_out = torch.tensor(c_out, device=self.device, dtype=self.dtype)
-            else:
-                c_out = c_out.to(device=self.device, dtype=self.dtype)
             return c_skip, c_out
         else:
-            # For non-LCM schedulers, we don't use boundary condition scaling
-            # Their step() method handles all the necessary scaling internally
-            logger.debug(f"Scheduler {type(self.scheduler)} doesn't use boundary condition scaling")
+            # TCD and other schedulers don't use boundary condition scaling like LCM
+            # They handle scaling internally in their step() method
+            # Return tensors that are compatible with torch.stack()
             c_skip = torch.tensor(1.0, device=self.device, dtype=self.dtype)
             c_out = torch.tensor(1.0, device=self.device, dtype=self.dtype)
             return c_skip, c_out
@@ -664,18 +562,18 @@ class StreamDiffusion:
         """Get the current seed weight normalization setting."""
         return self._param_updater.get_normalize_seed_weights()
 
-    def set_scheduler(
-        self, 
-        scheduler: Literal["lcm", "tcd", "dpm++ 2m", "uni_pc", "ddim", "euler"] = None,
-        sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = None,
-    ) -> None:
+
+
+
+
+    def set_scheduler(self, scheduler: Literal["lcm", "tcd"] = None, sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = None) -> None:
         """
-        Change the scheduler and/or sampler configuration at runtime.
+        Change the scheduler and/or sampler at runtime.
         
         Parameters
         ----------
         scheduler : str, optional
-            The scheduler type to use. If None, keeps current scheduler.
+            The scheduler type to use ("lcm" or "tcd"). If None, keeps current scheduler.
         sampler : str, optional
             The sampler type to use. If None, keeps current sampler.
         """
@@ -684,35 +582,14 @@ class StreamDiffusion:
         if sampler is not None:
             self.sampler_type = sampler
             
-        # Re-initialize scheduler with new configuration
-        self.scheduler = self._initialize_scheduler(
-            self.scheduler_type, 
-            self.sampler_type, 
-            self.pipe.scheduler.config
-        )
-        
+        self.scheduler = self._initialize_scheduler(self.scheduler_type, self.sampler_type, self.pipe.scheduler.config)
         logger.info(f"Scheduler changed to {self.scheduler_type} with {self.sampler_type} sampler")
 
-
-
     def _uses_lcm_logic(self) -> bool:
-        """Return True if scheduler uses consistency boundary-condition math (LCM/TCD)."""
-        try:
-            # Use isinstance checks for more reliable detection
-            return isinstance(self.scheduler, LCMScheduler)
-        except Exception:
-            return False
+        """Return True if scheduler uses LCM-style consistency boundary-condition math."""
+        return isinstance(self.scheduler, LCMScheduler)
 
-    def _warned_cfg_mode_fallback(self) -> bool:
-        return getattr(self, "_cfg_mode_warning_emitted", False)
 
-    def _emit_cfg_mode_warning_once(self) -> None:
-        if not self._warned_cfg_mode_fallback():
-            logger.warning(
-                "Non-LCM scheduler in use: falling back to standard CFG ('full') semantics. "
-                "Custom cfg_type values 'self'/'initialize' are ignored for correctness."
-            )
-            setattr(self, "_cfg_mode_warning_emitted", True)
 
     def add_noise(
         self,
@@ -732,37 +609,18 @@ class StreamDiffusion:
         x_t_latent_batch: torch.Tensor,
         idx: Optional[int] = None,
     ) -> torch.Tensor:
-        """
-        Simplified scheduler integration that works with StreamDiffusion's architecture.
-        For now, we'll use a hybrid approach until we can properly refactor the pipeline.
-        """
-        # For LCM, use boundary condition scaling as before
-        if self._uses_lcm_logic():
-            if idx is None:
-                F_theta = (
-                    x_t_latent_batch - self.beta_prod_t_sqrt * model_pred_batch
-                ) / self.alpha_prod_t_sqrt
-                denoised_batch = self.c_out * F_theta + self.c_skip * x_t_latent_batch
-            else:
-                F_theta = (
-                    x_t_latent_batch - self.beta_prod_t_sqrt[idx] * model_pred_batch
-                ) / self.alpha_prod_t_sqrt[idx]
-                denoised_batch = (
-                    self.c_out[idx] * F_theta + self.c_skip[idx] * x_t_latent_batch
-                )
+        if idx is None:
+            F_theta = (
+                x_t_latent_batch - self.beta_prod_t_sqrt * model_pred_batch
+            ) / self.alpha_prod_t_sqrt
+            denoised_batch = self.c_out * F_theta + self.c_skip * x_t_latent_batch
         else:
-            # For other schedulers, use simple epsilon denoising
-            # This is what works reliably with StreamDiffusion's current architecture
-            if idx is not None and idx < len(self.alpha_prod_t_sqrt):
-                denoised_batch = (
-                    x_t_latent_batch - self.beta_prod_t_sqrt[idx] * model_pred_batch
-                ) / self.alpha_prod_t_sqrt[idx]
-            else:
-                # Fallback to first timestep if idx is out of bounds
-                denoised_batch = (
-                    x_t_latent_batch - self.beta_prod_t_sqrt[0] * model_pred_batch
-                ) / self.alpha_prod_t_sqrt[0]
-
+            F_theta = (
+                x_t_latent_batch - self.beta_prod_t_sqrt[idx] * model_pred_batch
+            ) / self.alpha_prod_t_sqrt[idx]
+            denoised_batch = (
+                self.c_out[idx] * F_theta + self.c_skip[idx] * x_t_latent_batch
+            )
         return denoised_batch
 
     def unet_step(
@@ -1039,20 +897,11 @@ class StreamDiffusion:
         """
         Compute noise prediction from UNet with classifier-free guidance applied.
         This function does not apply any scheduler math; it only returns the guided noise.
-
-        For non-LCM schedulers, custom cfg_mode values 'self'/'initialize' are treated
-        as 'full' to ensure correctness with scheduler.step().
         """
-        effective_cfg = cfg_mode
-        if not self._uses_lcm_logic() and cfg_mode in ("self", "initialize"):
-            self._emit_cfg_mode_warning_once()
-            effective_cfg = "full"
-
         # Build latent batch for CFG
-        if self.guidance_scale > 1.0 and effective_cfg == "full":
+        if self.guidance_scale > 1.0 and cfg_mode == "full":
             latent_with_uc = torch.cat([latent_model_input, latent_model_input], dim=0)
-        elif self.guidance_scale > 1.0 and effective_cfg == "initialize":
-            # Keep initialize behavior for LCM only; if we reach here, LCM path
+        elif self.guidance_scale > 1.0 and cfg_mode == "initialize":
             latent_with_uc = torch.cat([latent_model_input[0:1], latent_model_input], dim=0)
         else:
             latent_with_uc = latent_model_input
@@ -1062,7 +911,7 @@ class StreamDiffusion:
         if self.is_sdxl and hasattr(self, 'add_text_embeds') and hasattr(self, 'add_time_ids'):
             if self.add_text_embeds is not None and self.add_time_ids is not None:
                 batch_size = latent_with_uc.shape[0]
-                if self.guidance_scale > 1.0 and effective_cfg == "initialize":
+                if self.guidance_scale > 1.0 and cfg_mode == "initialize":
                     add_text_embeds = torch.cat([
                         self.add_text_embeds[0:1],
                         self.add_text_embeds[1:2].repeat(batch_size - 1, 1),
@@ -1071,7 +920,7 @@ class StreamDiffusion:
                         self.add_time_ids[0:1],
                         self.add_time_ids[1:2].repeat(batch_size - 1, 1),
                     ], dim=0)
-                elif self.guidance_scale > 1.0 and effective_cfg == "full":
+                elif self.guidance_scale > 1.0 and cfg_mode == "full":
                     repeat_factor = batch_size // 2
                     add_text_embeds = self.add_text_embeds.repeat(repeat_factor, 1)
                     add_time_ids = self.add_time_ids.repeat(repeat_factor, 1)
@@ -1097,7 +946,7 @@ class StreamDiffusion:
         )
 
         # Apply CFG
-        if self.guidance_scale > 1.0 and effective_cfg == "full":
+        if self.guidance_scale > 1.0 and cfg_mode == "full":
             noise_pred_uncond, noise_pred_text = model_pred.chunk(2)
             guided = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
             return guided
@@ -1128,23 +977,19 @@ class StreamDiffusion:
 
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
         prev_latent_batch = self.x_t_latent_buffer
-
-        # LCM supports our denoising-batch trick. Other schedulers should use step() sequentially
-        if self.use_denoising_batch and self._uses_lcm_logic():
+        
+        # LCM supports our denoising-batch trick. TCD must use standard scheduler.step() sequentially
+        if self.use_denoising_batch and isinstance(self.scheduler, LCMScheduler):
             t_list = self.sub_timesteps_tensor
-            
             if self.denoising_steps_num > 1:
                 x_t_latent = torch.cat((x_t_latent, prev_latent_batch), dim=0)
-                
                 self.stock_noise = torch.cat(
                     (self.init_noise[0:1], self.stock_noise[:-1]), dim=0
                 )
-            
             x_0_pred_batch, model_pred = self.unet_step(x_t_latent, t_list)
 
             if self.denoising_steps_num > 1:
                 x_0_pred_out = x_0_pred_batch[-1].unsqueeze(0)
-                
                 if self.do_add_noise:
                     self.x_t_latent_buffer = (
                         self.alpha_prod_t_sqrt[1:] * x_0_pred_batch[:-1]
@@ -1158,7 +1003,7 @@ class StreamDiffusion:
                 x_0_pred_out = x_0_pred_batch
                 self.x_t_latent_buffer = None
         else:
-            # Standard scheduler loop using scale_model_input + scheduler.step()
+            # Standard scheduler loop for TCD and non-batched LCM
             sample = x_t_latent
             for idx, timestep in enumerate(self.sub_timesteps_tensor):
                 # Ensure timestep tensor on device with correct dtype
@@ -1167,28 +1012,44 @@ class StreamDiffusion:
                 else:
                     t = timestep.to(self.device)
 
-                # Scale model input per scheduler requirements
-                model_input = (
-                    self.scheduler.scale_model_input(sample, t)
-                    if hasattr(self.scheduler, "scale_model_input")
-                    else sample
-                )
+                # For TCD, use the scheduler's step method
+                if isinstance(self.scheduler, TCDScheduler):
+                    # Scale model input per scheduler requirements
+                    model_input = (
+                        self.scheduler.scale_model_input(sample, t)
+                        if hasattr(self.scheduler, "scale_model_input")
+                        else sample
+                    )
 
-                # Predict noise with CFG
-                noise_pred = self._unet_predict_noise_cfg(
-                    latent_model_input=model_input,
-                    timestep=t,
-                    cfg_mode=self.cfg_type,
-                )
+                    # Predict noise with CFG
+                    noise_pred = self._unet_predict_noise_cfg(
+                        latent_model_input=model_input,
+                        timestep=t,
+                        cfg_mode=self.cfg_type,
+                    )
 
-                # Advance one step
-                step_out = self.scheduler.step(noise_pred, t, sample)
-                # diffusers returns a SchedulerOutput; prefer .prev_sample if present
-                sample = getattr(step_out, "prev_sample", step_out[0] if isinstance(step_out, (tuple, list)) else step_out)
+                    # Advance one step using TCD's step method
+                    step_out = self.scheduler.step(noise_pred, t, sample)
+                    sample = getattr(step_out, "prev_sample", step_out[0] if isinstance(step_out, (tuple, list)) else step_out)
+                else:
+                    # Original LCM logic for non-batched mode
+                    t = t.view(1,).repeat(self.frame_bff_size,)
+                    x_0_pred, model_pred = self.unet_step(sample, t, idx)
+                    if idx < len(self.sub_timesteps_tensor) - 1:
+                        if self.do_add_noise:
+                            sample = self.alpha_prod_t_sqrt[
+                                idx + 1
+                            ] * x_0_pred + self.beta_prod_t_sqrt[
+                                idx + 1
+                            ] * torch.randn_like(
+                                x_0_pred, device=self.device, dtype=self.dtype
+                            )
+                        else:
+                            sample = self.alpha_prod_t_sqrt[idx + 1] * x_0_pred
+                    else:
+                        sample = x_0_pred
 
-            # After final step, sample approximates x0 latent
             x_0_pred_out = sample
-
         return x_0_pred_out
 
     @torch.no_grad()
