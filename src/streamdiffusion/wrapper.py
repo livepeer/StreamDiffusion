@@ -110,6 +110,11 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # Pipeline hook configurations
+        image_preprocessing_config: Optional[Dict[str, Any]] = None,
+        image_postprocessing_config: Optional[Dict[str, Any]] = None,
+        latent_preprocessing_config: Optional[Dict[str, Any]] = None,
+        latent_postprocessing_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -198,6 +203,12 @@ class StreamDiffusionWrapper:
         self.enable_pytorch_fallback = enable_pytorch_fallback
         self.use_ipadapter = use_ipadapter
         self.ipadapter_config = ipadapter_config
+        
+        # Store pipeline hook configurations
+        self.image_preprocessing_config = image_preprocessing_config
+        self.image_postprocessing_config = image_postprocessing_config
+        self.latent_preprocessing_config = latent_preprocessing_config
+        self.latent_postprocessing_config = latent_postprocessing_config
 
         if mode == "txt2img":
             if cfg_type != "none":
@@ -256,6 +267,11 @@ class StreamDiffusionWrapper:
             enable_pytorch_fallback=enable_pytorch_fallback,
             use_ipadapter=use_ipadapter,
             ipadapter_config=ipadapter_config,
+            # Pipeline hook configurations
+            image_preprocessing_config=image_preprocessing_config,
+            image_postprocessing_config=image_postprocessing_config,
+            latent_preprocessing_config=latent_preprocessing_config,
+            latent_postprocessing_config=latent_postprocessing_config,
         )
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
