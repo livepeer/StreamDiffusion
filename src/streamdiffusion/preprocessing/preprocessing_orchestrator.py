@@ -771,3 +771,128 @@ class PreprocessingOrchestrator:
             logger.error(f"PreprocessingOrchestrator: Preprocessor {prep_key} failed: {e}")
             return None
 
+    # =========================================================================
+    # Pipeline Chain Processing Methods (Phase 2: Sequential Chain Support)
+    # =========================================================================
+    
+    def execute_pipeline_chain(self, 
+                              input_data: torch.Tensor, 
+                              processors: List[Any],
+                              processing_domain: str = "image") -> torch.Tensor:
+        """Execute ordered sequential chain of processors for pipeline hooks.
+        
+        Reuses existing processor execution infrastructure but applies processors
+        sequentially rather than in parallel.
+        
+        Args:
+            input_data: Input tensor (image or latent domain)
+            processors: List of processor instances to execute in sequence
+            processing_domain: "image" or "latent" to determine processing path
+            
+        Returns:
+            Processed tensor in same domain as input
+        """
+        if not processors:
+            return input_data
+            
+        result = input_data
+        ordered_processors = self._order_processors(processors)
+        
+        for processor in ordered_processors:
+            try:
+                if processing_domain == "image":
+                    result = self._process_image_processor_chain(result, processor)
+                elif processing_domain == "latent":
+                    result = self._process_latent_processor_chain(result, processor)
+                else:
+                    raise ValueError(f"execute_pipeline_chain: Unknown processing_domain: {processing_domain}")
+            except Exception as e:
+                logger.error(f"execute_pipeline_chain: Processor {type(processor).__name__} failed: {e}")
+                # Continue with next processor rather than failing entire chain
+                continue
+                
+        return result
+    
+    def _order_processors(self, processors: List[Any]) -> List[Any]:
+        """Order processors based on their configuration.
+        
+        Processors can define an 'order' attribute to control execution sequence.
+        """
+        return sorted(processors, key=lambda p: getattr(p, 'order', 0))
+    
+    def _process_image_processor_chain(self, image_tensor: torch.Tensor, processor: Any) -> torch.Tensor:
+        """Process single image processor in chain, handling tensor<->PIL conversion.
+        
+        Leverages existing format conversion and processing logic.
+        """
+        # Convert tensor to PIL for processor (reuse existing conversion logic)
+        try:
+            # Use existing tensor to PIL conversion from prepare_control_image logic
+            pil_image = self._tensor_to_pil_safe(image_tensor)
+            
+            # Process using existing processor execution pattern
+            if hasattr(processor, 'process'):
+                processed_pil = processor.process(pil_image)
+            else:
+                processed_pil = processor(pil_image)
+            
+            # Convert back to tensor (reuse existing PIL to tensor logic)
+            result_tensor = self._pil_to_tensor_safe(processed_pil, image_tensor.device, image_tensor.dtype)
+            return result_tensor
+            
+        except Exception as e:
+            logger.error(f"_process_image_processor_chain: Failed processing {type(processor).__name__}: {e}")
+            return image_tensor  # Return input unchanged on failure
+    
+    def _process_latent_processor_chain(self, latent_tensor: torch.Tensor, processor: Any) -> torch.Tensor:
+        """Process single latent processor in chain.
+        
+        Direct tensor processing - no format conversion needed for latent domain.
+        """
+        try:
+            # Latent processors work directly on tensors
+            if hasattr(processor, 'process_tensor'):
+                return processor.process_tensor(latent_tensor)
+            elif hasattr(processor, 'process'):
+                return processor.process(latent_tensor)
+            else:
+                return processor(latent_tensor)
+                
+        except Exception as e:
+            logger.error(f"_process_latent_processor_chain: Failed processing {type(processor).__name__}: {e}")
+            return latent_tensor  # Return input unchanged on failure
+    
+    def _tensor_to_pil_safe(self, tensor: torch.Tensor) -> Image.Image:
+        """Convert tensor to PIL Image safely (reuse existing conversion logic)."""
+        # Leverage existing tensor conversion from prepare_control_image
+        if tensor.dim() == 4:
+            tensor = tensor.squeeze(0)  # Remove batch dimension
+        if tensor.dim() == 3 and tensor.shape[0] == 3:
+            # Convert from CHW to HWC
+            tensor = tensor.permute(1, 2, 0)
+        
+        # Ensure proper range [0, 1] -> [0, 255]
+        if tensor.max() <= 1.0:
+            tensor = tensor * 255.0
+        
+        # Convert to numpy and then PIL
+        numpy_image = tensor.detach().cpu().numpy().astype(np.uint8)
+        return Image.fromarray(numpy_image)
+    
+    def _pil_to_tensor_safe(self, pil_image: Image.Image, device: str, dtype: torch.dtype) -> torch.Tensor:
+        """Convert PIL Image to tensor safely (reuse existing conversion logic)."""
+        # Convert PIL to numpy
+        numpy_image = np.array(pil_image)
+        
+        # Convert to tensor and normalize to [0, 1]
+        tensor = torch.from_numpy(numpy_image).float() / 255.0
+        
+        # Convert HWC to CHW
+        if tensor.dim() == 3:
+            tensor = tensor.permute(2, 0, 1)
+        
+        # Add batch dimension and move to device
+        tensor = tensor.unsqueeze(0).to(device=device, dtype=dtype)
+        
+        return tensor
+
