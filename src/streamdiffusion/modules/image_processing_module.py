@@ -40,8 +40,6 @@ class ImageProcessingModule(OrchestratorUser):
         
         # Check if processor is enabled (default to True, same as ControlNet)
         enabled = proc_config.get('enabled', True)
-        if not enabled:
-            return  # Skip disabled processors
         
         # Create processor using existing registry (same as ControlNet)
         processor = get_preprocessor(processor_type)
@@ -62,11 +60,16 @@ class ImageProcessingModule(OrchestratorUser):
         order = proc_config.get('order', len(self.processors))
         setattr(processor, 'order', order)
         
+        # Set enabled state
+        setattr(processor, 'enabled', enabled)
+        
         self.processors.append(processor)
     
     def _get_ordered_processors(self) -> List[Any]:
-        """Return processors in execution order based on their order attribute."""
-        return sorted(self.processors, key=lambda p: getattr(p, 'order', 0))
+        """Return enabled processors in execution order based on their order attribute."""
+        # Filter for enabled processors first, then sort by order
+        enabled_processors = [p for p in self.processors if getattr(p, 'enabled', True)]
+        return sorted(enabled_processors, key=lambda p: getattr(p, 'order', 0))
 
 
 class ImagePreprocessingModule(ImageProcessingModule):
