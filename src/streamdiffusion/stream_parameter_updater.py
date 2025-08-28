@@ -167,19 +167,24 @@ class StreamParameterUpdater(OrchestratorUser):
         try:
             if is_stream:
                 # Pipelined processing - optimized for throughput with 1-frame lag
-                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors_pipelined(
-                    input_image=style_image,
-                    embedding_preprocessors=relevant_preprocessors,
-                    stream_width=self.stream.width,
-                    stream_height=self.stream.height
+                embedding_results = self._embedding_orchestrator.process_pipelined(
+                    style_image,
+                    relevant_preprocessors,
+                    None,
+                    self.stream.width,
+                    self.stream.height,
+                    "ipadapter"
                 )
             else:
                 # Synchronous processing - immediate results for discrete updates
-                embedding_results = self._embedding_orchestrator.process_embedding_preprocessors(
-                    input_image=style_image,
-                    embedding_preprocessors=relevant_preprocessors,
-                    stream_width=self.stream.width,
-                    stream_height=self.stream.height
+                embedding_results = self._embedding_orchestrator.process_sync(
+                    style_image,
+                    relevant_preprocessors,
+                    None,
+                    self.stream.width,
+                    self.stream.height,
+                    None,
+                    "ipadapter"
                 )
             
             # Cache results for this style image key
