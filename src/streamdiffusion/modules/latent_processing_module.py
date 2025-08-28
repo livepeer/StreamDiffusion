@@ -1,4 +1,4 @@
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import torch
 
 from ..preprocessing.orchestrator_user import OrchestratorUser
@@ -13,16 +13,9 @@ class LatentProcessingModule(OrchestratorUser):
     timing variants. Processing domain is always latent tensors.
     """
     
-    def __init__(self, processors: List[Any], order: Optional[List[int]] = None):
-        """
-        Initialize latent processing module.
-        
-        Args:
-            processors: List of processor instances for sequential execution
-            order: Optional list of indices for custom processor ordering
-        """
-        self.processors = processors
-        self.order = order or list(range(len(processors)))
+    def __init__(self):
+        """Initialize latent processing module."""
+        self.processors = []
         
     def _process_latent_chain(self, input_latent: torch.Tensor) -> torch.Tensor:
         """Execute sequential chain of processors in latent domain.
@@ -37,11 +30,38 @@ class LatentProcessingModule(OrchestratorUser):
             input_latent, ordered_processors, processing_domain="latent"
         )
     
+    def add_processor(self, proc_config: Dict[str, Any]) -> None:
+        """Add a processor using the existing registry, following ControlNet pattern."""
+        from streamdiffusion.preprocessing.processors import get_preprocessor
+        
+        processor_type = proc_config.get('type')
+        if not processor_type:
+            raise ValueError("Processor config missing 'type' field")
+        
+        # Create processor using existing registry (same as ControlNet)
+        processor = get_preprocessor(processor_type)
+        
+        # Apply parameters (same pattern as ControlNet)
+        processor_params = proc_config.get('params', {})
+        if processor_params:
+            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                processor.params.update(processor_params)
+            for name, value in processor_params.items():
+                try:
+                    if hasattr(processor, name):
+                        setattr(processor, name, value)
+                except Exception:
+                    pass
+        
+        # Set order for sequential execution
+        order = proc_config.get('order', len(self.processors))
+        setattr(processor, 'order', order)
+        
+        self.processors.append(processor)
+    
     def _get_ordered_processors(self) -> List[Any]:
-        """Return processors in execution order based on configured ordering."""
-        if self.order and len(self.order) == len(self.processors):
-            return [self.processors[i] for i in self.order]
-        return self.processors
+        """Return processors in execution order based on their order attribute."""
+        return sorted(self.processors, key=lambda p: getattr(p, 'order', 0))
 
 
 class LatentPreprocessingModule(LatentProcessingModule):

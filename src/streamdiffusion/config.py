@@ -140,6 +140,10 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
     
+    # Pipeline hook configurations (Phase 4: Configuration Integration)
+    hook_configs = _prepare_pipeline_hook_configs(config)
+    param_map.update(hook_configs)
+    
     return {k: v for k, v in param_map.items() if v is not None}
 
 
@@ -211,6 +215,96 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         ipadapter_configs.append(ipadapter_config)
     
     return ipadapter_configs
+
+
+def _prepare_pipeline_hook_configs(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare pipeline hook configurations for wrapper following ControlNet/IPAdapter pattern"""
+    hook_configs = {}
+    
+    # Image preprocessing hooks
+    if 'image_preprocessing' in config and config['image_preprocessing']:
+        if config['image_preprocessing'].get('enabled', True):
+            hook_configs['image_preprocessing_config'] = _prepare_single_hook_config(
+                config['image_preprocessing'], 'image_preprocessing'
+            )
+    
+    # Image postprocessing hooks  
+    if 'image_postprocessing' in config and config['image_postprocessing']:
+        if config['image_postprocessing'].get('enabled', True):
+            hook_configs['image_postprocessing_config'] = _prepare_single_hook_config(
+                config['image_postprocessing'], 'image_postprocessing'
+            )
+    
+    # Latent preprocessing hooks
+    if 'latent_preprocessing' in config and config['latent_preprocessing']:
+        if config['latent_preprocessing'].get('enabled', True):
+            hook_configs['latent_preprocessing_config'] = _prepare_single_hook_config(
+                config['latent_preprocessing'], 'latent_preprocessing'
+            )
+    
+    # Latent postprocessing hooks
+    if 'latent_postprocessing' in config and config['latent_postprocessing']:
+        if config['latent_postprocessing'].get('enabled', True):
+            hook_configs['latent_postprocessing_config'] = _prepare_single_hook_config(
+                config['latent_postprocessing'], 'latent_postprocessing'
+            )
+    
+    return hook_configs
+
+
+def _prepare_single_hook_config(hook_config: Dict[str, Any], hook_type: str) -> Dict[str, Any]:
+    """Prepare configuration for a single hook type"""
+    return {
+        'enabled': hook_config.get('enabled', True),
+        'processors': hook_config.get('processors', []),
+        'hook_type': hook_type,
+    }
+
+
+def _validate_pipeline_hook_configs(config: Dict[str, Any]) -> None:
+    """Validate pipeline hook configurations following ControlNet/IPAdapter validation pattern"""
+    hook_types = ['image_preprocessing', 'image_postprocessing', 'latent_preprocessing', 'latent_postprocessing']
+    
+    for hook_type in hook_types:
+        if hook_type in config:
+            hook_config = config[hook_type]
+            if not isinstance(hook_config, dict):
+                raise ValueError(f"_validate_config: '{hook_type}' must be a dictionary")
+            
+            # Validate enabled field
+            if 'enabled' in hook_config:
+                enabled = hook_config['enabled']
+                if not isinstance(enabled, bool):
+                    raise ValueError(f"_validate_config: '{hook_type}.enabled' must be a boolean")
+            
+            # Validate processors field
+            if 'processors' in hook_config:
+                processors = hook_config['processors']
+                if not isinstance(processors, list):
+                    raise ValueError(f"_validate_config: '{hook_type}.processors' must be a list")
+                
+                for i, processor in enumerate(processors):
+                    if not isinstance(processor, dict):
+                        raise ValueError(f"_validate_config: '{hook_type}.processors[{i}]' must be a dictionary")
+                    
+                    # Validate processor type (required)
+                    if 'type' not in processor:
+                        raise ValueError(f"_validate_config: '{hook_type}.processors[{i}]' missing required 'type' field")
+                    
+                    if not isinstance(processor['type'], str):
+                        raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].type' must be a string")
+                    
+                    # Validate order field (optional)
+                    if 'order' in processor:
+                        order = processor['order']
+                        if not isinstance(order, int):
+                            raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].order' must be an integer")
+                    
+                    # Validate params field (optional)
+                    if 'params' in processor:
+                        params = processor['params']
+                        if not isinstance(params, dict):
+                            raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].params' must be a dictionary")
 
 
 def create_prompt_blending_config(
@@ -361,6 +455,9 @@ def _validate_config(config: Dict[str, Any]) -> None:
         interpolation_method = seed_blend_config.get('interpolation_method', 'linear')
         if interpolation_method not in ['linear', 'slerp']:
             raise ValueError("_validate_config: seed blending interpolation_method must be 'linear' or 'slerp'")
+
+    # Validate pipeline hook configurations if present (Phase 4: Configuration Integration)
+    _validate_pipeline_hook_configs(config)
 
     # Validate separate normalize settings if present
     if 'normalize_prompt_weights' in config:

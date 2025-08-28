@@ -778,6 +778,11 @@ class StreamDiffusionWrapper:
         enable_pytorch_fallback: bool = False,
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # Pipeline hook configurations (Phase 4: Configuration Integration)
+        image_preprocessing_config: Optional[Dict[str, Any]] = None,
+        image_postprocessing_config: Optional[Dict[str, Any]] = None,
+        latent_preprocessing_config: Optional[Dict[str, Any]] = None,
+        latent_postprocessing_config: Optional[Dict[str, Any]] = None,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -1576,6 +1581,51 @@ class StreamDiffusionWrapper:
                 logger.error("Failed to install IPAdapterModule")
                 raise
 
+        # Install pipeline hook modules (Phase 4: Configuration Integration)
+        if image_preprocessing_config and image_preprocessing_config.get('enabled', True):
+            try:
+                from streamdiffusion.modules.image_processing_module import ImagePreprocessingModule
+                img_pre_module = ImagePreprocessingModule()
+                img_pre_module.install(stream)
+                for proc_config in image_preprocessing_config.get('processors', []):
+                    img_pre_module.add_processor(proc_config)
+                stream._image_preprocessing_module = img_pre_module
+            except Exception as e:
+                logger.error(f"Failed to install ImagePreprocessingModule: {e}")
+        
+        if image_postprocessing_config and image_postprocessing_config.get('enabled', True):
+            try:
+                from streamdiffusion.modules.image_processing_module import ImagePostprocessingModule
+                img_post_module = ImagePostprocessingModule()
+                img_post_module.install(stream)
+                for proc_config in image_postprocessing_config.get('processors', []):
+                    img_post_module.add_processor(proc_config)
+                stream._image_postprocessing_module = img_post_module
+            except Exception as e:
+                logger.error(f"Failed to install ImagePostprocessingModule: {e}")
+        
+        if latent_preprocessing_config and latent_preprocessing_config.get('enabled', True):
+            try:
+                from streamdiffusion.modules.latent_processing_module import LatentPreprocessingModule
+                latent_pre_module = LatentPreprocessingModule()
+                latent_pre_module.install(stream)
+                for proc_config in latent_preprocessing_config.get('processors', []):
+                    latent_pre_module.add_processor(proc_config)
+                stream._latent_preprocessing_module = latent_pre_module
+            except Exception as e:
+                logger.error(f"Failed to install LatentPreprocessingModule: {e}")
+        
+        if latent_postprocessing_config and latent_postprocessing_config.get('enabled', True):
+            try:
+                from streamdiffusion.modules.latent_processing_module import LatentPostprocessingModule
+                latent_post_module = LatentPostprocessingModule()
+                latent_post_module.install(stream)
+                for proc_config in latent_postprocessing_config.get('processors', []):
+                    latent_post_module.add_processor(proc_config)
+                stream._latent_postprocessing_module = latent_post_module
+            except Exception as e:
+                logger.error(f"Failed to install LatentPostprocessingModule: {e}")
+
         return stream
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:
@@ -1908,3 +1958,6 @@ class StreamDiffusionWrapper:
                 logger.info(f"   Reduced resolution: {old_width}x{old_height} -> {self.width}x{self.height}")
         
         logger.info("   Next model load will rebuild engines with these smaller settings")
+
+
+
