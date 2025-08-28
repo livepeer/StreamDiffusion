@@ -871,6 +871,13 @@ class PreprocessingOrchestrator:
             # Convert from CHW to HWC
             tensor = tensor.permute(1, 2, 0)
         
+        # CRITICAL FIX: Handle VAE output range [-1, 1] -> [0, 1] -> [0, 255]
+        # VAE decode_image() outputs in [-1, 1] range, need to convert to [0, 1] first
+        #TODO: this -1,1 normalization is deprecated. Should be fixed in project.
+        if tensor.min() < 0:
+            logger.info(f"_tensor_to_pil_safe: Converting from VAE range [-1, 1] to [0, 1]")
+            tensor = (tensor / 2.0 + 0.5).clamp(0, 1)  # Convert [-1, 1] -> [0, 1]
+        
         # Ensure proper range [0, 1] -> [0, 255]
         if tensor.max() <= 1.0:
             tensor = tensor * 255.0
@@ -893,6 +900,11 @@ class PreprocessingOrchestrator:
         
         # Add batch dimension and move to device
         tensor = tensor.unsqueeze(0).to(device=device, dtype=dtype)
+        
+        # CRITICAL: Convert back to VAE input range [-1, 1] for postprocessing
+        # VAE expects inputs in [-1, 1] range, so convert [0, 1] -> [-1, 1]
+        #TODO: this -1,1 normalization is deprecated. Should be fixed in project.
+        tensor = (tensor - 0.5) * 2.0  # Convert [0, 1] -> [-1, 1]
         
         return tensor
 
