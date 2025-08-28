@@ -466,6 +466,11 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        # Hook configurations
+        image_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        image_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        latent_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        latent_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -524,6 +529,10 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
+            image_preprocessing_config=image_preprocessing_config,
+            image_postprocessing_config=image_postprocessing_config,
+            latent_preprocessing_config=latent_preprocessing_config,
+            latent_postprocessing_config=latent_postprocessing_config,
         )
 
     def __call__(
@@ -1754,9 +1763,31 @@ class StreamDiffusionWrapper:
             ipadapter_config = updater._get_current_ipadapter_config()
         except Exception:
             ipadapter_config = None
+        # Hook configs
+        try:
+            image_preprocessing_config = updater._get_current_hook_config('image_preprocessing')
+        except Exception:
+            image_preprocessing_config = []
+        try:
+            image_postprocessing_config = updater._get_current_hook_config('image_postprocessing')
+        except Exception:
+            image_postprocessing_config = []
+        try:
+            latent_preprocessing_config = updater._get_current_hook_config('latent_preprocessing')
+        except Exception:
+            latent_preprocessing_config = []
+        try:
+            latent_postprocessing_config = updater._get_current_hook_config('latent_postprocessing')
+        except Exception:
+            latent_postprocessing_config = []
+            
         state.update({
             'controlnet_config': controlnet_config,
             'ipadapter_config': ipadapter_config,
+            'image_preprocessing_config': image_preprocessing_config,
+            'image_postprocessing_config': image_postprocessing_config,
+            'latent_preprocessing_config': latent_preprocessing_config,
+            'latent_postprocessing_config': latent_postprocessing_config,
         })
 
         # Optional caches
@@ -1974,6 +2005,8 @@ class StreamDiffusionWrapper:
                 logger.info(f"   Reduced resolution: {old_width}x{old_height} -> {self.width}x{self.height}")
         
         logger.info("   Next model load will rebuild engines with these smaller settings")
+
+
 
 
 
