@@ -294,6 +294,12 @@ def _validate_pipeline_hook_configs(config: Dict[str, Any]) -> None:
                     if not isinstance(processor['type'], str):
                         raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].type' must be a string")
                     
+                    # Validate enabled field (optional, defaults to True)
+                    if 'enabled' in processor:
+                        enabled = processor['enabled']
+                        if not isinstance(enabled, bool):
+                            raise ValueError(f"_validate_config: '{hook_type}.processors[{i}].enabled' must be a boolean")
+                    
                     # Validate order field (optional)
                     if 'order' in processor:
                         order = processor['order']

@@ -38,6 +38,11 @@ class ImageProcessingModule(OrchestratorUser):
         if not processor_type:
             raise ValueError("Processor config missing 'type' field")
         
+        # Check if processor is enabled (default to True, same as ControlNet)
+        enabled = proc_config.get('enabled', True)
+        if not enabled:
+            return  # Skip disabled processors
+        
         # Create processor using existing registry (same as ControlNet)
         processor = get_preprocessor(processor_type)
         
