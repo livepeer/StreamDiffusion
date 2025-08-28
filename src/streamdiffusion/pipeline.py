@@ -11,7 +11,10 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 )
 
 from streamdiffusion.model_detection import detect_model
-from streamdiffusion.hooks import EmbedsCtx, StepCtx, UnetKwargsDelta, EmbeddingHook, UnetHook
+from streamdiffusion.hooks import (
+    EmbedsCtx, StepCtx, UnetKwargsDelta, ImageCtx, LatentCtx,
+    EmbeddingHook, UnetHook, ImageHook, LatentHook
+)
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
@@ -106,6 +109,15 @@ class StreamDiffusion:
         # Hook containers (step 1: introduced but initially no-op)
         self.embedding_hooks: List[EmbeddingHook] = []
         self.unet_hooks: List[UnetHook] = []
+        
+        # Phase 1: Core Pipeline Hooks (Immediate Priority)
+        self.image_preprocessing_hooks: List[ImageHook] = []
+        self.latent_preprocessing_hooks: List[LatentHook] = []
+        self.latent_postprocessing_hooks: List[LatentHook] = []
+        
+        # Phase 2: Quality & Performance Hooks
+        self.image_postprocessing_hooks: List[ImageHook] = []
+        self.image_filtering_hooks: List[ImageHook] = []
         
         # Cache TensorRT detection to avoid repeated hasattr checks
         self._is_unet_tensorrt = None

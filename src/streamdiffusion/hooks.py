@@ -45,7 +45,40 @@ class UnetKwargsDelta:
     extra_unet_kwargs: Optional[Dict[str, Any]] = None
 
 
+@dataclass
+class ImageCtx:
+    """Context passed to image processing hooks.
+    
+    Fields:
+    - image: [B, C, H, W] tensor in image space
+    - width: image width
+    - height: image height  
+    - step_index: optional step index for multi-step processing
+    """
+    image: torch.Tensor
+    width: int
+    height: int
+    step_index: Optional[int] = None
+
+
+@dataclass  
+class LatentCtx:
+    """Context passed to latent processing hooks.
+    
+    Fields:
+    - latent: [B, C, H/8, W/8] tensor in latent space
+    - timestep: optional timestep tensor for diffusion context
+    - step_index: optional step index for multi-step processing
+    """
+    latent: torch.Tensor
+    timestep: Optional[torch.Tensor] = None
+    step_index: Optional[int] = None
+
+
+
 # Type aliases for clarity
 EmbeddingHook = Callable[[EmbedsCtx], EmbedsCtx]
 UnetHook = Callable[[StepCtx], UnetKwargsDelta]
+ImageHook = Callable[[ImageCtx], ImageCtx]
+LatentHook = Callable[[LatentCtx], LatentCtx]
 
