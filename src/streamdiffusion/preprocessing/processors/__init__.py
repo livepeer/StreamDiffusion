@@ -34,6 +34,13 @@ except ImportError:
     POSE_TENSORRT_AVAILABLE = False
 
 try:
+    from .temporal_net_tensorrt import TemporalNetTensorRTPreprocessor
+    TEMPORAL_NET_TENSORRT_AVAILABLE = True
+except ImportError:
+    TemporalNetTensorRTPreprocessor = None
+    TEMPORAL_NET_TENSORRT_AVAILABLE = False
+
+try:
     from .mediapipe_pose import MediaPipePosePreprocessor
     MEDIAPIPE_POSE_AVAILABLE = True
 except ImportError:
@@ -72,6 +79,9 @@ if DEPTH_TENSORRT_AVAILABLE:
 
 if POSE_TENSORRT_AVAILABLE:
     _preprocessor_registry["pose_tensorrt"] = YoloNasPoseTensorrtPreprocessor
+
+if TEMPORAL_NET_TENSORRT_AVAILABLE:
+    _preprocessor_registry["temporal_net_tensorrt"] = TemporalNetTensorRTPreprocessor
 
 # Add MediaPipe preprocessors if available
 if MEDIAPIPE_POSE_AVAILABLE:
@@ -169,6 +179,9 @@ if DEPTH_TENSORRT_AVAILABLE:
 
 if POSE_TENSORRT_AVAILABLE:
     __all__.append("YoloNasPoseTensorrtPreprocessor")
+
+if TEMPORAL_NET_TENSORRT_AVAILABLE:
+    __all__.append("TemporalNetTensorRTPreprocessor")
 
 if MEDIAPIPE_POSE_AVAILABLE:
     __all__.append("MediaPipePosePreprocessor")
