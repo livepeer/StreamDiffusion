@@ -1529,6 +1529,7 @@ class StreamDiffusionWrapper:
                         preprocessor=cfg.get('preprocessor'),
                         conditioning_scale=cfg.get('conditioning_scale', 1.0),
                         enabled=cfg.get('enabled', True),
+                        conditioning_channels=cfg.get('conditioning_channels'),
                         preprocessor_params=cfg.get('preprocessor_params'),
                     )
                     cn_module.add_controlnet(cn_cfg, control_image=cfg.get('control_image'))

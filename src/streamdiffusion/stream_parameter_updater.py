@@ -1041,6 +1041,7 @@ class StreamParameterUpdater(OrchestratorUser):
                             preprocessor=desired_cfg.get('preprocessor'),
                             conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
                             enabled=desired_cfg.get('enabled', True),
+                            conditioning_channels=desired_cfg.get('conditioning_channels'),
                             preprocessor_params=desired_cfg.get('preprocessor_params'),
                         )
                         controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
