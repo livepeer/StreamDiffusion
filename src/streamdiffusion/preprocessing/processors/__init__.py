@@ -14,6 +14,7 @@ from .faceid_embedding import FaceIDEmbeddingPreprocessor
 from .feedback import FeedbackPreprocessor
 from .latent_feedback import LatentFeedbackPreprocessor
 from .sharpen import SharpenPreprocessor
+from .upscale import UpscalePreprocessor
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
     from .depth_tensorrt import DepthAnythingTensorrtPreprocessor
@@ -57,7 +58,8 @@ _preprocessor_registry = {
     "feedback": FeedbackPreprocessor,
     "latent_feedback": LatentFeedbackPreprocessor,
     "sharpen": SharpenPreprocessor,
-}
+    "upscale": UpscalePreprocessor,
+}   
 
 # Add TensorRT preprocessors if available
 if DEPTH_TENSORRT_AVAILABLE:
