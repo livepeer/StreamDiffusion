@@ -84,6 +84,7 @@ class StreamDiffusion:
         self.similar_image_filter = False
         self.similar_filter = SimilarImageFilter()
         self.prev_image_result = None
+        self.prev_latent_result = None
 
         self.pipe = pipe
         self.image_processor = VaeImageProcessor(pipe.vae_scale_factor)
@@ -808,6 +809,8 @@ class StreamDiffusion:
 
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
         prev_latent_batch = self.x_t_latent_buffer
+        
+
 
         if self.use_denoising_batch:
             t_list = self.sub_timesteps_tensor
@@ -894,6 +897,10 @@ class StreamDiffusion:
         
         # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
+        
+        # Store latent result for latent feedback processors
+        self.prev_latent_result = x_0_pred_out.detach().clone()
+
         
         x_output = self.decode_image(x_0_pred_out).detach().clone()
         
@@ -983,6 +990,10 @@ class StreamDiffusion:
         # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
         
+        # Store latent result for latent feedback processors
+        self.prev_latent_result = x_0_pred_out.detach().clone()
+
+        
         x_output = self.decode_image(x_0_pred_out).detach().clone()
         
         # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
@@ -1035,6 +1046,10 @@ class StreamDiffusion:
         
         # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
         x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
+        
+        # Store latent result for latent feedback processors
+        self.prev_latent_result = x_0_pred_out.detach().clone()
+
         
         x_output = self.decode_image(x_0_pred_out)
         
