@@ -100,7 +100,7 @@ class ControlNetModule(OrchestratorUser):
         preproc = None
         if cfg.preprocessor:
             from streamdiffusion.preprocessing.processors import get_preprocessor
-            preproc = get_preprocessor(cfg.preprocessor)
+            preproc = get_preprocessor(cfg.preprocessor, pipeline_ref=self._stream)
             # Apply provided parameters to the preprocessor instance
             if cfg.preprocessor_params:
                 params = cfg.preprocessor_params or {}
@@ -115,12 +115,6 @@ class ControlNetModule(OrchestratorUser):
                     except Exception:
                         pass
 
-            # Provide pipeline reference for preprocessors that need it (e.g., FeedbackPreprocessor)
-            try:
-                if hasattr(preproc, 'set_pipeline_ref'):
-                    preproc.set_pipeline_ref(self._stream)
-            except Exception:
-                pass
 
             # Align preprocessor target size with stream resolution once (avoid double-resize later)
             try:

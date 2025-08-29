@@ -1071,6 +1071,9 @@ class StreamParameterUpdater(OrchestratorUser):
                     for param_name, param_value in desired_cfg['preprocessor_params'].items():
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
+                
+                # Pipeline references are now automatically managed during preprocessor creation
+                # No need to manually re-establish pipeline references for pipeline-aware processors
 
 
     def _get_controlnet_pipeline(self):
