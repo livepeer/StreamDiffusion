@@ -15,6 +15,7 @@ from .feedback import FeedbackPreprocessor
 from .latent_feedback import LatentFeedbackPreprocessor
 from .sharpen import SharpenPreprocessor
 from .upscale import UpscalePreprocessor
+from .blur import BlurPreprocessor
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
     from .depth_tensorrt import DepthAnythingTensorrtPreprocessor
@@ -59,6 +60,7 @@ _preprocessor_registry = {
     "latent_feedback": LatentFeedbackPreprocessor,
     "sharpen": SharpenPreprocessor,
     "upscale": UpscalePreprocessor,
+    "blur": BlurPreprocessor,
 }   
 
 # Add TensorRT preprocessors if available
