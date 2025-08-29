@@ -31,7 +31,7 @@ class LatentFeedbackPreprocessor(PipelineAwareProcessor):
                 "feedback_strength": {
                     "type": "float",
                     "default": 0.5,
-                    "range": [0.0, 1.0],
+                    "range": [0.0, 0.40],
                     "step": 0.01,
                     "description": "Strength of latent feedback blend (0.0 = pure input, 1.0 = pure feedback)"
                 }
