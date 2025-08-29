@@ -16,6 +16,8 @@ from .latent_feedback import LatentFeedbackPreprocessor
 from .sharpen import SharpenPreprocessor
 from .upscale import UpscalePreprocessor
 from .blur import BlurPreprocessor
+from .realesrgan_trt import RealESRGANProcessor
+
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
     from .depth_tensorrt import DepthAnythingTensorrtPreprocessor
@@ -61,6 +63,7 @@ _preprocessor_registry = {
     "sharpen": SharpenPreprocessor,
     "upscale": UpscalePreprocessor,
     "blur": BlurPreprocessor,
+    "realesrgan_trt": RealESRGANProcessor,
 }   
 
 # Add TensorRT preprocessors if available
