@@ -1557,7 +1557,8 @@ class StreamDiffusionWrapper:
                                     cuda_stream=cuda_stream,
                                     use_cuda_graph=False,
                                     unet=None,
-                                    model_path=cfg['model_id']
+                                    model_path=cfg['model_id'],
+                                    conditioning_channels=cfg.get('conditioning_channels', 3)
                                 )
                                 try:
                                     setattr(engine, 'model_id', cfg['model_id'])
