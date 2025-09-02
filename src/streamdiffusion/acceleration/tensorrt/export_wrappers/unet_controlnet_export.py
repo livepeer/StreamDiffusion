@@ -3,7 +3,7 @@
 import torch
 from typing import List, Optional, Dict, Any
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
-
+from ....model_detection import detect_model
 
 class ControlNetUNetExportWrapper(torch.nn.Module):
     """Wrapper that combines UNet with ControlNet inputs for ONNX export"""
@@ -14,7 +14,11 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         self.control_input_names = control_input_names
         
         # Detect if this is SDXL based on UNet config
-        self.is_sdxl = self._detect_sdxl_architecture(unet)
+        detection_result = detect_model(self.unet)
+        self.is_sdxl = detection_result.get('is_sdxl', False)
+        
+        # Detect if UNet has IPAdapter modifications
+        self.has_ipadapter = self._detect_ipadapter_modifications(unet)
         
         # SDXL ControlNet has different structure than SD1.5
         if self.is_sdxl:
@@ -39,14 +43,13 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
             elif "middle_control" in name:
                 self.middle_control_indices.append(i)
     
-    def _detect_sdxl_architecture(self, unet):
-        """Detect if UNet is SDXL based on architecture"""
-        if hasattr(unet, 'config'):
-            config = unet.config
-            # SDXL has 3 down blocks vs SD1.5's 4 down blocks
-            block_out_channels = getattr(config, 'block_out_channels', None)
-            if block_out_channels and len(block_out_channels) == 3:
-                return True
+    def _detect_ipadapter_modifications(self, unet):
+        """Detect if UNet has been modified by IPAdapter"""
+        # Check for IPAdapter attention processors
+        if hasattr(unet, 'attn_processors'):
+            for processor in unet.attn_processors.values():
+                if hasattr(processor, '__class__') and 'TRTIPAttn' in processor.__class__.__name__:
+                    return True
         return False
     
     def forward(self, sample, timestep, encoder_hidden_states, *args, **kwargs):
@@ -101,6 +104,17 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         # Pass through all additional kwargs (for SDXL models)
         unet_kwargs.update(kwargs)
         
+        # Handle SDXL conditioning - ensure added_cond_kwargs is never None for SDXL models
+        if self.is_sdxl and ('added_cond_kwargs' not in unet_kwargs or unet_kwargs['added_cond_kwargs'] is None):
+            # Auto-generate minimal SDXL conditioning if missing
+            batch_size = sample.shape[0]
+            device = sample.device
+            dtype = sample.dtype
+            unet_kwargs['added_cond_kwargs'] = {
+                'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=dtype),
+                'time_ids': torch.zeros(batch_size, 6, device=device, dtype=dtype)
+            }
+        
         if down_block_controls:
             # Adapt control tensor shapes for SDXL if needed
             adapted_controls = self._adapt_control_tensors(down_block_controls, sample)
@@ -135,17 +149,48 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         # Factors: [1, 1, 1, 2, 2, 2, 4, 4, 4] to match UNet down_block_res_samples structure
         if self.is_sdxl:
             expected_downsample_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4]  # 9 tensors for SDXL
+            # SDXL expected channel dimensions: [320, 320, 320, 320, 640, 640, 640, 1280, 1280]
+            expected_channels = [320, 320, 320, 320, 640, 640, 640, 1280, 1280]
         else:
             expected_downsample_factors = [1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8]  # 12 tensors for SD1.5
+            expected_channels = [320, 320, 320, 320, 640, 640, 640, 1280, 1280, 1280, 1280, 1280]
         
         for i, control_tensor in enumerate(control_tensors):
             if control_tensor is None:
                 adapted_tensors.append(control_tensor)
                 continue
                 
-            # Check if tensor needs spatial adaptation
+            # Check if tensor needs adaptation
             if len(control_tensor.shape) >= 4:
-                control_height, control_width = control_tensor.shape[-2:]
+                batch_size, current_channels, control_height, control_width = control_tensor.shape
+                
+                # Check if we need channel adaptation for SDXL
+                expected_channel_count = expected_channels[i] if i < len(expected_channels) else current_channels
+                
+                if self.is_sdxl and current_channels != expected_channel_count:
+                    # Adapt channel dimensions for SDXL
+                    device = control_tensor.device
+                    dtype = control_tensor.dtype
+                    
+                    if current_channels < expected_channel_count:
+                        # Pad channels by repeating the tensor
+                        repeat_factor = expected_channel_count // current_channels
+                        remainder = expected_channel_count % current_channels
+                        
+                        repeated_tensor = control_tensor.repeat(1, repeat_factor, 1, 1)
+                        if remainder > 0:
+                            # Add partial repetition for remainder
+                            partial_tensor = control_tensor[:, :remainder, :, :]
+                            control_tensor = torch.cat([repeated_tensor, partial_tensor], dim=1)
+                        else:
+                            control_tensor = repeated_tensor
+                            
+                        print(f"🔧 Adapted ControlNet tensor {i}: {current_channels} -> {expected_channel_count} channels")
+                    
+                    elif current_channels > expected_channel_count:
+                        # Truncate channels
+                        control_tensor = control_tensor[:, :expected_channel_count, :, :]
+                        print(f"🔧 Truncated ControlNet tensor {i}: {current_channels} -> {expected_channel_count} channels")
                 
                 # Use the correct downsampling factor for this tensor index
                 if i < len(expected_downsample_factors):
@@ -177,6 +222,37 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         """Adapt middle control tensor shape to match UNet expectations"""
         if mid_control is None:
             return mid_control
+            
+        # Check if channel adaptation is needed for SDXL
+        if len(mid_control.shape) >= 4:
+            batch_size, current_channels, control_height, control_width = mid_control.shape
+            
+            if self.is_sdxl:
+                expected_channels = 1280  # SDXL middle block expects 1280 channels
+                
+                if current_channels != expected_channels:
+                    device = mid_control.device
+                    dtype = mid_control.dtype
+                    
+                    if current_channels < expected_channels:
+                        # Pad channels by repeating the tensor
+                        repeat_factor = expected_channels // current_channels
+                        remainder = expected_channels % current_channels
+                        
+                        repeated_tensor = mid_control.repeat(1, repeat_factor, 1, 1)
+                        if remainder > 0:
+                            # Add partial repetition for remainder
+                            partial_tensor = mid_control[:, :remainder, :, :]
+                            mid_control = torch.cat([repeated_tensor, partial_tensor], dim=1)
+                        else:
+                            mid_control = repeated_tensor
+                            
+                        print(f"🔧 Adapted ControlNet middle tensor: {current_channels} -> {expected_channels} channels")
+                    
+                    elif current_channels > expected_channels:
+                        # Truncate channels
+                        mid_control = mid_control[:, :expected_channels, :, :]
+                        print(f"🔧 Truncated ControlNet middle tensor: {current_channels} -> {expected_channels} channels")
             
         # Middle control is typically at the bottleneck, so heavily downsampled
         if len(mid_control.shape) >= 4 and len(sample.shape) >= 4:

@@ -3,6 +3,7 @@ from diffusers import UNet2DConditionModel
 from typing import Optional, List
 from .unet_controlnet_export import create_controlnet_wrapper
 from .unet_ipadapter_export import create_ipadapter_wrapper
+from ....model_detection import detect_model
 
 class UnifiedExportWrapper(torch.nn.Module):
     """
@@ -54,6 +55,23 @@ class UnifiedExportWrapper(torch.nn.Module):
             'return_dict': False,
             **kwargs  # Pass through all additional parameters (SDXL, future model types, etc.)
         }
+        
+        # Handle SDXL conditioning - ensure added_cond_kwargs is never None for SDXL models
+        # Detect SDXL by checking if the UNet has SDXL-specific config
+        # Detect if this is SDXL based on UNet config
+        detection_result = detect_model(self.unet)
+        is_sdxl = detection_result.get('is_sdxl', False)
+        
+        if is_sdxl and ('added_cond_kwargs' not in unet_kwargs or unet_kwargs['added_cond_kwargs'] is None):
+            # Auto-generate minimal SDXL conditioning if missing
+            batch_size = sample.shape[0]
+            device = sample.device
+            dtype = sample.dtype
+            unet_kwargs['added_cond_kwargs'] = {
+                'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=dtype),
+                'time_ids': torch.zeros(batch_size, 6, device=device, dtype=dtype)
+            }
+        
         return self.unet(**unet_kwargs)
         
     def forward(self, 

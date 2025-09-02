@@ -523,14 +523,22 @@ def export_onnx(
     )
 
     # Detect if this is an SDXL model via detect_model
-    if hasattr(model, 'unet'):
-        detection_result = detect_model(model.unet)
+    # First try to extract base UNet for detection
+    detection_model = model
+    if hasattr(model, 'unet') and hasattr(model.unet, 'config'):
+        detection_model = model.unet
+    elif hasattr(model, 'unet_model') and hasattr(model.unet_model, 'config'):
+        detection_model = model.unet_model
+    
+    # Only run model detection on models that have config (UNets)
+    # Skip detection for VAE encoders/decoders and other models without config
+    if hasattr(detection_model, 'config'):
+        detection_result = detect_model(detection_model)
         if detection_result is not None:
             is_sdxl = detection_result.get('is_sdxl', False)
-    elif hasattr(model, 'config'):
-        detection_result = detect_model(model)
-        if detection_result is not None:
-            is_sdxl = detection_result.get('is_sdxl', False)
+    else:
+        # For non-UNet models (VAE, etc.), assume non-SDXL for safety
+        is_sdxl = False
     
     # Detect if this is an SDXL ControlNet
     is_sdxl_controlnet = is_controlnet and (is_sdxl or (
@@ -540,12 +548,63 @@ def export_onnx(
     
     wrapped_model = model  # Default: use model as-is
     
-    # Apply SDXL wrapper for SDXL models (in practice, always UnifiedExportWrapper)
-    if is_sdxl and not is_controlnet:
+    # Extract the base UNet from any existing wrappers
+    base_unet = model
+    if hasattr(model, 'unet') and hasattr(model.unet, 'config'):
+        base_unet = model.unet
+    elif hasattr(model, 'unet_model') and hasattr(model.unet_model, 'config'):
+        base_unet = model.unet_model
+    
+    # Detect if this model needs advanced conditioning (IPAdapter, ControlNet, etc.)
+    needs_unified_wrapper = False
+    use_controlnet = False
+    use_ipadapter = False
+    control_input_names = None
+    num_tokens = 4
+    
+    # Check if base UNet has IPAdapter processors installed
+    if hasattr(base_unet, 'attn_processors'):
+        for processor in base_unet.attn_processors.values():
+            if hasattr(processor, '__class__') and ('IPAttn' in processor.__class__.__name__ or 'TRTIPAttn' in processor.__class__.__name__):
+                use_ipadapter = True
+                needs_unified_wrapper = True
+                break
+    
+    # Check if model_data indicates ControlNet usage
+    if hasattr(model_data, 'use_control') and model_data.use_control:
+        use_controlnet = True
+        needs_unified_wrapper = True
+        # Get control input names from model_data
+        input_names = model_data.get_input_names()
+        control_input_names = [name for name in input_names if 'control' in name.lower()]
+    
+    # Check if model_data indicates IPAdapter usage
+    if hasattr(model_data, 'use_ipadapter') and model_data.use_ipadapter:
+        use_ipadapter = True
+        needs_unified_wrapper = True
+        if hasattr(model_data, 'num_image_tokens'):
+            num_tokens = model_data.num_image_tokens
+    
+    # Apply appropriate wrapper based on model requirements
+    if needs_unified_wrapper and not is_controlnet:
+        # Use UnifiedExportWrapper for models with IPAdapter and/or ControlNet
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
-        logger.info(f"Detected SDXL model (embedding_dim={embedding_dim}), using wrapper for ONNX export...")
+        logger.info(f"Detected model with advanced conditioning (IPAdapter={use_ipadapter}, ControlNet={use_controlnet}, embedding_dim={embedding_dim})")
+        logger.info("Using UnifiedExportWrapper for ONNX export...")
+        from .export_wrappers.unet_unified_export import create_conditioning_wrapper
+        wrapped_model = create_conditioning_wrapper(
+            base_unet,  # Use the extracted base UNet, not the potentially wrapped model
+            use_controlnet=use_controlnet,
+            use_ipadapter=use_ipadapter,
+            control_input_names=control_input_names,
+            num_tokens=num_tokens
+        )
+    elif is_sdxl and not is_controlnet:
+        # Use SDXLExportWrapper for basic SDXL models without advanced conditioning
+        embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
+        logger.info(f"Detected basic SDXL model (embedding_dim={embedding_dim}), using SDXLExportWrapper for ONNX export...")
         from .export_wrappers.unet_sdxl_export import SDXLExportWrapper
-        wrapped_model = SDXLExportWrapper(model)
+        wrapped_model = SDXLExportWrapper(base_unet)
     elif not is_controlnet:
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
         logger.info(f"Detected non-SDXL model (embedding_dim={embedding_dim}), using model as-is for ONNX export...")
@@ -567,6 +626,12 @@ def export_onnx(
         # Determine if we need external data format for large models (like SDXL)
         is_large_model = is_sdxl or (hasattr(model, 'config') and getattr(model.config, 'sample_size', 32) >= 64)
         
+        # Get input/output names and dynamic axes from the appropriate source
+        # UnifiedExportWrapper doesn't have these methods, so use model_data
+        input_names = model_data.get_input_names()
+        output_names = model_data.get_output_names()
+        dynamic_axes = model_data.get_dynamic_axes()
+        
         # Export ONNX normally first
         torch.onnx.export(
             wrapped_model,
@@ -575,9 +640,9 @@ def export_onnx(
             export_params=True,
             opset_version=onnx_opset,
             do_constant_folding=True,
-            input_names=model_data.get_input_names(),
-            output_names=model_data.get_output_names(),
-            dynamic_axes=model_data.get_dynamic_axes(),
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
         )
         
         # Convert to external data format for large models (SDXL)
