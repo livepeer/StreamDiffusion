@@ -192,30 +192,31 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         for proc in self._ip_trt_processors:
             proc._scale_tensor = scale_vec[proc._scale_index]
 
-    def forward(self, sample, timestep, encoder_hidden_states, ipadapter_scale: torch.Tensor = None):
+    def forward(self, sample, timestep, encoder_hidden_states, ipadapter_scale: torch.Tensor = None, **kwargs):
         """
         Forward pass with concatenated embeddings (text + image).
-        
+
         The IPAdapter processors installed in the UNet will automatically:
         1. Split the concatenated embeddings into text and image parts
         2. Process image tokens with separate attention computation
         3. Apply scaling and blending between text and image attention
-        
+
         Args:
             sample: Latent input tensor
-            timestep: Timestep tensor  
+            timestep: Timestep tensor
             encoder_hidden_states: Concatenated embeddings [text_tokens + image_tokens, cross_attention_dim]
-            
+            **kwargs: Additional arguments passed through (e.g., added_cond_kwargs for SDXL)
+
         Returns:
             UNet output (noise prediction)
         """
         # Validate input shapes
         batch_size, seq_len, embed_dim = encoder_hidden_states.shape
-        
+
         # Check that we have the expected number of image tokens
         if embed_dim != self.cross_attention_dim:
             raise ValueError(f"Embedding dimension {embed_dim} doesn't match expected {self.cross_attention_dim}")
-        
+
         # Ensure dtype consistency for ONNX export
         if encoder_hidden_states.dtype != torch.float32:
             encoder_hidden_states = encoder_hidden_states.to(torch.float32)
@@ -224,13 +225,15 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         if ipadapter_scale is None:
             raise RuntimeError("IPAdapterUNetExportWrapper.forward requires ipadapter_scale tensor")
         self.set_ipadapter_scale(ipadapter_scale)
-        
+
         # Pass concatenated embeddings to UNet with baked-in IPAdapter processors
+        # Include additional kwargs for SDXL conditioning
         return self.unet(
             sample=sample,
             timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
-            return_dict=False
+            return_dict=False,
+            **kwargs
         )
 
 

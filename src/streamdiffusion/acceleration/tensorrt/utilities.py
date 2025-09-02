@@ -522,6 +522,14 @@ def export_onnx(
         'ControlNet' in model.config._class_name
     )
 
+    # Check if model is already wrapped with UnifiedExportWrapper
+    is_already_wrapped = (hasattr(model, '__class__') and
+                         model.__class__.__name__ == 'UnifiedExportWrapper')
+
+    # Debug logging
+    logger.info(f"Model type: {type(model)}, class name: {getattr(model, '__class__', None).__name__ if hasattr(model, '__class__') else 'No class'}")
+    logger.info(f"Is already wrapped: {is_already_wrapped}")
+
     # Detect if this is an SDXL model via detect_model
     if hasattr(model, 'unet'):
         detection_result = detect_model(model.unet)
@@ -539,11 +547,15 @@ def export_onnx(
     ))
     
     wrapped_model = model  # Default: use model as-is
-    
-    # Apply SDXL wrapper for SDXL models (in practice, always UnifiedExportWrapper)
-    if is_sdxl and not is_controlnet:
+
+    # Handle already wrapped models (from UnifiedExportWrapper)
+    if is_already_wrapped:
+        logger.info("Model is already wrapped with UnifiedExportWrapper, using as-is for ONNX export...")
+        wrapped_model = model
+    # Apply SDXL wrapper for SDXL models (only if not already wrapped)
+    elif is_sdxl and not is_controlnet:
         embedding_dim = getattr(model_data, 'embedding_dim', 'unknown')
-        logger.info(f"Detected SDXL model (embedding_dim={embedding_dim}), using wrapper for ONNX export...")
+        logger.info(f"Detected SDXL model (embedding_dim={embedding_dim}), using SDXLExportWrapper for ONNX export...")
         from .export_wrappers.unet_sdxl_export import SDXLExportWrapper
         wrapped_model = SDXLExportWrapper(model)
     elif not is_controlnet:
@@ -563,10 +575,56 @@ def export_onnx(
     
     with torch.inference_mode(), torch.autocast("cuda"):
         inputs = model_data.get_sample_input(opt_batch_size, opt_image_height, opt_image_width)
-        
+
         # Determine if we need external data format for large models (like SDXL)
         is_large_model = is_sdxl or (hasattr(model, 'config') and getattr(model.config, 'sample_size', 32) >= 64)
-        
+
+        # Check if wrapped model has IPAdapter and add ipadapter_scale to inputs if needed
+        input_names = list(model_data.get_input_names())
+
+        # Get dynamic axes from model
+        dynamic_axes = model_data.get_dynamic_axes()
+
+        # For SDXL models with IPAdapter, fix dynamic axes to avoid shape issues
+        if is_sdxl and is_already_wrapped:
+            # Use specific dimension names that match the actual tensor shapes
+            # The tensor shape is [batch, channels, height, width]
+            # For 88x88 tensors, use specific names instead of generic H/W
+            sample_shape = inputs[0].shape if len(inputs) > 0 else None
+            if sample_shape and len(sample_shape) >= 4:
+                height, width = sample_shape[-2], sample_shape[-1]
+                dynamic_axes = {
+                    "sample": {0: "batch"},
+                    "timestep": {0: "batch"},
+                    "encoder_hidden_states": {0: "batch"},
+                    "latent": {0: "batch"},
+                }
+                # Add ipadapter_scale if present
+                if 'ipadapter_scale' in input_names:
+                    dynamic_axes['ipadapter_scale'] = {}
+                logger.info(f"Using fixed dynamic axes for SDXL + IPAdapter with {height}x{width} spatial dims")
+            else:
+                # Fallback to static shapes
+                dynamic_axes = {}
+                logger.info("Using static shapes for SDXL + IPAdapter (fallback)")
+
+        # For UnifiedExportWrapper, ipadapter_scale should be provided as positional argument
+        if is_already_wrapped and hasattr(wrapped_model, 'ipadapter_wrapper') and wrapped_model.ipadapter_wrapper:
+            num_ip_layers = getattr(wrapped_model.ipadapter_wrapper, 'num_ip_layers', None)
+            if num_ip_layers:
+                # Add ipadapter_scale tensor to inputs as the 4th argument (after sample, timestep, encoder_hidden_states)
+                ipadapter_scale = torch.ones(num_ip_layers, dtype=torch.float32, device=inputs[0].device)
+                # Insert ipadapter_scale as the 4th argument in the inputs tuple
+                inputs = inputs[:3] + (ipadapter_scale,) + inputs[3:]
+                # Check if ipadapter_scale is already in input_names, if not add it at position 3
+                if 'ipadapter_scale' not in input_names:
+                    input_names.insert(3, 'ipadapter_scale')
+                # Add dynamic axes for ipadapter_scale
+                if 'ipadapter_scale' not in dynamic_axes:
+                    dynamic_axes['ipadapter_scale'] = {}
+                logger.info(f"Added ipadapter_scale tensor with {num_ip_layers} layers to ONNX export inputs at position 3 (UnifiedExportWrapper)")
+
+
         # Export ONNX normally first
         torch.onnx.export(
             wrapped_model,
@@ -575,9 +633,9 @@ def export_onnx(
             export_params=True,
             opset_version=onnx_opset,
             do_constant_folding=True,
-            input_names=model_data.get_input_names(),
+            input_names=input_names,
             output_names=model_data.get_output_names(),
-            dynamic_axes=model_data.get_dynamic_axes(),
+            dynamic_axes=dynamic_axes,
         )
         
         # Convert to external data format for large models (SDXL)

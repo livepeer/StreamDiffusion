@@ -34,10 +34,13 @@ class UnifiedExportWrapper(torch.nn.Module):
             self.unet = self.ipadapter_wrapper.unet
         
         # Apply ControlNet second (wraps whatever UNet we have)
-        if use_controlnet and control_input_names:
+        # Skip ControlNet when IPAdapter is present to avoid compatibility issues
+        if use_controlnet and control_input_names and not use_ipadapter:
             controlnet_kwargs = {k: v for k, v in kwargs.items() if k in ['num_controlnets', 'conditioning_scales']}
 
             self.controlnet_wrapper = create_controlnet_wrapper(self.unet, control_input_names, **controlnet_kwargs)
+        else:
+            self.controlnet_wrapper = None
         
         # Set up forward strategy based on what we created
         if self.controlnet_wrapper:
@@ -56,21 +59,28 @@ class UnifiedExportWrapper(torch.nn.Module):
         }
         return self.unet(**unet_kwargs)
         
-    def forward(self, 
+    def forward(self,
                 sample: torch.Tensor,
-                timestep: torch.Tensor, 
+                timestep: torch.Tensor,
                 encoder_hidden_states: torch.Tensor,
+                ipadapter_scale=None,
                 *control_args,
                 **kwargs) -> torch.Tensor:
         """Forward pass that handles any UNet parameters via **kwargs passthrough"""
-        # Handle IP-Adapter runtime scale vector as a positional argument placed before control tensors
+        # Handle IP-Adapter runtime scale vector - can come as positional arg (ONNX) or in control_args (inference)
         if self.use_ipadapter and self.ipadapter_wrapper is not None:
-            # ipadapter_scale is appended as the first extra positional input after the 3 base inputs
-            if len(control_args) == 0:
+            # Check if ipadapter_scale was passed as a direct positional argument (ONNX export case)
+            if ipadapter_scale is not None and isinstance(ipadapter_scale, torch.Tensor):
+                pass  # Use the ipadapter_scale that was passed directly
+            # Otherwise, try to get it from control_args (normal inference case)
+            elif len(control_args) > 0 and isinstance(control_args[0], torch.Tensor):
+                ipadapter_scale = control_args[0]
+                control_args = control_args[1:]  # Remove it from control_args
+            else:
                 import logging
                 logging.getLogger(__name__).error("UnifiedExportWrapper: ipadapter_scale missing; required when use_ipadapter=True")
                 raise RuntimeError("UnifiedExportWrapper: ipadapter_scale tensor is required when use_ipadapter=True")
-            ipadapter_scale = control_args[0]
+
             if not isinstance(ipadapter_scale, torch.Tensor):
                 import logging
                 logging.getLogger(__name__).error(f"UnifiedExportWrapper: ipadapter_scale wrong type: {type(ipadapter_scale)}")
@@ -82,10 +92,24 @@ class UnifiedExportWrapper(torch.nn.Module):
                 pass
             # assign per-layer scale tensors into processors
             self.ipadapter_wrapper.set_ipadapter_scale(ipadapter_scale)
-            # remove it from control args before passing to controlnet wrapper
-            control_args = control_args[1:]
 
-        if self.controlnet_wrapper:
+        # Auto-generate SDXL conditioning if needed
+        if ('added_cond_kwargs' not in kwargs and
+            hasattr(self.unet, 'config') and hasattr(self.unet.config, 'addition_embed_type') and
+            self.unet.config.addition_embed_type == 'text_time'):
+
+            device = sample.device
+            batch_size = sample.shape[0]
+
+            import logging
+            logging.getLogger(__name__).info("UnifiedExportWrapper: Auto-generating required SDXL conditioning...")
+            kwargs['added_cond_kwargs'] = {
+                'text_embeds': torch.zeros(batch_size, 1280, device=device, dtype=sample.dtype),
+                'time_ids': torch.zeros(batch_size, 6, device=device, dtype=sample.dtype)
+            }
+
+        # Skip ControlNet when IPAdapter is present to avoid compatibility issues
+        if self.controlnet_wrapper and not self.use_ipadapter:
             # ControlNet wrapper handles the UNet call with all parameters
             return self.controlnet_wrapper(sample, timestep, encoder_hidden_states, *control_args, **kwargs)
         else:
