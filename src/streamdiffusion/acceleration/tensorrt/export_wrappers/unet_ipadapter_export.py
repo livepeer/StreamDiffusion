@@ -6,6 +6,7 @@ from ....model_detection import detect_model, detect_model_from_diffusers_unet
 from diffusers_ipadapter.ip_adapter.attention_processor import TRTIPAttnProcessor, TRTIPAttnProcessor2_0
 
 
+
 class IPAdapterUNetExportWrapper(torch.nn.Module):
     """
     Wrapper that bakes IPAdapter attention processors into the UNet for ONNX export.
@@ -21,6 +22,8 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         self.num_image_tokens = num_tokens  # 4 for standard, 16 for plus
         self.cross_attention_dim = cross_attention_dim  # 768 for SD1.5, 2048 for SDXL
         self.install_processors = install_processors
+        detection_result = detect_model(self.unet)
+        self.is_sdxl = detection_result.get('is_sdxl', False)
         
         # Convert to float32 BEFORE installing processors (to avoid resetting them)
         self.unet = self.unet.to(dtype=torch.float32)
@@ -98,6 +101,9 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
             # Update all processors to ensure consistency
             self.unet.set_attn_processor(updated_processors)
             self.num_ip_layers = len(self._ip_trt_processors)
+            
+            # Validate IP layer count matches architecture expectations
+            self._validate_ip_layer_count()
                 
         except Exception as e:
             print(f"IPAdapterUNetExportWrapper: Error updating processor dtypes: {e}")
@@ -159,6 +165,8 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
             self.unet.set_attn_processor(attn_procs)
             self.num_ip_layers = len(self._ip_trt_processors)
             
+            # Validate IP layer count matches architecture expectations
+            self._validate_ip_layer_count()
 
             
         except Exception as e:
@@ -168,6 +176,24 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
             import traceback
             traceback.print_exc()
             raise e
+    
+    def _validate_ip_layer_count(self):
+        """Validate that the IP layer count matches architecture expectations."""
+        if self.is_sdxl:
+            # SDXL heterogeneous distribution: ~70 cross-attention layers
+            expected_range = (60, 80)
+            arch_name = "SDXL"
+        else:
+            # SD1.5/SD2.1 homogeneous distribution: ~16 cross-attention layers
+            expected_range = (14, 18)
+            arch_name = "SD1.5/SD2.1"
+        
+        if not (expected_range[0] <= self.num_ip_layers <= expected_range[1]):
+            print(f"WARNING: IPAdapterUNetExportWrapper detected {self.num_ip_layers} IP layers for {arch_name} architecture.")
+            print(f"         Expected range: {expected_range}. This may indicate architecture detection issues.")
+            print(f"         Cross-attention dim: {self.cross_attention_dim}, Is SDXL: {self.is_sdxl}")
+        else:
+            print(f"IPAdapterUNetExportWrapper: {arch_name} architecture detected with {self.num_ip_layers} IP layers (expected range: {expected_range})")
     
     def set_ipadapter_scale(self, ipadapter_scale: torch.Tensor) -> None:
         """Assign per-layer scale tensor to installed TRTIPAttn processors."""
@@ -269,8 +295,17 @@ def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, in
         
         expected_dim = expected_dims.get(model_type)
         
+        # Validate cross-attention dimension matches model type
+        if expected_dim and cross_attention_dim != expected_dim:
+            print(f"WARNING: Cross-attention dim mismatch for {model_type}: got {cross_attention_dim}, expected {expected_dim}")
+            print(f"         This may indicate model detection issues or a custom model variant.")
+        
+        print(f"create_ipadapter_wrapper: Detected {model_type} with cross_attention_dim={cross_attention_dim}")
         return IPAdapterUNetExportWrapper(unet, cross_attention_dim, num_tokens, install_processors)
         
     except Exception as e:
         print(f"create_ipadapter_wrapper: Error during model detection: {e}")
-        return IPAdapterUNetExportWrapper(unet, 768, num_tokens, install_processors) 
+        # Better fallback: try to detect SDXL by cross_attention_dim
+        cross_attention_dim = getattr(unet.config, 'cross_attention_dim', 768)
+        print(f"create_ipadapter_wrapper: Fallback detection using cross_attention_dim={cross_attention_dim}")
+        return IPAdapterUNetExportWrapper(unet, cross_attention_dim, num_tokens, install_processors) 
