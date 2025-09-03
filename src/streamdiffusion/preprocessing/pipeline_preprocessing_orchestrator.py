@@ -22,7 +22,7 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
         super().__init__(device, dtype, max_workers, timeout_ms=10.0, pipeline_ref=pipeline_ref)
         
         # Pipeline preprocessing specific state
-        pass
+        self._current_input_tensor = None  # For BaseOrchestrator fallback logic
     
     def _should_use_sync_processing(self, *args, **kwargs) -> bool:
         """
@@ -37,6 +37,21 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
         # Pipeline preprocessing generally doesn't require sync processing
         # Most processors are stateless and work well with pipelining
         return False
+    
+    def process_pipelined(self, 
+                        input_tensor: torch.Tensor,
+                        processors: List[Any],
+                        *args, **kwargs) -> torch.Tensor:
+        """
+        Process input with intelligent pipelining.
+        
+        Overrides base method to store current input tensor for fallback logic.
+        """
+        # Store current input for fallback logic
+        self._current_input_tensor = input_tensor
+        
+        # Call parent implementation
+        return super().process_pipelined(input_tensor, processors, *args, **kwargs)
     
     def process_sync(self, 
                    input_tensor: torch.Tensor,
