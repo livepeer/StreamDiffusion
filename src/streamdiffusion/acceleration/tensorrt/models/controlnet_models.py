@@ -232,6 +232,41 @@ class ControlNetSDXLTRT(ControlNetTRT):
         """Override to provide SDXL-specific input names"""
         return ["sample", "timestep", "encoder_hidden_states", "controlnet_cond", "conditioning_scale", "text_embeds", "time_ids"]
     
+    def get_dynamic_axes(self) -> Dict[str, Dict[int, str]]:
+        base_axes = super().get_dynamic_axes()
+        
+        sdxl_axes = {
+            "conditioning_scale": {},
+            "text_embeds": {0: "B"},
+            "time_ids": {0: "B"},
+        }
+        
+        base_axes.update(sdxl_axes)
+        return base_axes
+    
+    def get_input_profile(self, batch_size, image_height, image_width, 
+                         static_batch, static_shape):
+        base_profile = super().get_input_profile(batch_size, image_height, image_width, 
+                                                static_batch, static_shape)
+        
+        min_batch = batch_size if static_batch else self.min_batch
+        max_batch = batch_size if static_batch else self.max_batch
+        
+        sdxl_profile = {
+            "conditioning_scale": [
+                (), (), ()
+            ],
+            "text_embeds": [
+                (min_batch, 1280), (batch_size, 1280), (max_batch, 1280)
+            ],
+            "time_ids": [
+                (min_batch, 6), (batch_size, 6), (max_batch, 6)
+            ],
+        }
+        
+        base_profile.update(sdxl_profile)
+        return base_profile
+
     def get_output_names(self):
         """Override to provide SDXL-specific output names that match wrapper return format"""
         return ["down_block_00", "down_block_01", "down_block_02", "down_block_03", 
