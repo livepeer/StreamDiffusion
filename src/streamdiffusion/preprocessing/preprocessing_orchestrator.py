@@ -36,6 +36,8 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         self._preprocessors_cache_key = None
         self._has_feedback_cache = False
         
+
+        
     
     #Abstract method implementations
     def process_sync(self, 
@@ -112,69 +114,83 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
         Returns:
             Dictionary containing processing results and status
         """
-        # Check if we're in embedding processing mode
-        if hasattr(self, '_current_processing_mode') and self._current_processing_mode == "embedding":
-            # Handle embedding preprocessing
-            embedding_preprocessors = args[0]
-            stream_width = args[1]  
-            stream_height = args[2]
+        try:
+            # Set CUDA stream for background processing
+            original_stream = self._set_background_stream_context()
             
-            # Prepare processing data
-            control_variants = self._prepare_input_variants(control_image, thread_safe=True)
-            
-            # Process using existing IPAdapter logic
-            try:
-                results = self._process_ipadapter_preprocessors_parallel(
-                    embedding_preprocessors, control_variants, stream_width, stream_height
+            # Check if we're in embedding processing mode
+            if hasattr(self, '_current_processing_mode') and self._current_processing_mode == "embedding":
+                # Handle embedding preprocessing
+                embedding_preprocessors = args[0]
+                stream_width = args[1]  
+                stream_height = args[2]
+                
+                # Prepare processing data
+                control_variants = self._prepare_input_variants(control_image, thread_safe=True)
+                
+                # Process using existing IPAdapter logic
+                try:
+                    results = self._process_ipadapter_preprocessors_parallel(
+                        embedding_preprocessors, control_variants, stream_width, stream_height
+                    )
+                    return {
+                        'results': results,
+                        'status': 'success'
+                    }
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    return {
+                        'error': str(e),
+                        'status': 'error'
+                    }
+            else:
+                # Handle ControlNet preprocessing (default mode)
+                preprocessors = args[0]
+                scales = args[1]
+                stream_width = args[2]
+                stream_height = args[3]
+                
+                # Check if any processing is needed
+                if not any(scale > 0 for scale in scales):
+                    return {'status': 'success', 'results': [None] * len(preprocessors)}
+                #TODO: can we reuse similarity filter here?
+                if (self._last_input_frame is not None and 
+                    isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
+                    control_image is self._last_input_frame):
+                    return {'status': 'success', 'results': []}  # Signal no update needed
+                
+                self._last_input_frame = control_image
+                
+                # Prepare processing data
+                preprocessor_groups = self._group_preprocessors(preprocessors, scales)
+                active_indices = [i for i, scale in enumerate(scales) if scale > 0]
+                
+                if not active_indices:
+                    return {'status': 'success', 'results': [None] * len(preprocessors)}
+                
+                # Optimize input preparation
+                control_variants = self._prepare_input_variants(control_image, thread_safe=True)
+                
+                # Process using unified parallel logic
+                processed_images = self._process_controlnet_preprocessors_parallel(
+                    preprocessor_groups, control_variants, stream_width, stream_height, preprocessors
                 )
+                
                 return {
-                    'results': results,
+                    'results': processed_images,
                     'status': 'success'
                 }
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return {
-                    'error': str(e),
-                    'status': 'error'
-                }
-        else:
-            # Handle ControlNet preprocessing (default mode)
-            preprocessors = args[0]
-            scales = args[1]
-            stream_width = args[2]
-            stream_height = args[3]
-            
-            # Check if any processing is needed
-            if not any(scale > 0 for scale in scales):
-                return {'status': 'success', 'results': [None] * len(preprocessors)}
-            #TODO: can we reuse similarity filter here?
-            if (self._last_input_frame is not None and 
-                isinstance(control_image, (torch.Tensor, np.ndarray, Image.Image)) and 
-                control_image is self._last_input_frame):
-                return {'status': 'success', 'results': []}  # Signal no update needed
-            
-            self._last_input_frame = control_image
-            
-            # Prepare processing data
-            preprocessor_groups = self._group_preprocessors(preprocessors, scales)
-            active_indices = [i for i, scale in enumerate(scales) if scale > 0]
-            
-            if not active_indices:
-                return {'status': 'success', 'results': [None] * len(preprocessors)}
-            
-            # Optimize input preparation
-            control_variants = self._prepare_input_variants(control_image, thread_safe=True)
-            
-            # Process using unified parallel logic
-            processed_images = self._process_controlnet_preprocessors_parallel(
-                preprocessor_groups, control_variants, stream_width, stream_height, preprocessors
-            )
-            
+                
+        except Exception as e:
+            logger.error(f"PreprocessingOrchestrator: Background processing failed: {e}")
             return {
-                'results': processed_images,
-                'status': 'success'
+                'error': str(e),
+                'status': 'error'
             }
+        finally:
+            # Restore original CUDA stream
+            self._restore_stream_context(original_stream)
     
     def _apply_current_frame_processing(self, 
                                       preprocessors: List[Optional[Any]] = None,

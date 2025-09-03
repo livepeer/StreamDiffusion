@@ -76,6 +76,9 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
             Dictionary containing processing results and status
         """
         try:
+            # Set CUDA stream for background processing
+            original_stream = self._set_background_stream_context()
+            
             if not processors:
                 return {
                     'result': input_tensor,
@@ -101,6 +104,9 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
                 'error': str(e),
                 'status': 'error'
             }
+        finally:
+            # Restore original CUDA stream
+            self._restore_stream_context(original_stream)
     
     
     

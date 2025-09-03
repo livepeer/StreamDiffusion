@@ -23,11 +23,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         self._last_processed_result = None
         self._current_input_tensor = None  # For BaseOrchestrator fallback logic
         
-        # CUDA stream for background processing to avoid GPU contention
-        self._background_stream = None
-        device_str = str(device)
-        if device_str.startswith("cuda") and torch.cuda.is_available():
-            self._background_stream = torch.cuda.Stream()
+
     
     def process_pipelined(self, 
                         input_tensor: torch.Tensor,
@@ -97,10 +93,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         """
         try:
             # Set CUDA stream for background processing
-            original_stream = None
-            if self._background_stream is not None:
-                original_stream = torch.cuda.current_stream()
-                torch.cuda.set_stream(self._background_stream)
+            original_stream = self._set_background_stream_context()
             
             if not postprocessors:
                 return {
@@ -143,8 +136,7 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
             }
         finally:
             # Restore original CUDA stream
-            if self._background_stream is not None and original_stream is not None:
-                torch.cuda.set_stream(original_stream)
+            self._restore_stream_context(original_stream)
         
     def _process_postprocessors_parallel(self, 
                                        input_tensor: torch.Tensor, 

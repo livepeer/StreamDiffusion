@@ -34,13 +34,25 @@ class BaseOrchestrator(Generic[T, R], ABC):
         # Pipeline state for pipelined processing
         self._next_frame_future = None
         self._next_frame_result = None
+        
+        # CUDA stream for background processing to avoid GPU contention
+        self._background_stream = None
+        device_str = str(device)
+        if device_str.startswith("cuda") and torch.cuda.is_available():
+            self._background_stream = torch.cuda.Stream()
     
 
     
     def cleanup(self) -> None:
-        """Cleanup thread pool resources"""
+        """Cleanup thread pool and CUDA stream resources"""
         if hasattr(self, '_executor'):
             self._executor.shutdown(wait=True)
+        
+        # Cleanup CUDA stream if it exists
+        if hasattr(self, '_background_stream') and self._background_stream is not None:
+            # Synchronize the stream before cleanup
+            torch.cuda.synchronize()
+            self._background_stream = None
     
     def __del__(self):
         """Cleanup on destruction"""
@@ -179,3 +191,26 @@ class BaseOrchestrator(Generic[T, R], ABC):
             raise RuntimeError(f"{class_name}: Background processing failed and no fallback available")
         
         return result['result']
+    
+    def _set_background_stream_context(self):
+        """
+        Set CUDA stream context for background processing.
+        
+        Returns:
+            The original stream to restore later, or None if no background stream
+        """
+        if self._background_stream is not None:
+            original_stream = torch.cuda.current_stream()
+            torch.cuda.set_stream(self._background_stream)
+            return original_stream
+        return None
+    
+    def _restore_stream_context(self, original_stream):
+        """
+        Restore the original CUDA stream context.
+        
+        Args:
+            original_stream: The stream to restore, or None to do nothing
+        """
+        if self._background_stream is not None and original_stream is not None:
+            torch.cuda.set_stream(original_stream)
