@@ -240,6 +240,7 @@ class Engine:
         engine = engine_from_network(
             network_from_onnx_path(onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]),
             config=CreateConfig(
+                tf32=True,
                 fp16=fp16, refittable=enable_refit, profiles=[p], load_timing_cache=timing_cache, **config_kwargs
             ),
             save_timing_cache=timing_cache,
