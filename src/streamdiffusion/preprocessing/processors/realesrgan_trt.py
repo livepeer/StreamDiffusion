@@ -63,7 +63,6 @@ class RealESRGANEngine:
 
     def load(self):
         """Load TensorRT engine from file"""
-        logger.info(f"RealESRGANEngine.load: Loading TensorRT engine: {self.engine_path}")
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
 
     def activate(self):
@@ -172,8 +171,6 @@ class RealESRGANProcessor(BasePreprocessor):
             if not self.engine_path.exists():
                 raise FileNotFoundError(f"TensorRT engine not found: {self.engine_path}")
             
-            logger.info(f"RealESRGANProcessor.engine: Loading TensorRT engine: {self.engine_path}")
-            
             self._engine = RealESRGANEngine(str(self.engine_path))
             self._engine.load()
             self._engine.activate()
@@ -187,10 +184,7 @@ class RealESRGANProcessor(BasePreprocessor):
     def _download_file(self, url: str, save_path: Path):
         """Download file with progress bar"""
         if save_path.exists():
-            logger.info(f"_download_file: Model file already exists: {save_path}")
             return
-        
-        logger.info(f"_download_file: Downloading {url} to {save_path}")
         
         response = requests.get(url, stream=True)
         response.raise_for_status()
@@ -208,8 +202,6 @@ class RealESRGANProcessor(BasePreprocessor):
             for data in response.iter_content(chunk_size=1024):
                 size = file.write(data)
                 progress_bar.update(size)
-        
-        logger.info(f"_download_file: Successfully downloaded {save_path}")
     
     def _ensure_model_ready(self):
         """Ensure PyTorch model is downloaded and loaded"""
@@ -228,35 +220,27 @@ class RealESRGANProcessor(BasePreprocessor):
     def _load_pytorch_model(self):
         """Load PyTorch model from file"""
         if not SPANDREL_AVAILABLE:
-            logger.warning("_load_pytorch_model: Spandrel not available, using basic torch.load")
             # Fallback loading without spandrel
             state_dict = torch.load(self.model_path, map_location=self.device)
             # This is a simplified approach - real implementation would need model architecture
-            logger.warning("_load_pytorch_model: Basic loading not fully implemented - need spandrel")
             return
         
-        logger.info(f"_load_pytorch_model: Loading PyTorch model from {self.model_path}")
         model_descriptor = ModelLoader().load_from_file(str(self.model_path))
         # Don't force dtype conversion as it can cause type mismatches
         # Let the model keep its native dtype and convert inputs as needed
         self.pytorch_model = model_descriptor.model.eval().to(device=self.device)
         model_dtype = next(self.pytorch_model.parameters()).dtype
-        logger.info(f"_load_pytorch_model: PyTorch model loaded successfully with native dtype {model_dtype}")
     
     def _export_to_onnx(self):
         """Export PyTorch model to ONNX format"""
         if self.onnx_path.exists() and not self.force_rebuild:
-            logger.info(f"_export_to_onnx: ONNX model already exists: {self.onnx_path}")
             return
         
         if self.pytorch_model is None:
             self._load_pytorch_model()
         
         if self.pytorch_model is None:
-            logger.error("_export_to_onnx: PyTorch model not available")
             return
-        
-        logger.info(f"_export_to_onnx: Exporting PyTorch model to ONNX: {self.onnx_path}")
         
         # Test with small input for export
         test_input = torch.randn(1, 3, 256, 256).to(self.device)
@@ -278,13 +262,10 @@ class RealESRGANProcessor(BasePreprocessor):
                 export_params=True,
                 dynamic_axes=dynamic_axes,
             )
-        
-        logger.info(f"_export_to_onnx: Successfully exported ONNX model to {self.onnx_path}")
     
     def _setup_tensorrt(self):
         """Setup TensorRT engine"""
         if not TRT_AVAILABLE:
-            logger.warning("_setup_tensorrt: TensorRT not available")
             return
         
         # Export to ONNX first if needed
@@ -297,10 +278,8 @@ class RealESRGANProcessor(BasePreprocessor):
     def _load_tensorrt_engine(self):
         """Load or build TensorRT engine"""
         if self.engine_path.exists() and not self.force_rebuild:
-            logger.info(f"_load_tensorrt_engine: Loading existing TensorRT engine: {self.engine_path}")
             self._load_existing_engine()
         else:
-            logger.info("_load_tensorrt_engine: Building new TensorRT engine")
             self._build_tensorrt_engine()
     
     def _load_existing_engine(self):
@@ -312,10 +291,7 @@ class RealESRGANProcessor(BasePreprocessor):
     def _build_tensorrt_engine(self):
         """Build TensorRT engine from ONNX model"""
         if not self.onnx_path.exists():
-            logger.error("_build_tensorrt_engine: ONNX model not found")
             return
-        
-        logger.info("_build_tensorrt_engine: Building TensorRT engine... this may take several minutes")
         
         try:
             # Create builder and network
@@ -326,9 +302,8 @@ class RealESRGANProcessor(BasePreprocessor):
             # Parse ONNX model
             with open(self.onnx_path, 'rb') as model:
                 if not parser.parse(model.read()):
-                    logger.error("_build_tensorrt_engine: Failed to parse ONNX model")
                     for error in range(parser.num_errors):
-                        logger.error(f"_build_tensorrt_engine: {parser.get_error(error)}")
+                        pass
                     return
             
             # Configure builder
@@ -347,7 +322,6 @@ class RealESRGANProcessor(BasePreprocessor):
             engine = builder.build_serialized_network(network, config)
             
             if engine is None:
-                logger.error("_build_tensorrt_engine: Failed to build TensorRT engine")
                 return
             
             # Save engine
@@ -356,15 +330,12 @@ class RealESRGANProcessor(BasePreprocessor):
             
             # Load the built engine
             self._load_existing_engine()
-            logger.info(f"_build_tensorrt_engine: Successfully built and saved TensorRT engine: {self.engine_path}")
         
         except Exception as e:
-            logger.error(f"_build_tensorrt_engine: Error building TensorRT engine: {e}")
+            pass
     
     def _process_with_tensorrt(self, tensor: torch.Tensor) -> torch.Tensor:
         """Process tensor using TensorRT engine (following depth_tensorrt pattern)"""
-        logger.info(f"_process_with_tensorrt: Starting TensorRT upscaling {tensor.shape[-2:]} -> {tuple(s*2 for s in tensor.shape[-2:])}")
-        
         batch_size, channels, height, width = tensor.shape
         input_shape = (batch_size, channels, height, width)
         
@@ -390,15 +361,12 @@ class RealESRGANProcessor(BasePreprocessor):
         # Ensure output is properly clamped to [0, 1] range for RealESRGAN
         output_tensor = torch.clamp(output_tensor, 0.0, 1.0)
         
-        logger.info(f"_process_with_tensorrt: Completed TensorRT upscaling {tensor.shape[-2:]} -> {output_tensor.shape[-2:]}")
         return output_tensor.clone()
     
     def _process_with_pytorch(self, tensor: torch.Tensor) -> torch.Tensor:
         """Process tensor using PyTorch model"""
         if self.pytorch_model is None:
             raise RuntimeError("_process_with_pytorch: PyTorch model not loaded")
-        
-        logger.info(f"_process_with_pytorch: Starting PyTorch upscaling {tensor.shape[-2:]} -> {tuple(s*2 for s in tensor.shape[-2:])}")
         
         # Ensure model and input tensor have compatible dtypes
         model_dtype = next(self.pytorch_model.parameters()).dtype
@@ -416,50 +384,33 @@ class RealESRGANProcessor(BasePreprocessor):
             if result.dtype != self.dtype:
                 result = result.to(dtype=self.dtype)
                 
-            logger.info(f"_process_with_pytorch: Completed PyTorch upscaling {tensor.shape[-2:]} -> {result.shape[-2:]}")
             return result
     
     def _process_core(self, image: Image.Image) -> Image.Image:
         """Core processing using PIL Image"""
-        import time
-        start_time = time.time()
-        
-        logger.info(f"_process_core: [POSTPROCESSING] RealESRGAN upscaling started for {image.size} image")
-        
         # Convert to tensor for processing
         tensor = self.pil_to_tensor(image)
         if tensor.dim() == 3:
             tensor = tensor.unsqueeze(0)
-        
-        # TEMPORARY PROFILING: RealESRGAN inference timing
-        realesrgan_start_time = time.time()
         
         # Process with available backend
         if self.enable_tensorrt and TRT_AVAILABLE and self.engine_path.exists():
             try:
                 output_tensor = self._process_with_tensorrt(tensor)
             except Exception as e:
-                logger.warning(f"_process_core: TensorRT processing failed: {e}, falling back to PyTorch")
                 output_tensor = self._process_with_pytorch(tensor)
         elif self.pytorch_model is not None:
             output_tensor = self._process_with_pytorch(tensor)
         else:
             # Fallback to simple upscaling if no model is available
-            logger.warning("_process_core: No model available, using simple resize")
             target_width, target_height = self.get_target_dimensions()
             return image.resize((target_width, target_height), Image.LANCZOS)
-        
-        realesrgan_end_time = time.time()
-        realesrgan_time = (realesrgan_end_time - realesrgan_start_time) * 1000  # Convert to ms
-        print(f"[PROFILING] RealESRGAN inference: {realesrgan_time:.2f}ms")
         
         # Convert back to PIL
         if output_tensor.dim() == 4:
             output_tensor = output_tensor.squeeze(0)
         
         result_image = self.tensor_to_pil(output_tensor)
-        
-        elapsed_time = time.time() - start_time
         
         return result_image
     
@@ -485,32 +436,22 @@ class RealESRGANProcessor(BasePreprocessor):
         else:
             squeeze_output = False
         
-        # TEMPORARY PROFILING: RealESRGAN tensor inference timing
-        import time
-        realesrgan_start_time = time.time()
-        
         # Process with available backend
         if self.enable_tensorrt and TRT_AVAILABLE and self.engine_path.exists():
             try:
                 output_tensor = self._process_with_tensorrt(tensor)
             except Exception as e:
-                logger.warning(f"_process_tensor_core: TensorRT processing failed: {e}, falling back to PyTorch")
                 output_tensor = self._process_with_pytorch(tensor)
         elif self.pytorch_model is not None:
             output_tensor = self._process_with_pytorch(tensor)
         else:
             # Fallback using interpolation
-            logger.warning("_process_tensor_core: No model available, using interpolation")
             output_tensor = torch.nn.functional.interpolate(
                 tensor, 
                 scale_factor=self.scale_factor,
                 mode='bicubic',
                 align_corners=False
             )
-        
-        realesrgan_end_time = time.time()
-        realesrgan_time = (realesrgan_end_time - realesrgan_start_time) * 1000  # Convert to ms
-        print(f"[PROFILING] RealESRGAN tensor inference: {realesrgan_time:.2f}ms")
         
         if squeeze_output:
             output_tensor = output_tensor.squeeze(0)
