@@ -10,6 +10,7 @@ from tqdm import tqdm
 import hashlib
 import logging
 from pathlib import Path
+from collections import OrderedDict
 
 from .base import BasePreprocessor
 
@@ -23,9 +24,97 @@ except ImportError:
 # Try to import TensorRT dependencies
 try:
     import tensorrt as trt
+    from streamdiffusion.acceleration.tensorrt.utilities import engine_from_bytes, bytes_from_path
     TRT_AVAILABLE = True
+    
+    # Numpy to PyTorch dtype mapping (same as depth_tensorrt.py)
+    numpy_to_torch_dtype_dict = {
+        np.uint8: torch.uint8,
+        np.int8: torch.int8,
+        np.int16: torch.int16,
+        np.int32: torch.int32,
+        np.int64: torch.int64,
+        np.float16: torch.float16,
+        np.float32: torch.float32,
+        np.float64: torch.float64,
+        np.complex64: torch.complex64,
+        np.complex128: torch.complex128,
+    }
+    
+    # Handle bool type for numpy compatibility (same as depth_tensorrt.py)
+    if np.version.full_version >= "1.24.0":
+        numpy_to_torch_dtype_dict[np.bool_] = torch.bool
+    else:
+        numpy_to_torch_dtype_dict[np.bool] = torch.bool
+        
 except ImportError:
     TRT_AVAILABLE = False
+
+
+class RealESRGANEngine:
+    """TensorRT engine wrapper for RealESRGAN inference (following depth_tensorrt pattern)"""
+    
+    def __init__(self, engine_path):
+        self.engine_path = engine_path
+        self.engine = None
+        self.context = None
+        self.tensors = OrderedDict()
+        self._cuda_stream = None  # Cache CUDA stream
+
+    def load(self):
+        """Load TensorRT engine from file"""
+        logger.info(f"RealESRGANEngine.load: Loading TensorRT engine: {self.engine_path}")
+        self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
+
+    def activate(self):
+        """Create execution context"""
+        self.context = self.engine.create_execution_context()
+        # Cache CUDA stream for reuse
+        self._cuda_stream = torch.cuda.current_stream().cuda_stream
+
+    def allocate_buffers(self, input_shape, device="cuda"):
+        """Allocate input/output buffers for given input shape"""
+        # Set input shape for dynamic sizing
+        input_name = "input"
+        self.context.set_input_shape(input_name, input_shape)
+        
+        # Allocate tensors for all bindings
+        for idx in range(self.engine.num_io_tensors):
+            name = self.engine.get_tensor_name(idx)
+            shape = self.context.get_tensor_shape(name)
+            dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+            
+            # Convert numpy dtype to torch dtype
+            if dtype == np.float32:
+                torch_dtype = torch.float32
+            elif dtype == np.float16:
+                torch_dtype = torch.float16
+            else:
+                torch_dtype = torch.float32
+            
+            tensor = torch.empty(tuple(shape), dtype=torch_dtype, device=device)
+            self.tensors[name] = tensor
+
+    def infer(self, feed_dict, stream=None):
+        """Run inference with optional stream parameter"""
+        # Use cached stream if none provided
+        if stream is None:
+            stream = self._cuda_stream
+            
+        # Copy input data to tensors
+        for name, buf in feed_dict.items():
+            self.tensors[name].copy_(buf)
+
+        # Set tensor addresses
+        for name, tensor in self.tensors.items():
+            self.context.set_tensor_address(name, tensor.data_ptr())
+        
+        # Execute inference
+        success = self.context.execute_async_v3(stream)
+        if not success:
+            raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
+        
+        return self.tensors
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +160,29 @@ class RealESRGANProcessor(BasePreprocessor):
         
         # Model state
         self.pytorch_model = None
-        self.trt_engine = None
-        self.trt_context = None
+        self._engine = None  # Lazy loading like depth processor
         
         # Initialize
         self._ensure_model_ready()
+    
+    @property
+    def engine(self):
+        """Lazy loading of the TensorRT engine (following depth_tensorrt pattern)"""
+        if self._engine is None:
+            if not self.engine_path.exists():
+                raise FileNotFoundError(f"TensorRT engine not found: {self.engine_path}")
+            
+            logger.info(f"RealESRGANProcessor.engine: Loading TensorRT engine: {self.engine_path}")
+            
+            self._engine = RealESRGANEngine(str(self.engine_path))
+            self._engine.load()
+            self._engine.activate()
+            
+            # Allocate buffers for standard input size (will be reallocated as needed)
+            standard_shape = (1, 3, 512, 512)
+            self._engine.allocate_buffers(standard_shape, device=self.device)
+            
+        return self._engine
     
     def _download_file(self, url: str, save_path: Path):
         """Download file with progress bar"""
@@ -197,19 +304,10 @@ class RealESRGANProcessor(BasePreprocessor):
             self._build_tensorrt_engine()
     
     def _load_existing_engine(self):
-        """Load existing TensorRT engine"""
-        try:
-            runtime = trt.Runtime(trt.Logger(trt.Logger.WARNING))
-            with open(self.engine_path, 'rb') as f:
-                self.trt_engine = runtime.deserialize_cuda_engine(f.read())
-            
-            if self.trt_engine is not None:
-                self.trt_context = self.trt_engine.create_execution_context()
-                logger.info("_load_existing_engine: TensorRT engine loaded successfully")
-            else:
-                logger.error("_load_existing_engine: Failed to deserialize TensorRT engine")
-        except Exception as e:
-            logger.error(f"_load_existing_engine: Error loading TensorRT engine: {e}")
+        """Load existing TensorRT engine (now handled by lazy loading property)"""
+        # Engine loading is now handled by the lazy loading 'engine' property
+        # This method is kept for compatibility but does nothing
+        pass
     
     def _build_tensorrt_engine(self):
         """Build TensorRT engine from ONNX model"""
@@ -263,76 +361,37 @@ class RealESRGANProcessor(BasePreprocessor):
         except Exception as e:
             logger.error(f"_build_tensorrt_engine: Error building TensorRT engine: {e}")
     
-    def _allocate_trt_buffers(self, input_shape):
-        """Allocate TensorRT buffers for given input shape"""
-        if not hasattr(self, 'trt_tensors'):
-            self.trt_tensors = {}
-        
-        batch_size, channels, height, width = input_shape
-        
-        # Set input shape
-        input_name = "input"
-        self.trt_context.set_input_shape(input_name, input_shape)
-        
-        # Allocate tensors for all bindings
-        for idx in range(self.trt_engine.num_io_tensors):
-            name = self.trt_engine.get_tensor_name(idx)
-            shape = self.trt_context.get_tensor_shape(name)
-            dtype = trt.nptype(self.trt_engine.get_tensor_dtype(name))
-            
-            # Convert numpy dtype to torch dtype
-            if dtype == np.float32:
-                torch_dtype = torch.float32
-            elif dtype == np.float16:
-                torch_dtype = torch.float16
-            else:
-                torch_dtype = torch.float32
-            
-            tensor = torch.empty(tuple(shape), dtype=torch_dtype, device=self.device)
-            self.trt_tensors[name] = tensor
-    
     def _process_with_tensorrt(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Process tensor using TensorRT engine"""
-        if self.trt_engine is None or self.trt_context is None:
-            raise RuntimeError("_process_with_tensorrt: TensorRT engine not loaded")
-        
+        """Process tensor using TensorRT engine (following depth_tensorrt pattern)"""
         logger.info(f"_process_with_tensorrt: Starting TensorRT upscaling {tensor.shape[-2:]} -> {tuple(s*2 for s in tensor.shape[-2:])}")
         
         batch_size, channels, height, width = tensor.shape
         input_shape = (batch_size, channels, height, width)
         
-        # Allocate buffers for this shape
-        self._allocate_trt_buffers(input_shape)
+        # Ensure buffers are allocated for this input shape
+        if not hasattr(self.engine, 'tensors') or len(self.engine.tensors) == 0:
+            self.engine.allocate_buffers(input_shape, device=self.device)
+        else:
+            # Check if we need to reallocate for different input shape
+            input_tensor_shape = self.engine.tensors.get("input", torch.empty(0)).shape
+            if input_tensor_shape != input_shape:
+                self.engine.allocate_buffers(input_shape, device=self.device)
         
-        # Copy input data
-        input_name = "input"
+        # Prepare input tensor
         input_tensor = tensor.contiguous()
-        if input_tensor.dtype != self.trt_tensors[input_name].dtype:
-            input_tensor = input_tensor.to(dtype=self.trt_tensors[input_name].dtype)
+        if input_tensor.dtype != self.engine.tensors["input"].dtype:
+            input_tensor = input_tensor.to(dtype=self.engine.tensors["input"].dtype)
         
-        self.trt_tensors[input_name].copy_(input_tensor)
-        
-        # Set tensor addresses
-        for name, tensor_buf in self.trt_tensors.items():
-            self.trt_context.set_tensor_address(name, tensor_buf.data_ptr())
-        
-        # Execute
-        stream = torch.cuda.current_stream()
-        success = self.trt_context.execute_async_v3(stream.cuda_stream)
-        if not success:
-            raise RuntimeError("_process_with_tensorrt: TensorRT execution failed")
-        
-        stream.synchronize()
-        
-        # Return output tensor
-        output_name = "output"
-        result = self.trt_tensors[output_name].clone()
+        # Use engine inference (thread-safe with cached stream)
+        cuda_stream = torch.cuda.current_stream().cuda_stream
+        result = self.engine.infer({"input": input_tensor}, cuda_stream)
+        output_tensor = result['output']
         
         # Ensure output is properly clamped to [0, 1] range for RealESRGAN
-        result = torch.clamp(result, 0.0, 1.0)
+        output_tensor = torch.clamp(output_tensor, 0.0, 1.0)
         
-        logger.info(f"_process_with_tensorrt: Completed TensorRT upscaling {tensor.shape[-2:]} -> {result.shape[-2:]}")
-        return result
+        logger.info(f"_process_with_tensorrt: Completed TensorRT upscaling {tensor.shape[-2:]} -> {output_tensor.shape[-2:]}")
+        return output_tensor.clone()
     
     def _process_with_pytorch(self, tensor: torch.Tensor) -> torch.Tensor:
         """Process tensor using PyTorch model"""
@@ -372,8 +431,11 @@ class RealESRGANProcessor(BasePreprocessor):
         if tensor.dim() == 3:
             tensor = tensor.unsqueeze(0)
         
+        # TEMPORARY PROFILING: RealESRGAN inference timing
+        realesrgan_start_time = time.time()
+        
         # Process with available backend
-        if self.enable_tensorrt and self.trt_engine is not None:
+        if self.enable_tensorrt and TRT_AVAILABLE and self.engine_path.exists():
             try:
                 output_tensor = self._process_with_tensorrt(tensor)
             except Exception as e:
@@ -386,6 +448,10 @@ class RealESRGANProcessor(BasePreprocessor):
             logger.warning("_process_core: No model available, using simple resize")
             target_width, target_height = self.get_target_dimensions()
             return image.resize((target_width, target_height), Image.LANCZOS)
+        
+        realesrgan_end_time = time.time()
+        realesrgan_time = (realesrgan_end_time - realesrgan_start_time) * 1000  # Convert to ms
+        print(f"[PROFILING] RealESRGAN inference: {realesrgan_time:.2f}ms")
         
         # Convert back to PIL
         if output_tensor.dim() == 4:
@@ -419,8 +485,12 @@ class RealESRGANProcessor(BasePreprocessor):
         else:
             squeeze_output = False
         
+        # TEMPORARY PROFILING: RealESRGAN tensor inference timing
+        import time
+        realesrgan_start_time = time.time()
+        
         # Process with available backend
-        if self.enable_tensorrt and self.trt_engine is not None:
+        if self.enable_tensorrt and TRT_AVAILABLE and self.engine_path.exists():
             try:
                 output_tensor = self._process_with_tensorrt(tensor)
             except Exception as e:
@@ -437,6 +507,10 @@ class RealESRGANProcessor(BasePreprocessor):
                 mode='bicubic',
                 align_corners=False
             )
+        
+        realesrgan_end_time = time.time()
+        realesrgan_time = (realesrgan_end_time - realesrgan_start_time) * 1000  # Convert to ms
+        print(f"[PROFILING] RealESRGAN tensor inference: {realesrgan_time:.2f}ms")
         
         if squeeze_output:
             output_tensor = output_tensor.squeeze(0)
@@ -460,7 +534,5 @@ class RealESRGANProcessor(BasePreprocessor):
     
     def __del__(self):
         """Cleanup resources"""
-        if hasattr(self, 'trt_context') and self.trt_context is not None:
-            del self.trt_context
-        if hasattr(self, 'trt_engine') and self.trt_engine is not None:
-            del self.trt_engine
+        if hasattr(self, '_engine') and self._engine is not None:
+            del self._engine
