@@ -91,7 +91,7 @@ class ControlNetModelEngine:
             "timestep": timestep,
             "encoder_hidden_states": encoder_hidden_states,
             "controlnet_cond": controlnet_cond,
-            "conditioning_scale": torch.tensor([conditioning_scale], dtype=torch.float32, device=sample.device)
+            "conditioning_scale": torch.tensor(conditioning_scale, dtype=torch.float32, device=sample.device)
         }
         
         if text_embeds is not None:
