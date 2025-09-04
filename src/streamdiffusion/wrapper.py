@@ -110,7 +110,7 @@ class StreamDiffusionWrapper:
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         safety_checker_model_id: Optional[str] = "Falconsai/nsfw_image_detection",
-        safety_fallback_image: Literal["blank", "previous"] = "previous",
+        safety_checker_fallback_type: Literal["blank", "previous"] = "previous",
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -284,7 +284,7 @@ class StreamDiffusionWrapper:
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
         self.set_nsfw_fallback_img(height, width)
-        self.safety_fallback_image = safety_fallback_image
+        self.safety_checker_fallback_type = safety_checker_fallback_type
 
     def prepare(
         self,
@@ -586,7 +586,7 @@ class StreamDiffusionWrapper:
             predicted_label = self.safety_checker(pixel_values).argmax(-1).item()
             if predicted_label == 1:
                 image = self.nsfw_fallback_img
-            elif self.safety_fallback_image == "previous":
+            elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
 
         return image
@@ -627,7 +627,7 @@ class StreamDiffusionWrapper:
             predicted_label = self.safety_checker(pixel_values).argmax(-1).item()
             if predicted_label == 1:
                 image = self.nsfw_fallback_img
-            elif self.safety_fallback_image == "previous":
+            elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
 
         return image
