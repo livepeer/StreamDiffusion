@@ -215,4 +215,4 @@ configs/*.yml
 
 images/outputs/*
 images/inputs/*
-controlnet_test_sdturbo_multicontrolnet_*
+controlnet_test_*

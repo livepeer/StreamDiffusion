@@ -123,7 +123,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'engine_dir': config.get('engine_dir', 'engines'),
         'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
         'normalize_seed_weights': config.get('normalize_seed_weights', True),
-        'enable_pytorch_fallback': config.get('enable_pytorch_fallback', False),
+        'compile_engines_only': config.get('compile_engines_only', False),
     }
     if 'controlnets' in config and config['controlnets']:
         param_map['use_controlnet'] = True
@@ -372,8 +372,4 @@ def _validate_config(config: Dict[str, Any]) -> None:
         normalize_seed_weights = config['normalize_seed_weights']
         if not isinstance(normalize_seed_weights, bool):
             raise ValueError("_validate_config: 'normalize_seed_weights' must be a boolean value")
-    
-    if 'enable_pytorch_fallback' in config:
-        enable_pytorch_fallback = config['enable_pytorch_fallback']
-        if not isinstance(enable_pytorch_fallback, bool):
-            raise ValueError("_validate_config: 'enable_pytorch_fallback' must be a boolean value")
+
