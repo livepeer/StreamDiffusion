@@ -90,7 +90,6 @@ class EngineBuilder:
                 build_enable_refit=build_enable_refit,
             )
         
-        # engine path is the .engine file, i need to delete all the files in the engine_path directory which aren't .engine files
         for file in os.listdir(os.path.dirname(engine_path)):
             if file.endswith('.engine'):
                 continue

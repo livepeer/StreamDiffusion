@@ -220,12 +220,12 @@ class EngineManager:
                 # Standard compilation for UNet and VAE encoder
                 self._execute_compilation(compile_fn, engine_path, kwargs['model'], kwargs['model_config'], kwargs['batch_size'], kwargs)
         else:
-            logger.info(f"EngineManager: engine_path already exists, will not compile")
+            logger.info(f"EngineManager: engine_path already exists, skipping compile")
             
         if load_engine:
             return self.load_engine(engine_type, engine_path, **kwargs)
         else:
-            logger.info(f"EngineManager: load_engine is False, will not load engine")
+            logger.info(f"EngineManager: load_engine is False, skipping load engine")
             return None
     
     def load_engine(self, engine_type: EngineType, engine_path: Path, **kwargs: Dict) -> Any:

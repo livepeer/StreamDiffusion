@@ -71,7 +71,6 @@ class ControlNetModule(OrchestratorUser):
     # ---------- Public API (used by wrapper in a later step) ----------
     def install(self, stream) -> None:
         self._stream = stream
-        self.dtype = stream.dtype
         if self._preprocessing_orchestrator is None:
             # Enforce shared orchestrator via base helper (raises if missing)
             self.attach_orchestrator(stream)
