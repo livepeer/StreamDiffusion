@@ -32,9 +32,8 @@ class EngineManager:
         
         # Import the existing compile functions from tensorrt/__init__.py
         from streamdiffusion.acceleration.tensorrt import (
-            compile_unet, compile_vae_encoder, compile_vae_decoder, compile_safety_checker
+            compile_unet, compile_vae_encoder, compile_vae_decoder, compile_safety_checker, compile_controlnet
         )
-        from streamdiffusion.acceleration.tensorrt.builder import compile_controlnet
         from streamdiffusion.acceleration.tensorrt.runtime_engines.unet_engine import (
             UNet2DConditionModelEngine
         )
@@ -170,7 +169,7 @@ class EngineManager:
         )
         
         # Prepare ControlNet model for compilation
-        pytorch_model = kwargs['model'].to(torch.device("cuda"), dtype=torch.float16)
+        pytorch_model = kwargs['model'].to(dtype=torch.float16)
         
         return pytorch_model, controlnet_model
     
@@ -221,8 +220,6 @@ class EngineManager:
                 # Standard compilation for UNet and VAE encoder
                 self._execute_compilation(compile_fn, engine_path, kwargs['model'], kwargs['model_config'], kwargs['batch_size'], kwargs)
         else:
-            if engine_type == EngineType.UNET and kwargs.get('unload_pytorch_model', False):
-                kwargs['model'].unload_pytorch_model()
             logger.info(f"EngineManager: engine_path already exists, will not compile")
             
         if load_engine:

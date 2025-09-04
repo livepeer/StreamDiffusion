@@ -235,19 +235,15 @@ class StreamDiffusionWrapper:
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
-            width=width,
-            height=height,
             lora_dict=lora_dict,
             lcm_lora_id=lcm_lora_id,
             vae_id=vae_id,
             t_index_list=t_index_list,
             acceleration=acceleration,
-            warmup=warmup,
             do_add_noise=do_add_noise,
             use_lcm_lora=use_lcm_lora,
             use_tiny_vae=use_tiny_vae,
             cfg_type=cfg_type,
-            seed=seed,
             engine_dir=engine_dir,
             build_engines_if_missing=build_engines_if_missing,
             normalize_prompt_weights=normalize_prompt_weights,
@@ -258,6 +254,23 @@ class StreamDiffusionWrapper:
             ipadapter_config=ipadapter_config,
             safety_checker_model_id=safety_checker_model_id,
             compile_engines_only=compile_engines_only,
+        )
+
+        if compile_engines_only:
+            return
+
+        if seed < 0:  # Random seed
+            seed = np.random.randint(0, 1000000)
+
+        self.stream.prepare(
+            "",
+            "",
+            num_inference_steps=50,
+            guidance_scale=1.1
+            if self.stream.cfg_type in ["full", "self", "initialize"]
+            else 1.0,
+            generator=torch.manual_seed(seed),
+            seed=seed,
         )
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
@@ -763,19 +776,15 @@ class StreamDiffusionWrapper:
     def _load_model(
         self,
         model_id_or_path: str,
-        width: int,
-        height: int,
         t_index_list: List[int],
         lora_dict: Optional[Dict[str, float]] = None,
         lcm_lora_id: Optional[str] = None,
         vae_id: Optional[str] = None,
         acceleration: Literal["none", "xformers", "tensorrt"] = "tensorrt",
-        warmup: int = 10,
         do_add_noise: bool = True,
         use_lcm_lora: bool = True,
         use_tiny_vae: bool = True,
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
-        seed: int = 2,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
         normalize_prompt_weights: bool = True,
@@ -890,7 +899,7 @@ class StreamDiffusionWrapper:
         for method, method_name in loading_methods:
             try:
                 logger.info(f"_load_model: Attempting to load with {method_name}...")
-                pipe = method(model_id_or_path).to(device=self.device, dtype=self.dtype)
+                pipe = method(model_id_or_path).to(dtype=self.dtype)
                 logger.info(f"_load_model: Successfully loaded using {method_name}")
                 
                 # Verify that we have the right pipeline type for SDXL models
@@ -899,7 +908,7 @@ class StreamDiffusionWrapper:
                     # Try to explicitly load with SDXL pipeline instead
                     try:
                         logger.info(f"_load_model: Retrying with StableDiffusionXLPipeline...")
-                        pipe = StableDiffusionXLPipeline.from_single_file(model_id_or_path).to(device=self.device, dtype=self.dtype)
+                        pipe = StableDiffusionXLPipeline.from_single_file(model_id_or_path).to(dtype=self.dtype)
                         logger.info(f"_load_model: Successfully loaded using SDXL pipeline on retry")
                     except Exception as retry_error:
                         logger.warning(f"_load_model: SDXL pipeline retry failed: {retry_error}")
@@ -919,6 +928,11 @@ class StreamDiffusionWrapper:
                 import traceback
                 traceback.print_exc()
             raise RuntimeError(error_msg)
+        else:
+            if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
+                pipe.text_encoder = pipe.text_encoder.to(device=self.device)
+            if hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
+                pipe.text_encoder_2 = pipe.text_encoder_2.to(device=self.device)
 
         # If we get here, the model loaded successfully - break out of retry loop
         logger.info(f"Model loading succeeded")
@@ -941,6 +955,7 @@ class StreamDiffusionWrapper:
         stream = StreamDiffusion(
             pipe=pipe,
             t_index_list=t_index_list,
+            device=self.device,
             torch_dtype=self.dtype,
             width=self.width,
             height=self.height,
@@ -968,15 +983,11 @@ class StreamDiffusionWrapper:
 
         if use_tiny_vae:
             if vae_id is not None:
-                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(
-                    device=pipe.device, dtype=pipe.dtype
-                )
+                stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(dtype=pipe.dtype)
             else:
                 # Use TAESD XL for SDXL models, regular TAESD for SD 1.5
                 taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
-                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(
-                    device=pipe.device, dtype=pipe.dtype
-                )
+                stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(dtype=pipe.dtype)
     
 
         try:
@@ -1238,7 +1249,7 @@ class StreamDiffusionWrapper:
 
                 unet_model = UNet(
                     fp16=True,
-                    device=stream.device,
+                    device=self.device,
                     max_batch_size=self.max_batch_size,
                     min_batch_size=self.min_batch_size,
                     embedding_dim=embedding_dim,
@@ -1270,7 +1281,7 @@ class StreamDiffusionWrapper:
 
                 # Compile VAE decoder engine using EngineManager
                 vae_decoder_model = VAE(
-                    device=stream.device,
+                    device=self.device,
                     max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                 )
@@ -1294,9 +1305,9 @@ class StreamDiffusionWrapper:
                 )
 
                 # Compile VAE encoder engine using EngineManager
-                vae_encoder = TorchVAEEncoder(stream.vae).to(torch.device("cuda"))
+                vae_encoder = TorchVAEEncoder(stream.vae)
                 vae_encoder_model = VAEEncoder(
-                    device=stream.device,
+                    device=self.device,
                     max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                 )
@@ -1341,8 +1352,7 @@ class StreamDiffusionWrapper:
                         engine_build_options={
                             'opt_image_height': self.height,
                             'opt_image_width': self.width,
-                        },
-                        unload_pytorch_model=(self._is_sdxl and use_ipadapter and use_controlnet),
+                        }
                     )
                     if load_engine:
                         logger.info("TensorRT UNet engine loaded successfully")
@@ -1449,7 +1459,7 @@ class StreamDiffusionWrapper:
                     self.safety_checker = AutoModelForImageClassification.from_pretrained(safety_checker_model_id).to("cuda")
 
                     safety_checker_model = NSFWDetector(
-                        device=stream.device,
+                        device=self.device,
                         max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                         min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
                     )
@@ -1481,20 +1491,6 @@ class StreamDiffusionWrapper:
             import traceback
             traceback.print_exc()
             raise Exception("Acceleration has failed.")
-
-        if seed < 0:  # Random seed
-            seed = np.random.randint(0, 1000000)
-
-        stream.prepare(
-            "",
-            "",
-            num_inference_steps=50,
-            guidance_scale=1.1
-            if stream.cfg_type in ["full", "self", "initialize"]
-            else 1.0,
-            generator=torch.manual_seed(seed),
-            seed=seed,
-        )
 
         # Install modules via hooks instead of patching (wrapper keeps forwarding updates only)
         if use_controlnet and controlnet_config:
@@ -1542,9 +1538,6 @@ class StreamDiffusionWrapper:
                             except Exception:
                                 pass
                             compiled_cn_engines.append(engine)
-                            cn_model = cn_model.cpu()
-                            del cn_model
-                            torch.cuda.empty_cache()
                         except Exception as e:
                             logger.warning(f"Failed to compile/load ControlNet engine for {cfg.get('model_id')}: {e}")
                     if compiled_cn_engines:

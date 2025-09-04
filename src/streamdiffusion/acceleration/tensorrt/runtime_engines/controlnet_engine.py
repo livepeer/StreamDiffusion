@@ -1,10 +1,8 @@
 """ControlNet TensorRT Engine with PyTorch fallback"""
 
 import torch
-import tensorrt as trt
-import traceback
 import logging
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict
 from polygraphy import cuda
 
 from ..utilities import Engine
