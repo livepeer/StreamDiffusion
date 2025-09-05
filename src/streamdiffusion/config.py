@@ -120,6 +120,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'cfg_type': config.get('cfg_type', 'self'),
         'seed': config.get('seed', 2),
         'use_safety_checker': config.get('use_safety_checker', False),
+        'skip_diffusion': config.get('skip_diffusion', False),
         'engine_dir': config.get('engine_dir', 'engines'),
         'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
         'normalize_seed_weights': config.get('normalize_seed_weights', True),

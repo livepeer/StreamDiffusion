@@ -241,6 +241,7 @@ class StreamParameterUpdater(OrchestratorUser):
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
+        skip_diffusion: Optional[bool] = None,
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
         prompt_interpolation_method: Literal["linear", "slerp"] = "slerp",
@@ -273,6 +274,9 @@ class StreamParameterUpdater(OrchestratorUser):
 
             if delta is not None:
                 self.stream.delta = delta
+
+            if skip_diffusion is not None:
+                self.stream.skip_diffusion = skip_diffusion
 
             if seed is not None:
                 self._update_seed(seed)
