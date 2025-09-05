@@ -1520,7 +1520,7 @@ class StreamDiffusionWrapper:
             raise Exception("Acceleration has failed.")
 
         # Install modules via hooks instead of patching (wrapper keeps forwarding updates only)
-        if use_controlnet and controlnet_config:
+        if use_controlnet:
             try:
                 from streamdiffusion.modules.controlnet_module import ControlNetModule, ControlNetConfig
                 cn_module = ControlNetModule(device=self.device, dtype=self.dtype)
