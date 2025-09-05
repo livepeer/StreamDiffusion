@@ -109,6 +109,8 @@ class StreamDiffusionWrapper:
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         safety_checker_model_id: Optional[str] = "Falconsai/nsfw_image_detection",
+        safety_checker_fallback_type: Literal["blank", "previous"] = "previous",
+        safety_checker_threshold: float = 0.95,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -187,6 +189,10 @@ class StreamDiffusionWrapper:
             ControlNet configuration(s), by default None.
             Can be a single config dict or list of config dicts for multiple ControlNets.
             Each config should contain: model_id, preprocessor (optional), conditioning_scale, etc.
+        safety_checker_fallback_type : Literal["blank", "previous"], optional
+            Whether to use a blank image or the previous image as a fallback, by default "previous".
+        safety_checker_threshold : float, optional
+            The threshold for the safety checker, by default 0.95.
         compile_engines_only : bool, optional
             Whether to only compile engines and not load the model, by default False.
         """
@@ -295,6 +301,9 @@ class StreamDiffusionWrapper:
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
         self.set_nsfw_fallback_img(height, width)
+        self.safety_checker_fallback_type = safety_checker_fallback_type
+        self.safety_checker_threshold = safety_checker_threshold
+        self.safety_checker_streak = 0
 
     def prepare(
         self,
@@ -593,8 +602,16 @@ class StreamDiffusionWrapper:
             else:
                 denormalized_image_tensor = image
             pixel_values = self.safety_image_transforms(denormalized_image_tensor)
-            predicted_label = self.safety_checker(pixel_values).argmax(-1).item()
-            image = self.nsfw_fallback_img if predicted_label==1 else image
+            logits = self.safety_checker(pixel_values)
+            nsfw_prob = torch.softmax(logits, dim=-1)[0][1].item()
+            if nsfw_prob > self.safety_checker_threshold:
+                self.safety_checker_streak += 1
+                if self.safety_checker_streak > 3:
+                    image = self.nsfw_fallback_img
+            else:
+                self.safety_checker_streak = 0
+                if self.safety_checker_fallback_type == "previous":
+                    self.nsfw_fallback_img = image
 
         return image
 
@@ -631,8 +648,16 @@ class StreamDiffusionWrapper:
             else:
                 denormalized_image_tensor = image
             pixel_values = self.safety_image_transforms(denormalized_image_tensor)
-            predicted_label = self.safety_checker(pixel_values).argmax(-1).item()
-            image = self.nsfw_fallback_img if predicted_label==1 else image
+            logits = self.safety_checker(pixel_values)
+            nsfw_prob = torch.softmax(logits, dim=-1)[0][1].item()
+            if nsfw_prob > self.safety_checker_threshold:
+                self.safety_checker_streak += 1
+                if self.safety_checker_streak > 3:
+                    image = self.nsfw_fallback_img
+            else:
+                self.safety_checker_streak = 0
+                if self.safety_checker_fallback_type == "previous":
+                    self.nsfw_fallback_img = image
 
         return image
 

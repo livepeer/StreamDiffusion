@@ -95,15 +95,14 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
         frame_pil = Image.fromarray(frame_rgb)
         
-        # Update control image and generate via consolidated API
-        try:
-            current_cfg = wrapper.stream._param_updater._get_current_controlnet_config() if hasattr(wrapper, 'stream') else []
-        except Exception:
-            current_cfg = []
-        if current_cfg:
-            for i in range(len(current_cfg)):
-                current_cfg[i]['control_image'] = frame_pil
-            wrapper.update_stream_params(controlnet_config=current_cfg)
+        # Update control image for all configured ControlNets
+        if hasattr(wrapper.stream, '_controlnet_module') and wrapper.stream._controlnet_module:
+            controlnet_count = len(wrapper.stream._controlnet_module.controlnets)
+            print(f"process_video: Updating control image for {controlnet_count} ControlNet(s) on frame {frame_idx}")
+            for i in range(controlnet_count):
+                wrapper.update_control_image(i, frame_pil)
+        else:
+            print(f"process_video: No ControlNet module found for frame {frame_idx}")
         output_image = wrapper(frame_pil)
         
         # Convert output to display format
