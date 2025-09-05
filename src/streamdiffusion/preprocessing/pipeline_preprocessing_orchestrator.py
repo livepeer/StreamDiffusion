@@ -50,6 +50,13 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
         # Store current input for fallback logic
         self._current_input_tensor = input_tensor
         
+        # RACE CONDITION FIX: Check if there are actually enabled processors
+        # Filter to only enabled processors (same logic as _get_ordered_processors)
+        enabled_processors = [p for p in processors if getattr(p, 'enabled', True)] if processors else []
+        
+        if not enabled_processors:
+            return input_tensor
+        
         # Call parent implementation
         return super().process_pipelined(input_tensor, processors, *args, **kwargs)
     

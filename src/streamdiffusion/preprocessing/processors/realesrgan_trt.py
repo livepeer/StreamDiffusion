@@ -59,17 +59,25 @@ class RealESRGANEngine:
         self.engine = None
         self.context = None
         self.tensors = OrderedDict()
-        self._cuda_stream = None  # Cache CUDA stream
+        
+        # Thread safety for TensorRT context access
+        import threading
+        self._inference_lock = threading.Lock()
 
     def load(self):
         """Load TensorRT engine from file"""
+        # Ensure clean CUDA context before loading TensorRT engine
+        # This prevents corruption from previous runs
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        except:
+            pass
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
 
     def activate(self):
         """Create execution context"""
         self.context = self.engine.create_execution_context()
-        # Cache CUDA stream for reuse
-        self._cuda_stream = torch.cuda.current_stream().cuda_stream
 
     def allocate_buffers(self, input_shape, device="cuda"):
         """Allocate input/output buffers for given input shape"""
@@ -95,23 +103,30 @@ class RealESRGANEngine:
             self.tensors[name] = tensor
 
     def infer(self, feed_dict, stream=None):
-        """Run inference with optional stream parameter"""
-        # Use cached stream if none provided
+        """Run inference with consistent stream usage"""
+        # Use provided stream or current stream context
         if stream is None:
-            stream = self._cuda_stream
-            
+            stream = torch.cuda.current_stream().cuda_stream
+        
         # Copy input data to tensors
         for name, buf in feed_dict.items():
             self.tensors[name].copy_(buf)
 
         # Set tensor addresses
         for name, tensor in self.tensors.items():
-            self.context.set_tensor_address(name, tensor.data_ptr())
+            addr = tensor.data_ptr()
+            self.context.set_tensor_address(name, addr)
         
-        # Execute inference
-        success = self.context.execute_async_v3(stream)
-        if not success:
-            raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
+        # Thread-safe TensorRT execution
+        with self._inference_lock:
+            # Execute inference
+            success = self.context.execute_async_v3(stream)
+            
+            if not success:
+                raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
+            
+            # Synchronize within the lock to ensure completion
+            torch.cuda.synchronize()
         
         return self.tensors
 
@@ -161,23 +176,30 @@ class RealESRGANProcessor(BasePreprocessor):
         self.pytorch_model = None
         self._engine = None  # Lazy loading like depth processor
         
+        # Thread safety for engine initialization
+        import threading
+        self._engine_lock = threading.Lock()
+        
         # Initialize
         self._ensure_model_ready()
     
     @property
     def engine(self):
-        """Lazy loading of the TensorRT engine (following depth_tensorrt pattern)"""
+        """Thread-safe lazy loading of the TensorRT engine"""
         if self._engine is None:
-            if not self.engine_path.exists():
-                raise FileNotFoundError(f"TensorRT engine not found: {self.engine_path}")
-            
-            self._engine = RealESRGANEngine(str(self.engine_path))
-            self._engine.load()
-            self._engine.activate()
-            
-            # Allocate buffers for standard input size (will be reallocated as needed)
-            standard_shape = (1, 3, 512, 512)
-            self._engine.allocate_buffers(standard_shape, device=self.device)
+            with self._engine_lock:
+                # Double-check locking pattern
+                if self._engine is None:
+                    if not self.engine_path.exists():
+                        raise FileNotFoundError(f"TensorRT engine not found: {self.engine_path}")
+                    
+                    self._engine = RealESRGANEngine(str(self.engine_path))
+                    self._engine.load()
+                    self._engine.activate()
+                    
+                    # Allocate buffers for standard input size (will be reallocated as needed)
+                    standard_shape = (1, 3, 512, 512)
+                    self._engine.allocate_buffers(standard_shape, device=self.device)
             
         return self._engine
     
@@ -353,7 +375,7 @@ class RealESRGANProcessor(BasePreprocessor):
         if input_tensor.dtype != self.engine.tensors["input"].dtype:
             input_tensor = input_tensor.to(dtype=self.engine.tensors["input"].dtype)
         
-        # Use engine inference (thread-safe with cached stream)
+        # Use engine inference with current stream context for proper synchronization
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.engine.infer({"input": input_tensor}, cuda_stream)
         output_tensor = result['output']
@@ -476,4 +498,11 @@ class RealESRGANProcessor(BasePreprocessor):
     def __del__(self):
         """Cleanup resources"""
         if hasattr(self, '_engine') and self._engine is not None:
+            # Cleanup dedicated stream if it exists
+            if hasattr(self._engine, '_dedicated_stream'):
+                try:
+                    torch.cuda.synchronize()
+                    del self._engine._dedicated_stream
+                except:
+                    pass
             del self._engine

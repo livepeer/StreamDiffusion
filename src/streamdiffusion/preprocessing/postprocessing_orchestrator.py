@@ -37,6 +37,13 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         # Store current input for fallback logic
         self._current_input_tensor = input_tensor
         
+        # RACE CONDITION FIX: Check if there are actually enabled processors
+        # Filter to only enabled processors (same logic as _get_ordered_processors)
+        enabled_processors = [p for p in postprocessors if getattr(p, 'enabled', True)] if postprocessors else []
+        
+        if not enabled_processors:
+            return input_tensor
+        
         # Call parent implementation
         return super().process_pipelined(input_tensor, postprocessors, *args, **kwargs)
     
@@ -71,13 +78,18 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
         if not postprocessors:
             return input_tensor
         
-        # Sequential application of postprocessors
-        current_tensor = input_tensor
-        for postprocessor in postprocessors:
-            if postprocessor is not None:
-                current_tensor = self._apply_single_postprocessor(current_tensor, postprocessor)
-        
-        return current_tensor
+        # Use same stream context as background processing for consistency
+        original_stream = self._set_background_stream_context()
+        try:
+            # Sequential application of postprocessors
+            current_tensor = input_tensor
+            for postprocessor in postprocessors:
+                if postprocessor is not None:
+                    current_tensor = self._apply_single_postprocessor(current_tensor, postprocessor)
+            
+            return current_tensor
+        finally:
+            self._restore_stream_context(original_stream)
     
     def _process_frame_background(self, 
                                 input_tensor: torch.Tensor,
@@ -102,15 +114,24 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
                 }
             
             # Check for cache hit (same input tensor)
-            if (self._last_input_tensor is not None and 
-                torch.equal(input_tensor, self._last_input_tensor) and
-                self._last_processed_result is not None):
+            cache_hit = False
+            if (self._last_input_tensor is not None and self._last_processed_result is not None):
+                if input_tensor.device == self._last_input_tensor.device:
+                    # Same device - direct comparison
+                    cache_hit = torch.equal(input_tensor, self._last_input_tensor)
+                else:
+                    # Different devices - move cached tensor to input device for comparison
+                    cached_on_input_device = self._last_input_tensor.to(device=input_tensor.device, dtype=input_tensor.dtype)
+                    cache_hit = torch.equal(input_tensor, cached_on_input_device)
+            
+            if cache_hit:
                 return {
                     'result': self._last_processed_result,  # Return previously processed result
                     'status': 'success',
                     'cache_hit': True
                 }
             
+            # Update cache with current input tensor
             self._last_input_tensor = input_tensor.clone()
             
             # Process postprocessors in parallel if multiple, sequential if single
@@ -184,8 +205,10 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
             processed_tensor = input_tensor.to(device=self.device, dtype=self.dtype)
             
             # CRITICAL: Convert from VAE output range [-1,1] to processor input range [0,1]
+            print(f"_apply_single_postprocessor: Input tensor range: min={processed_tensor.min().item():.4f}, max={processed_tensor.max().item():.4f}")
             logger.debug(f"_apply_single_postprocessor: Converting tensor from VAE range [-1,1] to processor range [0,1]")
             processor_input = (processed_tensor / 2.0 + 0.5).clamp(0, 1)
+            print(f"_apply_single_postprocessor: Processor input range: min={processor_input.min().item():.4f}, max={processor_input.max().item():.4f}")
             
             # Apply postprocessor
             if hasattr(postprocessor, 'process_tensor'):
@@ -203,9 +226,22 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
             
             # Ensure result is a tensor
             if isinstance(processor_output, torch.Tensor):
+                # Check for NaN corruption
+                if processor_output.isnan().any():
+                    print(f"_apply_single_postprocessor: NaN CORRUPTION DETECTED in processor output!")
+                    logger.error(f"_apply_single_postprocessor: Processor output contains NaN values - memory corruption detected")
+                
+                print(f"_apply_single_postprocessor: Processor output range: min={processor_output.min().item():.4f}, max={processor_output.max().item():.4f}")
                 # CRITICAL: Convert back from processor output range [0,1] to VAE input range [-1,1]
                 logger.debug(f"_apply_single_postprocessor: Converting result from processor range [0,1] back to VAE range [-1,1]")
                 result = (processor_output - 0.5) * 2.0  # Convert [0,1] -> [-1,1]
+                
+                # Check for NaN corruption after conversion
+                if result.isnan().any():
+                    print(f"_apply_single_postprocessor: NaN CORRUPTION DETECTED after range conversion!")
+                    logger.error(f"_apply_single_postprocessor: Result contains NaN values after conversion - memory corruption detected")
+                
+                print(f"_apply_single_postprocessor: Final output range: min={result.min().item():.4f}, max={result.max().item():.4f}")
                 return result.to(device=self.device, dtype=self.dtype)
             else:
                 logger.warning(f"PostprocessingOrchestrator: Postprocessor returned non-tensor: {type(processor_output)}")
