@@ -481,6 +481,7 @@ class StreamDiffusionWrapper:
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
         use_safety_checker: Optional[bool] = None,
+        safety_checker_threshold: Optional[float] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -524,6 +525,9 @@ class StreamDiffusionWrapper:
             IPAdapter configuration dict containing scale, style_image, etc.
         use_safety_checker : Optional[bool]
             Whether to use the safety checker.
+        safety_checker_threshold : Optional[float]
+            Probability threshold for the safety checker (0.0–1.0). Frames with
+            NSFW probability above this value will trigger the configured fallback.
         """
         # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
@@ -544,6 +548,8 @@ class StreamDiffusionWrapper:
         )
         if use_safety_checker is not None:
             self.use_safety_checker = use_safety_checker
+        if safety_checker_threshold is not None:
+            self.safety_checker_threshold = safety_checker_threshold
 
     def __call__(
         self,
