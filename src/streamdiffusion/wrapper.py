@@ -1468,18 +1468,20 @@ class StreamDiffusionWrapper:
                             logger.error(f"TensorRT VAE engine loading failed (non-OOM): {e}")
                             raise e
 
-            if self.use_safety_checker:
-                safety_checker_path = engine_manager.get_engine_path(
-                    EngineType.SAFETY_CHECKER,
-                    model_id_or_path=safety_checker_model_id,
-                    max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                    min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
-                    mode=self.mode,
-                    use_lcm_lora=use_lcm_lora,
-                    use_tiny_vae=use_tiny_vae,
-                )
+            safety_checker_path = engine_manager.get_engine_path(
+                EngineType.SAFETY_CHECKER,
+                model_id_or_path=safety_checker_model_id,
+                max_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                min_batch_size=self.batch_size if self.mode == "txt2img" else stream.frame_bff_size,
+                mode=self.mode,
+                use_lcm_lora=use_lcm_lora,
+                use_tiny_vae=use_tiny_vae,
+            )
+            safety_checker_engine_exists = os.path.exists(safety_checker_path)
 
-                if not os.path.exists(safety_checker_path):
+            # Always load the safety checker if the engine exists. The model is really small and may be toggled later.
+            if self.use_safety_checker or safety_checker_engine_exists:
+                if not safety_checker_engine_exists:
                     from transformers import AutoModelForImageClassification
                     self.safety_checker = AutoModelForImageClassification.from_pretrained(safety_checker_model_id).to("cuda")
 
