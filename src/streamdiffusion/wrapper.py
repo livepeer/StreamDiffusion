@@ -99,6 +99,7 @@ class StreamDiffusionWrapper:
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
         seed: int = 2,
         use_safety_checker: bool = False,
+        skip_diffusion: bool = False,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
         normalize_prompt_weights: bool = True,
@@ -273,6 +274,9 @@ class StreamDiffusionWrapper:
             latent_preprocessing_config=latent_preprocessing_config,
             latent_postprocessing_config=latent_postprocessing_config,
         )
+
+        # Set skip_diffusion from init parameter
+        self.stream.skip_diffusion = skip_diffusion
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
         self.stream._param_updater.wrapper = self
@@ -453,6 +457,7 @@ class StreamDiffusionWrapper:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
+        skip_diffusion: Optional[bool] = None,
         # Prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
@@ -487,6 +492,9 @@ class StreamDiffusionWrapper:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
+        skip_diffusion : Optional[bool]
+            Whether to skip the diffusion process and only run pre/post processing.
+            When True, bypasses VAE encoding, diffusion, and VAE decoding.
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending. Each tuple contains (prompt_text, weight).
             Example: [("cat", 0.7), ("dog", 0.3)]
@@ -513,6 +521,7 @@ class StreamDiffusionWrapper:
         ipadapter_config : Optional[Dict[str, Any]]
             IPAdapter configuration dict containing scale, style_image, etc.
         """
+        # skip_diffusion = True
         # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -520,6 +529,7 @@ class StreamDiffusionWrapper:
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
+            skip_diffusion=skip_diffusion,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
             prompt_interpolation_method=prompt_interpolation_method,
@@ -555,10 +565,80 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The generated image.
         """
+        if getattr(self.stream, 'skip_diffusion', False):
+            return self._process_skip_diffusion(image, prompt)
+        
         if self.mode == "img2img":
             return self.img2img(image, prompt)
         else:
             return self.txt2img(prompt)
+
+    def _process_skip_diffusion(
+        self, 
+        image: Optional[Union[str, Image.Image, torch.Tensor]] = None, 
+        prompt: Optional[str] = None
+    ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
+        """
+        Process input directly without diffusion, applying pre/post processing hooks.
+        
+        This method bypasses VAE encoding, diffusion, and VAE decoding, but still
+        applies image preprocessing and postprocessing hooks for consistent processing.
+        
+        Parameters
+        ----------
+        image : Optional[Union[str, Image.Image, torch.Tensor]]
+            The image to process directly.
+        prompt : Optional[str]
+            Prompt (ignored in skip mode, but kept for API consistency).
+            
+        Returns
+        -------
+        Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]
+            The processed image with hooks applied.
+        """
+
+        #TODO: add safety checker call somewhere in this method
+
+
+        if self.mode == "txt2img":
+            logger.warning("_process_skip_diffusion: skip_diffusion mode not applicable for txt2img - no input image")
+            return self.txt2img(prompt)
+        
+        if image is None:
+            raise ValueError("_process_skip_diffusion: image required for skip diffusion mode")
+        
+       
+
+        # Handle input tensor normalization to [-1,1] pipeline range
+        if isinstance(image, str) or isinstance(image, Image.Image):
+            processed_tensor = self.preprocess_image(image)
+        elif isinstance(image, torch.Tensor):
+            print(f"_process_skip_diffusion: Input tensor device={image.device}, dtype={image.dtype}")
+            # Ensure tensor is on correct device and dtype first
+            image = image.to(device=self.device, dtype=self.dtype)
+            print(f"_process_skip_diffusion: After device move: device={image.device}, dtype={image.dtype}")
+            # Check if tensor is in [0,1] range and needs normalization to [-1,1]
+            if image.min().item() >= 0.0 and image.max().item() <= 1.0:
+                processed_tensor = image * 2.0 - 1.0
+            else:
+                processed_tensor = image
+        else:
+            processed_tensor = image
+        
+        # Apply image preprocessing hooks (expect [0,1] range - pre-VAE encoding)
+        # Convert [-1,1] -> [0,1] for preprocessing hooks
+        preprocessor_input = self._denormalize_on_gpu(processed_tensor)
+        preprocessor_output = self.stream._apply_image_preprocessing_hooks(preprocessor_input)
+        
+        # Convert [0,1] -> [-1,1] back to pipeline range for postprocessing hooks
+        processed_tensor = self._denormalize_from_processors(preprocessor_output)
+        
+        # Apply image postprocessing hooks (expect [-1,1] range - post-VAE decoding)
+        processed_tensor = self.stream._apply_image_postprocessing_hooks(processed_tensor)
+        
+        
+        # Final postprocessing for output format
+        return self.postprocess_image(processed_tensor, output_type=self.output_type)
 
     def txt2img(
         self, prompt: Optional[str] = None
@@ -579,11 +659,12 @@ class StreamDiffusionWrapper:
         """
         if prompt is not None:
             self.update_prompt(prompt, warn_about_conflicts=True)
-
+        
         if self.sd_turbo:
             image_tensor = self.stream.txt2img_sd_turbo(self.batch_size)
         else:
             image_tensor = self.stream.txt2img(self.frame_buffer_size)
+        
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
@@ -628,6 +709,7 @@ class StreamDiffusionWrapper:
         if isinstance(image, str) or isinstance(image, Image.Image):
             image = self.preprocess_image(image)
 
+        # Full pipeline with diffusion
         image_tensor = self.stream(image)
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
@@ -730,6 +812,10 @@ class StreamDiffusionWrapper:
             Denormalized tensor on GPU, clamped to [0,1]
         """
         return (image_tensor / 2 + 0.5).clamp(0, 1)
+
+    def _denormalize_from_processors(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert tensor from [0,1] (processor range) back to [-1,1] (diffusion range)"""
+        return (image_tensor * 2 - 1).clamp(-1, 1)
 
     def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
         """
@@ -1674,8 +1760,10 @@ class StreamDiffusionWrapper:
         """Update control image for specific ControlNet index"""
         if not self.use_controlnet:
             raise RuntimeError("update_control_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream._controlnet_module.update_control_image_efficient(image, index=index)
+        if not self.stream.skip_diffusion:
+            self.stream._controlnet_module.update_control_image_efficient(image, index=index)
+        else:
+            logger.warning("update_control_image: Skipping ControlNet update in skip diffusion mode")
 
 
     def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
