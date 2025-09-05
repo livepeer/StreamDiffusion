@@ -607,16 +607,12 @@ class StreamDiffusionWrapper:
         if image is None:
             raise ValueError("_process_skip_diffusion: image required for skip diffusion mode")
         
-       
-
         # Handle input tensor normalization to [-1,1] pipeline range
         if isinstance(image, str) or isinstance(image, Image.Image):
             processed_tensor = self.preprocess_image(image)
         elif isinstance(image, torch.Tensor):
-            print(f"_process_skip_diffusion: Input tensor device={image.device}, dtype={image.dtype}")
             # Ensure tensor is on correct device and dtype first
             image = image.to(device=self.device, dtype=self.dtype)
-            print(f"_process_skip_diffusion: After device move: device={image.device}, dtype={image.dtype}")
             # Check if tensor is in [0,1] range and needs normalization to [-1,1]
             if image.min().item() >= 0.0 and image.max().item() <= 1.0:
                 processed_tensor = image * 2.0 - 1.0
@@ -635,7 +631,6 @@ class StreamDiffusionWrapper:
         
         # Apply image postprocessing hooks (expect [-1,1] range - post-VAE decoding)
         processed_tensor = self.stream._apply_image_postprocessing_hooks(processed_tensor)
-        
         
         # Final postprocessing for output format
         return self.postprocess_image(processed_tensor, output_type=self.output_type)
@@ -959,6 +954,19 @@ class StreamDiffusionWrapper:
             self.cleanup_gpu_memory()
         except Exception as e:
             logger.warning(f"GPU cleanup warning: {e}")
+        
+        # Reset CUDA context to prevent corruption from previous runs
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                # Force CUDA context reset by creating and destroying a small tensor
+                temp_tensor = torch.zeros(1, device=self.device)
+                del temp_tensor
+                torch.cuda.empty_cache()
+                logger.info("_load_model: CUDA context reset completed")
+        except Exception as e:
+            logger.warning(f"_load_model: CUDA context reset warning: {e}")
 
         # First, try to detect if this is an SDXL model before loading
         # TODO: CAN we do this step with model_detection.py?
