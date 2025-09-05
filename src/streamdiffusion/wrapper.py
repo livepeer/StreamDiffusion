@@ -1532,7 +1532,13 @@ class StreamDiffusionWrapper:
                 cn_module = ControlNetModule(device=self.device, dtype=self.dtype)
                 cn_module.install(stream)
                 # Normalize to list of configs
-                configs = controlnet_config if isinstance(controlnet_config, list) else [controlnet_config]
+                configs = (
+                    controlnet_config
+                    if isinstance(controlnet_config, list)
+                    else [controlnet_config]
+                    if isinstance(controlnet_config, dict)
+                    else []
+                )
                 for cfg in configs:
                     if not cfg.get('model_id'):
                         continue
