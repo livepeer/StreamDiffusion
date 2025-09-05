@@ -291,6 +291,7 @@ class StreamDiffusionWrapper:
         self.set_nsfw_fallback_img(height, width)
         self.safety_checker_fallback_type = safety_checker_fallback_type
         self.safety_checker_threshold = safety_checker_threshold
+        self.safety_checker_streak = 0
 
     def prepare(
         self,
@@ -592,9 +593,13 @@ class StreamDiffusionWrapper:
             logits = self.safety_checker(pixel_values)
             nsfw_prob = torch.softmax(logits, dim=-1)[0][1].item()
             if nsfw_prob > self.safety_checker_threshold:
-                image = self.nsfw_fallback_img
-            elif self.safety_checker_fallback_type == "previous":
-                self.nsfw_fallback_img = image
+                self.safety_checker_streak += 1
+                if self.safety_checker_streak > 3:
+                    image = self.nsfw_fallback_img
+            else:
+                self.safety_checker_streak = 0
+                if self.safety_checker_fallback_type == "previous":
+                    self.nsfw_fallback_img = image
 
         return image
 
@@ -634,9 +639,13 @@ class StreamDiffusionWrapper:
             logits = self.safety_checker(pixel_values)
             nsfw_prob = torch.softmax(logits, dim=-1)[0][1].item()
             if nsfw_prob > self.safety_checker_threshold:
-                image = self.nsfw_fallback_img
-            elif self.safety_checker_fallback_type == "previous":
-                self.nsfw_fallback_img = image
+                self.safety_checker_streak += 1
+                if self.safety_checker_streak > 3:
+                    image = self.nsfw_fallback_img
+            else:
+                self.safety_checker_streak = 0
+                if self.safety_checker_fallback_type == "previous":
+                    self.nsfw_fallback_img = image
 
         return image
 
