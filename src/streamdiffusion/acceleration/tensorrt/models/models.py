@@ -304,21 +304,21 @@ class NSFWDetector(BaseModel):
     def get_input_profile(self, batch_size, *args, **kwargs):
         return {
             "pixel_values": [
-                (self.min_batch, 3, 224, 224),
-                (batch_size, 3, 224, 224),
-                (self.max_batch, 3, 224, 224),
+                (self.min_batch, 3, 448, 448),
+                (batch_size, 3, 448, 448),
+                (self.max_batch, 3, 448, 448),
             ],
         }
     
     def get_shape_dict(self, batch_size, *args, **kwargs):
         return {
-            "pixel_values": (batch_size, 3, 224, 224),
+            "pixel_values": (batch_size, 3, 448, 448),
             "logits": (batch_size, 2),
         }
     
     def get_sample_input(self, batch_size, *args, **kwargs):
         return (
-            torch.randn(batch_size, 3, 224, 224, dtype=torch.float16, device=self.device),
+            torch.randn(batch_size, 3, 448, 448, dtype=torch.float16, device=self.device),
         )
 
 class UNet(BaseModel):

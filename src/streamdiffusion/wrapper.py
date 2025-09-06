@@ -20,6 +20,13 @@ torch.set_grad_enabled(False)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+SAFETY_CHECKER_THRESHOLD_MAP = {
+    "neutral": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+}
+
 
 class StreamDiffusionWrapper:
     """
@@ -108,9 +115,9 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
-        safety_checker_model_id: Optional[str] = "Falconsai/nsfw_image_detection",
+        safety_checker_model_id: Optional[str] = "Freepik/nsfw_image_detector",
         safety_checker_fallback_type: Literal["blank", "previous"] = "previous",
-        safety_checker_threshold: float = 0.95,
+        safety_checker_threshold: Literal["low", "medium", "high"] = "low",
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -297,13 +304,13 @@ class StreamDiffusionWrapper:
             )
 
         self.safety_image_transforms = T.Compose([
-            T.Resize(size=(224, 224), interpolation=InterpolationMode.BICUBIC, antialias=True),
-            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            T.Resize(size=(448, 448), interpolation=InterpolationMode.BICUBIC, antialias=True),
+            T.Lambda(lambda x: x.clamp(0, 1)),
+            T.Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
         ])
         self.set_nsfw_fallback_img(height, width)
         self.safety_checker_fallback_type = safety_checker_fallback_type
-        self.safety_checker_threshold = safety_checker_threshold
-        self.safety_checker_streak = 0
+        self.safety_checker_threshold = SAFETY_CHECKER_THRESHOLD_MAP[safety_checker_threshold]
 
     def prepare(
         self,
@@ -481,7 +488,7 @@ class StreamDiffusionWrapper:
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
         use_safety_checker: Optional[bool] = None,
-        safety_checker_threshold: Optional[float] = None,
+        safety_checker_threshold: Literal["low", "medium", "high"] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -549,7 +556,7 @@ class StreamDiffusionWrapper:
         if use_safety_checker is not None:
             self.use_safety_checker = use_safety_checker
         if safety_checker_threshold is not None:
-            self.safety_checker_threshold = safety_checker_threshold
+            self.safety_checker_threshold = SAFETY_CHECKER_THRESHOLD_MAP[safety_checker_threshold]
 
     def __call__(
         self,
@@ -609,15 +616,11 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = image
             pixel_values = self.safety_image_transforms(denormalized_image_tensor)
             logits = self.safety_checker(pixel_values)
-            nsfw_prob = torch.softmax(logits, dim=-1)[0][1].item()
-            if nsfw_prob > self.safety_checker_threshold:
-                self.safety_checker_streak += 1
-                if self.safety_checker_streak > 3:
-                    image = self.nsfw_fallback_img
-            else:
-                self.safety_checker_streak = 0
-                if self.safety_checker_fallback_type == "previous":
-                    self.nsfw_fallback_img = image
+            prediction_label = logits.argmax(-1).item()
+            if prediction_label >= self.safety_checker_threshold:
+                image = self.nsfw_fallback_img
+            elif self.safety_checker_fallback_type == "previous":
+                self.nsfw_fallback_img = image
 
         return image
 
@@ -655,15 +658,11 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = image
             pixel_values = self.safety_image_transforms(denormalized_image_tensor)
             logits = self.safety_checker(pixel_values)
-            nsfw_prob = torch.softmax(logits, dim=-1)[0][1].item()
-            if nsfw_prob > self.safety_checker_threshold:
-                self.safety_checker_streak += 1
-                if self.safety_checker_streak > 3:
-                    image = self.nsfw_fallback_img
-            else:
-                self.safety_checker_streak = 0
-                if self.safety_checker_fallback_type == "previous":
-                    self.nsfw_fallback_img = image
+            prediction_label = logits.argmax(-1).item()
+            if prediction_label >= self.safety_checker_threshold:
+                image = self.nsfw_fallback_img
+            elif self.safety_checker_fallback_type == "previous":
+                self.nsfw_fallback_img = image
 
         return image
 
@@ -824,7 +823,7 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
-        safety_checker_model_id: Optional[str] = "Falconsai/nsfw_image_detection",
+        safety_checker_model_id: Optional[str] = "Freepik/nsfw_image_detector",
         compile_engines_only: bool = False,
     ) -> StreamDiffusion:
         """
