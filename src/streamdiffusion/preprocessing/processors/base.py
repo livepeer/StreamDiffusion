@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Union, Dict, Any, Tuple
+from typing import Union, Dict, Any, Tuple, Optional
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -259,4 +259,37 @@ class BasePreprocessor(ABC):
             # Restore original params
             self.params = original_params
             
-        return result 
+        return result
+
+
+class PipelineAwareProcessor(BasePreprocessor):
+    """
+    Abstract base class for processors that need access to pipeline state (previous outputs).
+    
+    This base class marks processors as requiring synchronous processing to avoid 
+    temporal artifacts and ensures they have access to pipeline references.
+    
+    Usage:
+        class MyProcessor(PipelineAwareProcessor):
+            pass
+    
+    Examples:
+    - FeedbackPreprocessor: Needs previous diffusion output
+    - TemporalNetPreprocessor: Needs previous frame for optical flow
+    """
+    
+    # Class attribute to mark processors as requiring sync processing
+    requires_sync_processing = True
+    
+    def __init__(self, pipeline_ref: Any, **kwargs):
+        """
+        Initialize pipeline-aware functionality
+        
+        Args:
+            pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
+            **kwargs: Additional parameters passed to base class
+        """
+        if pipeline_ref is None:
+            raise ValueError(f"{self.__class__.__name__} requires a pipeline_ref")
+        super().__init__(**kwargs)
+        self.pipeline_ref = pipeline_ref 

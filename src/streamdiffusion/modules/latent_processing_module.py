@@ -42,7 +42,7 @@ class LatentProcessingModule(OrchestratorUser):
         enabled = proc_config.get('enabled', True)
         
         # Create processor using existing registry (same as ControlNet)
-        processor = get_preprocessor(processor_type)
+        processor = get_preprocessor(processor_type, pipeline_ref=self._stream)
         
         # Apply parameters (same pattern as ControlNet)
         processor_params = proc_config.get('params', {})
@@ -63,6 +63,8 @@ class LatentProcessingModule(OrchestratorUser):
         # Set enabled state
         setattr(processor, 'enabled', enabled)
         
+        # Pipeline reference is now automatically handled by the factory function
+        
         self.processors.append(processor)
     
     def _get_ordered_processors(self) -> List[Any]:
@@ -82,6 +84,7 @@ class LatentPreprocessingModule(LatentProcessingModule):
     def install(self, stream) -> None:
         """Install module by registering hook with stream and attaching orchestrator."""
         self.attach_orchestrator(stream)
+        self._stream = stream  # Store stream reference like ControlNet module does
         stream.latent_preprocessing_hooks.append(self.build_latent_hook())
     
     def build_latent_hook(self) -> LatentHook:
@@ -102,6 +105,7 @@ class LatentPostprocessingModule(LatentProcessingModule):
     def install(self, stream) -> None:
         """Install module by registering hook with stream and attaching orchestrator."""
         self.attach_orchestrator(stream)
+        self._stream = stream  # Store stream reference like ControlNet module does
         stream.latent_postprocessing_hooks.append(self.build_latent_hook())
     
     def build_latent_hook(self) -> LatentHook:
