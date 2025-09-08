@@ -613,7 +613,7 @@ class StreamDiffusionWrapper:
         preprocessor_output = self.stream._apply_image_preprocessing_hooks(preprocessor_input)
         
         # Convert [0,1] -> [-1,1] back to pipeline range for postprocessing hooks
-        processed_tensor = self._denormalize_from_processors(preprocessor_output)
+        processed_tensor = self._normalize_on_gpu(preprocessor_output)
         
         # Apply image postprocessing hooks (expect [-1,1] range - post-VAE decoding)
         processed_tensor = self.stream._apply_image_postprocessing_hooks(processed_tensor)
@@ -794,7 +794,7 @@ class StreamDiffusionWrapper:
         """
         return (image_tensor / 2 + 0.5).clamp(0, 1)
 
-    def _denormalize_from_processors(self, image_tensor: torch.Tensor) -> torch.Tensor:
+    def _normalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """Convert tensor from [0,1] (processor range) back to [-1,1] (diffusion range)"""
         return (image_tensor * 2 - 1).clamp(-1, 1)
 
