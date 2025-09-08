@@ -11,7 +11,10 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img impo
 )
 
 from streamdiffusion.model_detection import detect_model
-from streamdiffusion.hooks import EmbedsCtx, StepCtx, UnetKwargsDelta, EmbeddingHook, UnetHook
+from streamdiffusion.hooks import (
+    EmbedsCtx, StepCtx, UnetKwargsDelta, ImageCtx, LatentCtx,
+    EmbeddingHook, UnetHook, ImageHook, LatentHook
+)
 from streamdiffusion.image_filter import SimilarImageFilter
 from streamdiffusion.stream_parameter_updater import StreamParameterUpdater
 
@@ -81,6 +84,7 @@ class StreamDiffusion:
         self.similar_image_filter = False
         self.similar_filter = SimilarImageFilter()
         self.prev_image_result = None
+        self.prev_latent_result = None
 
         self.pipe = pipe
         self.image_processor = VaeImageProcessor(pipe.vae_scale_factor)
@@ -106,6 +110,15 @@ class StreamDiffusion:
         # Hook containers (step 1: introduced but initially no-op)
         self.embedding_hooks: List[EmbeddingHook] = []
         self.unet_hooks: List[UnetHook] = []
+        
+        # Phase 1: Core Pipeline Hooks (Immediate Priority)
+        self.image_preprocessing_hooks: List[ImageHook] = []
+        self.latent_preprocessing_hooks: List[LatentHook] = []
+        self.latent_postprocessing_hooks: List[LatentHook] = []
+        
+        # Phase 2: Quality & Performance Hooks
+        self.image_postprocessing_hooks: List[ImageHook] = []
+        self.image_filtering_hooks: List[ImageHook] = []
         
         # Cache TensorRT detection to avoid repeated hasattr checks
         self._is_unet_tensorrt = None
@@ -796,6 +809,8 @@ class StreamDiffusion:
 
     def predict_x0_batch(self, x_t_latent: torch.Tensor) -> torch.Tensor:
         prev_latent_batch = self.x_t_latent_buffer
+        
+
 
         if self.use_denoising_batch:
             t_list = self.sub_timesteps_tensor
@@ -859,6 +874,9 @@ class StreamDiffusion:
                 device=self.device, dtype=self.dtype
             )
             
+            # IMAGE PREPROCESSING HOOKS: After built-in preprocessing, before filtering
+            x = self._apply_image_preprocessing_hooks(x)
+            
             if self.similar_image_filter:
                 x = self.similar_filter(x)
                 if x is None:
@@ -866,6 +884,9 @@ class StreamDiffusion:
                     return self.prev_image_result
             
             x_t_latent = self.encode_image(x)
+            
+            # LATENT PREPROCESSING HOOKS: After VAE encoding, before diffusion
+            x_t_latent = self._apply_latent_preprocessing_hooks(x_t_latent)
         else:
             # TODO: check the dimension of x_t_latent
             x_t_latent = torch.randn((1, 4, self.latent_height, self.latent_width)).to(
@@ -874,7 +895,17 @@ class StreamDiffusion:
         
         x_0_pred_out = self.predict_x0_batch(x_t_latent)
         
+        # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
+        x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
+        
+        # Store latent result for latent feedback processors
+        self.prev_latent_result = x_0_pred_out.detach().clone()
+
+        
         x_output = self.decode_image(x_0_pred_out).detach().clone()
+        
+        # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
+        x_output = self._apply_image_postprocessing_hooks(x_output)
 
         self.prev_image_result = x_output
         end.record()
@@ -884,6 +915,70 @@ class StreamDiffusion:
         
         return x_output
 
+    # =========================================================================
+    # Pipeline Hook Helper Methods (Phase 3: Performance-Optimized Hot Path)
+    # =========================================================================
+    
+    def _apply_image_preprocessing_hooks(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply image preprocessing hooks with minimal hot path overhead."""
+        # Early exit - zero overhead when no hooks registered
+        if not self.image_preprocessing_hooks:
+            return x
+        
+        # Single context object creation to minimize allocation overhead
+        image_ctx = ImageCtx(image=x, width=self.width, height=self.height)
+        
+        # Direct iteration - no additional function calls
+        for hook in self.image_preprocessing_hooks:
+            image_ctx = hook(image_ctx)
+        
+        return image_ctx.image
+    
+    def _apply_image_postprocessing_hooks(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply image postprocessing hooks with minimal hot path overhead."""
+        # Early exit - zero overhead when no hooks registered
+        if not self.image_postprocessing_hooks:
+            return x
+        
+        # Single context object creation to minimize allocation overhead
+        image_ctx = ImageCtx(image=x, width=self.width, height=self.height)
+        
+        # Direct iteration - no additional function calls
+        for hook in self.image_postprocessing_hooks:
+            image_ctx = hook(image_ctx)
+        
+        return image_ctx.image
+    
+    def _apply_latent_preprocessing_hooks(self, latent: torch.Tensor) -> torch.Tensor:
+        """Apply latent preprocessing hooks with minimal hot path overhead."""
+        # Early exit - zero overhead when no hooks registered
+        if not self.latent_preprocessing_hooks:
+            return latent
+        
+        # Single context object creation to minimize allocation overhead
+        latent_ctx = LatentCtx(latent=latent)
+        
+        # Direct iteration - no additional function calls
+        for hook in self.latent_preprocessing_hooks:
+            latent_ctx = hook(latent_ctx)
+        
+        return latent_ctx.latent
+    
+    def _apply_latent_postprocessing_hooks(self, latent: torch.Tensor) -> torch.Tensor:
+        """Apply latent postprocessing hooks with minimal hot path overhead."""
+        # Early exit - zero overhead when no hooks registered  
+        if not self.latent_postprocessing_hooks:
+            return latent
+        
+        # Single context object creation to minimize allocation overhead
+        latent_ctx = LatentCtx(latent=latent)
+        
+        # Direct iteration - no additional function calls
+        for hook in self.latent_postprocessing_hooks:
+            latent_ctx = hook(latent_ctx)
+        
+        return latent_ctx.latent
+
     @torch.no_grad()
     def txt2img(self, batch_size: int = 1) -> torch.Tensor:
         x_0_pred_out = self.predict_x0_batch(
@@ -891,7 +986,19 @@ class StreamDiffusion:
                 device=self.device, dtype=self.dtype
             )
         )
+        
+        # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
+        x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
+        
+        # Store latent result for latent feedback processors
+        self.prev_latent_result = x_0_pred_out.detach().clone()
+
+        
         x_output = self.decode_image(x_0_pred_out).detach().clone()
+        
+        # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
+        x_output = self._apply_image_postprocessing_hooks(x_output)
+        
         return x_output
 
     def txt2img_sd_turbo(self, batch_size: int = 1) -> torch.Tensor:
@@ -936,4 +1043,17 @@ class StreamDiffusion:
         x_0_pred_out = (
             x_t_latent - self.beta_prod_t_sqrt * model_pred
         ) / self.alpha_prod_t_sqrt
-        return self.decode_image(x_0_pred_out)
+        
+        # LATENT POSTPROCESSING HOOKS: After diffusion, before VAE decoding
+        x_0_pred_out = self._apply_latent_postprocessing_hooks(x_0_pred_out)
+        
+        # Store latent result for latent feedback processors
+        self.prev_latent_result = x_0_pred_out.detach().clone()
+
+        
+        x_output = self.decode_image(x_0_pred_out)
+        
+        # IMAGE POSTPROCESSING HOOKS: After VAE decoding, before final output
+        x_output = self._apply_image_postprocessing_hooks(x_output)
+        
+        return x_output
