@@ -185,22 +185,19 @@ class RealESRGANProcessor(BasePreprocessor):
     
     @property
     def engine(self):
-        """Thread-safe lazy loading of the TensorRT engine"""
+        """Lazy loading of the TensorRT engine"""
         if self._engine is None:
-            with self._engine_lock:
-                # Double-check locking pattern
-                if self._engine is None:
-                    if not self.engine_path.exists():
-                        raise FileNotFoundError(f"TensorRT engine not found: {self.engine_path}")
-                    
-                    self._engine = RealESRGANEngine(str(self.engine_path))
-                    self._engine.load()
-                    self._engine.activate()
-                    
-                    # Allocate buffers for standard input size (will be reallocated as needed)
-                    standard_shape = (1, 3, 512, 512)
-                    self._engine.allocate_buffers(standard_shape, device=self.device)
+            if not self.engine_path.exists():
+                raise FileNotFoundError(f"TensorRT engine not found: {self.engine_path}")
             
+            self._engine = RealESRGANEngine(str(self.engine_path))
+            self._engine.load()
+            self._engine.activate()
+            
+            # Allocate buffers for standard input size (will be reallocated as needed)
+            standard_shape = (1, 3, 512, 512)
+            self._engine.allocate_buffers(standard_shape, device=self.device)
+        
         return self._engine
     
     def _download_file(self, url: str, save_path: Path):
