@@ -250,6 +250,10 @@ class StreamParameterUpdater(OrchestratorUser):
         normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        image_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        image_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        latent_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        latent_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -308,6 +312,24 @@ class StreamParameterUpdater(OrchestratorUser):
             if ipadapter_config is not None:
                 logger.info(f"update_stream_params: Updating IPAdapter configuration")
                 self._update_ipadapter_config(ipadapter_config)
+            
+            # Handle Hook configuration updates
+            if image_preprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating image preprocessing configuration with {len(image_preprocessing_config)} processors")
+                logger.info(f"update_stream_params: image_preprocessing_config = {image_preprocessing_config}")
+                self._update_hook_config('image_preprocessing', image_preprocessing_config)
+            
+            if image_postprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating image postprocessing configuration")
+                self._update_hook_config('image_postprocessing', image_postprocessing_config)
+            
+            if latent_preprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating latent preprocessing configuration")
+                self._update_hook_config('latent_preprocessing', latent_preprocessing_config)
+            
+            if latent_postprocessing_config is not None:
+                logger.info(f"update_stream_params: Updating latent postprocessing configuration")
+                self._update_hook_config('latent_postprocessing', latent_postprocessing_config)
 
     @torch.no_grad()
     def update_prompt_weights(
@@ -633,7 +655,7 @@ class StreamParameterUpdater(OrchestratorUser):
     def _update_seed(self, seed: int) -> None:
         """Update the generator seed and regenerate seed-dependent tensors."""
         if self.stream.generator is None:
-            print("update_stream_params: Warning: generator is None, cannot update seed")
+            logger.warning("update_stream_params: Warning: generator is None, cannot update seed")
             return
 
         # Store the current seed value
@@ -742,8 +764,6 @@ class StreamParameterUpdater(OrchestratorUser):
         old_prompt, weight = self._current_prompt_list[index]
         self._current_prompt_list[index] = (new_prompt, weight)
 
-        print(f"update_prompt_at_index: Updated prompt {index}: '{old_prompt[:30]}...' -> '{new_prompt[:30]}...'")
-
         # Cache the new prompt embedding
         self._cache_prompt_embeddings([(new_prompt, weight)], self._current_negative_prompt)
 
@@ -794,7 +814,6 @@ class StreamParameterUpdater(OrchestratorUser):
         new_index = len(self._current_prompt_list)
         self._current_prompt_list.append((prompt, weight))
 
-        print(f"add_prompt: Added prompt {new_index}: '{prompt[:30]}...' with weight {weight}")
 
         # Cache the new prompt
         encoder_output = self.stream.pipe.encode_prompt(
@@ -824,12 +843,11 @@ class StreamParameterUpdater(OrchestratorUser):
             return
 
         if len(self._current_prompt_list) <= 1:
-            print("remove_prompt_at_index: Warning: Cannot remove last prompt")
+            logger.warning("remove_prompt_at_index: Warning: Cannot remove last prompt")
             return
 
         # Remove from current list
         removed_prompt = self._current_prompt_list.pop(index)
-        print(f"remove_prompt_at_index: Removed prompt {index}: '{removed_prompt[0][:30]}...'")
 
         # Remove from cache and reindex
         if index in self._prompt_cache:
@@ -856,7 +874,6 @@ class StreamParameterUpdater(OrchestratorUser):
         old_seed, weight = self._current_seed_list[index]
         self._current_seed_list[index] = (new_seed, weight)
 
-        print(f"update_seed_at_index: Updated seed {index}: {old_seed} -> {new_seed}")
 
         # Cache the new seed noise
         self._cache_seed_noise([(new_seed, weight)])
@@ -944,12 +961,11 @@ class StreamParameterUpdater(OrchestratorUser):
             return
 
         if len(self._current_seed_list) <= 1:
-            print("remove_seed_at_index: Warning: Cannot remove last seed")
+            logger.warning("remove_seed_at_index: Warning: Cannot remove last seed")
             return
 
         # Remove from current list
         removed_seed = self._current_seed_list.pop(index)
-        print(f"remove_seed_at_index: Removed seed {index}: {removed_seed[0]}")
 
         # Remove from cache and reindex
         if index in self._seed_cache:
@@ -1019,6 +1035,7 @@ class StreamParameterUpdater(OrchestratorUser):
                             preprocessor=desired_cfg.get('preprocessor'),
                             conditioning_scale=desired_cfg.get('conditioning_scale', 1.0),
                             enabled=desired_cfg.get('enabled', True),
+                            conditioning_channels=desired_cfg.get('conditioning_channels'),
                             preprocessor_params=desired_cfg.get('preprocessor_params'),
                         )
                         controlnet_pipeline.add_controlnet(cn_cfg, desired_cfg.get('control_image'))
@@ -1049,6 +1066,9 @@ class StreamParameterUpdater(OrchestratorUser):
                     for param_name, param_value in desired_cfg['preprocessor_params'].items():
                         if hasattr(preprocessor, param_name):
                             setattr(preprocessor, param_name, param_value)
+                
+                # Pipeline references are now automatically managed during preprocessor creation
+                # No need to manually re-establish pipeline references for pipeline-aware processors
 
 
     def _get_controlnet_pipeline(self):
@@ -1225,4 +1245,148 @@ class StreamParameterUpdater(OrchestratorUser):
             config['has_style_image'] = False
             
         return config
+
+    def _get_current_hook_config(self, hook_type: str) -> List[Dict[str, Any]]:
+        """
+        Get current hook configuration by introspecting the hook module state.
+        
+        Args:
+            hook_type: Type of hook (image_preprocessing, image_postprocessing, etc.)
+            
+        Returns:
+            List of processor configurations or empty list if no module
+        """
+        # Get the hook module
+        module_attr_name = f"_{hook_type}_module"
+        hook_module = getattr(self.stream, module_attr_name, None)
+        
+        if not hook_module:
+            return []
+        
+        # Get processors from the module
+        processors = getattr(hook_module, 'processors', [])
+        
+        config = []
+        for i, processor in enumerate(processors):
+            proc_config = {
+                'type': getattr(processor, '__class__').__name__,
+                'order': getattr(processor, 'order', i),
+                'enabled': getattr(processor, 'enabled', True),
+            }
+            
+            # Try to get processor parameters
+            if hasattr(processor, 'params'):
+                proc_config['params'] = dict(processor.params)
+            
+            config.append(proc_config)
+        
+        return config
+
+    def _update_hook_config(self, hook_type: str, desired_config: List[Dict[str, Any]]) -> None:
+        """
+        Update hook configuration by modifying existing processors in-place instead of recreating them.
+        
+        Args:
+            hook_type: Type of hook (image_preprocessing, image_postprocessing, etc.)
+            desired_config: List of processor configurations
+        """
+        logger.info(f"_update_hook_config: Updating {hook_type} with {len(desired_config)} processors")
+        
+        # Get or create the hook module
+        module_attr_name = f"_{hook_type}_module"
+        hook_module = getattr(self.stream, module_attr_name, None)
+        
+        if not hook_module:
+            logger.info(f"_update_hook_config: No existing {hook_type} module, creating new one")
+            # Create the appropriate hook module
+            try:
+                if hook_type in ["image_preprocessing", "image_postprocessing"]:
+                    from streamdiffusion.modules.image_processing_module import ImagePreprocessingModule, ImagePostprocessingModule
+                    if hook_type == "image_preprocessing":
+                        hook_module = ImagePreprocessingModule()
+                    else:
+                        hook_module = ImagePostprocessingModule()
+                elif hook_type in ["latent_preprocessing", "latent_postprocessing"]:
+                    from streamdiffusion.modules.latent_processing_module import LatentPreprocessingModule, LatentPostprocessingModule
+                    if hook_type == "latent_preprocessing":
+                        hook_module = LatentPreprocessingModule()
+                    else:
+                        hook_module = LatentPostprocessingModule()
+                else:
+                    raise ValueError(f"Unknown hook type: {hook_type}")
+                
+                # Install the module
+                hook_module.install(self.stream)
+                setattr(self.stream, module_attr_name, hook_module)
+                logger.info(f"_update_hook_config: Created and installed {hook_type} module")
+                
+            except Exception as e:
+                logger.error(f"_update_hook_config: Failed to create {hook_type} module: {e}")
+                return
+        
+        logger.info(f"_update_hook_config: Found existing {hook_type} module with {len(hook_module.processors)} processors")
+        
+        # Modify existing processors in-place instead of clearing and recreating
+        for i, proc_config in enumerate(desired_config):
+            processor_type = proc_config.get('type', 'unknown')
+            enabled = proc_config.get('enabled', True)
+            params = proc_config.get('params', {})
+            
+            logger.info(f"_update_hook_config: Processing config {i}: type={processor_type}, enabled={enabled}")
+            
+            if i < len(hook_module.processors):
+                # Modify existing processor
+                existing_processor = hook_module.processors[i]
+                current_type = existing_processor.__class__.__name__
+                
+                logger.info(f"_update_hook_config: Modifying existing processor {i}: {current_type} -> {processor_type}")
+                
+                # If processor type changed, replace it
+                if current_type.lower() != processor_type.lower() and not current_type.lower().startswith(processor_type.lower()):
+                    logger.info(f"_update_hook_config: Type changed, replacing processor {i}")
+                    try:
+                        from streamdiffusion.preprocessing.processors import get_preprocessor
+                        new_processor = get_preprocessor(processor_type)
+                        
+                        # Copy attributes from old processor
+                        setattr(new_processor, 'order', getattr(existing_processor, 'order', i))
+                        setattr(new_processor, 'enabled', enabled)
+                        
+                        # Set parameters
+                        if hasattr(new_processor, 'params'):
+                            new_processor.params.update(params)
+                        
+                        hook_module.processors[i] = new_processor
+                        logger.info(f"_update_hook_config: Successfully replaced processor {i} with {processor_type}")
+                    except Exception as e:
+                        logger.error(f"_update_hook_config: Failed to replace processor {i}: {e}")
+                else:
+                    # Same type, just update attributes
+                    logger.info(f"_update_hook_config: Same type, updating attributes for processor {i}")
+                    setattr(existing_processor, 'enabled', enabled)
+                    
+                    # Update parameters
+                    if hasattr(existing_processor, 'params'):
+                        existing_processor.params.update(params)
+                    for param_name, param_value in params.items():
+                        if hasattr(existing_processor, param_name):
+                            setattr(existing_processor, param_name, param_value)
+                    
+                    logger.info(f"_update_hook_config: Updated processor {i} enabled={enabled}, params={params}")
+            else:
+                # Add new processor
+                logger.info(f"_update_hook_config: Adding new processor {i}: {processor_type}")
+                try:
+                    hook_module.add_processor(proc_config)
+                    logger.info(f"_update_hook_config: Successfully added processor {i}: {processor_type}")
+                except Exception as e:
+                    logger.error(f"_update_hook_config: Failed to add processor {i}: {e}")
+        
+        # Remove extra processors if config is shorter
+        while len(hook_module.processors) > len(desired_config):
+            removed_idx = len(hook_module.processors) - 1
+            removed_processor = hook_module.processors.pop()
+            logger.info(f"_update_hook_config: Removed extra processor {removed_idx}: {removed_processor.__class__.__name__}")
+        
+        logger.info(f"_update_hook_config: Finished updating {hook_type}, now has {len(hook_module.processors)} processors")
 
