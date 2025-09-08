@@ -60,7 +60,6 @@ class RealESRGANEngine:
         self.context = None
         self.tensors = OrderedDict()
         
-        # Thread safety for TensorRT context access
         import threading
         self._inference_lock = threading.Lock()
 
@@ -113,14 +112,12 @@ class RealESRGANEngine:
             addr = tensor.data_ptr()
             self.context.set_tensor_address(name, addr)
         
-        # Thread-safe TensorRT execution
         with self._inference_lock:
             success = self.context.execute_async_v3(stream)
             
             if not success:
                 raise RuntimeError("RealESRGANEngine: TensorRT inference failed")
             
-            # Synchronize within the lock to ensure completion
             torch.cuda.synchronize()
         
         return self.tensors
