@@ -106,9 +106,6 @@ class StreamDiffusion:
         # Default IP-Adapter runtime weight mode (None = uniform). Can be set to strings like
         # "ease in", "ease out", "ease in-out", "reverse in-out", "style transfer precise", "composition precise".
         self.ipadapter_weight_type = None
-        
-        # Skip diffusion runtime flag - when True, bypasses VAE encode/decode and diffusion
-        self.skip_diffusion = False
 
         # Hook containers (step 1: introduced but initially no-op)
         self.embedding_hooks: List[EmbeddingHook] = []

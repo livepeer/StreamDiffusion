@@ -275,8 +275,8 @@ class StreamDiffusionWrapper:
             latent_postprocessing_config=latent_postprocessing_config,
         )
 
-        # Set skip_diffusion from init parameter
-        self.stream.skip_diffusion = skip_diffusion
+        # Store skip_diffusion on wrapper for execution flow control
+        self.skip_diffusion = skip_diffusion
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
         self.stream._param_updater.wrapper = self
@@ -457,7 +457,6 @@ class StreamDiffusionWrapper:
         delta: Optional[float] = None,
         t_index_list: Optional[List[int]] = None,
         seed: Optional[int] = None,
-        skip_diffusion: Optional[bool] = None,
         # Prompt blending parameters
         prompt_list: Optional[List[Tuple[str, float]]] = None,
         negative_prompt: Optional[str] = None,
@@ -492,9 +491,6 @@ class StreamDiffusionWrapper:
             The t_index_list to use for inference.
         seed : Optional[int]
             The random seed to use for noise generation.
-        skip_diffusion : Optional[bool]
-            Whether to skip the diffusion process and only run pre/post processing.
-            When True, bypasses VAE encoding, diffusion, and VAE decoding.
         prompt_list : Optional[List[Tuple[str, float]]]
             List of prompts with weights for blending. Each tuple contains (prompt_text, weight).
             Example: [("cat", 0.7), ("dog", 0.3)]
@@ -521,7 +517,6 @@ class StreamDiffusionWrapper:
         ipadapter_config : Optional[Dict[str, Any]]
             IPAdapter configuration dict containing scale, style_image, etc.
         """
-        # skip_diffusion = True
         # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
             num_inference_steps=num_inference_steps,
@@ -529,7 +524,6 @@ class StreamDiffusionWrapper:
             delta=delta,
             t_index_list=t_index_list,
             seed=seed,
-            skip_diffusion=skip_diffusion,
             prompt_list=prompt_list,
             negative_prompt=negative_prompt,
             prompt_interpolation_method=prompt_interpolation_method,
@@ -565,7 +559,7 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The generated image.
         """
-        if getattr(self.stream, 'skip_diffusion', False):
+        if self.skip_diffusion:
             return self._process_skip_diffusion(image, prompt)
         
         if self.mode == "img2img":
@@ -1768,7 +1762,7 @@ class StreamDiffusionWrapper:
         """Update control image for specific ControlNet index"""
         if not self.use_controlnet:
             raise RuntimeError("update_control_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-        if not self.stream.skip_diffusion:
+        if not self.skip_diffusion:
             self.stream._controlnet_module.update_control_image_efficient(image, index=index)
         else:
             logger.warning("update_control_image: Skipping ControlNet update in skip diffusion mode")
