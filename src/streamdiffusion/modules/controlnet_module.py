@@ -21,6 +21,7 @@ class ControlNetConfig:
     preprocessor: Optional[str] = None
     conditioning_scale: float = 1.0
     enabled: bool = True
+    conditioning_channels: Optional[int] = None
     preprocessor_params: Optional[Dict[str, Any]] = None
 
 
@@ -94,7 +95,7 @@ class ControlNetModule(OrchestratorUser):
         self._engine_type_cache.clear()
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
-        model = self._load_pytorch_controlnet_model(cfg.model_id)
+        model = self._load_pytorch_controlnet_model(cfg.model_id, cfg.conditioning_channels)
         model = model.to(device=self.device, dtype=self.dtype)
 
         preproc = None
@@ -578,25 +579,46 @@ class ControlNetModule(OrchestratorUser):
         # API returns a list; pick first if present
         return images[0] if images else None
 
-    def _load_pytorch_controlnet_model(self, model_id: str) -> ControlNetModel:
+    #FIXME: more robust model management is needed in general.
+    def _load_pytorch_controlnet_model(self, model_id: str, conditioning_channels: Optional[int] = None) -> ControlNetModel:
         from pathlib import Path
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
+            # Prepare loading kwargs
+            load_kwargs = {"torch_dtype": self.dtype}
+            if conditioning_channels is not None:
+                load_kwargs["conditioning_channels"] = conditioning_channels
+            
             if Path(model_id).exists():
-                controlnet = ControlNetModel.from_pretrained(
-                    model_id, torch_dtype=self.dtype, local_files_only=True
-                )
+                model_path = Path(model_id)
+                
+                # Check if it's a direct file path to a safetensors/ckpt file
+                if model_path.is_file() and model_path.suffix in ['.safetensors', '.ckpt', '.bin']:
+                    logger.info(f"ControlNetModule._load_pytorch_controlnet_model: Loading ControlNet from single file: {model_path} (channels={conditioning_channels})")
+                    # Try loading from single file (works for most ControlNet models)
+                    try:
+                        controlnet = ControlNetModel.from_single_file(str(model_path), **load_kwargs)
+                    except Exception as e:
+                        logger.warning(f"ControlNetModule._load_pytorch_controlnet_model: Single file loading failed: {e}")
+                        # Fallback: try pretrained loading in case it's in a proper directory structure
+                        load_kwargs["local_files_only"] = True
+                        controlnet = ControlNetModel.from_pretrained(str(model_path.parent), **load_kwargs)
+                else:
+                    # It's a directory path
+                    load_kwargs["local_files_only"] = True
+                    controlnet = ControlNetModel.from_pretrained(model_id, **load_kwargs)
             else:
                 if "/" in model_id and model_id.count("/") > 1:
                     parts = model_id.split("/")
                     repo_id = "/".join(parts[:2])
                     subfolder = "/".join(parts[2:])
                     controlnet = ControlNetModel.from_pretrained(
-                        repo_id, subfolder=subfolder, torch_dtype=self.dtype
+                        repo_id, subfolder=subfolder, **load_kwargs
                     )
                 else:
-                    controlnet = ControlNetModel.from_pretrained(
-                        model_id, torch_dtype=self.dtype
-                    )
+                    controlnet = ControlNetModel.from_pretrained(model_id, **load_kwargs)
             controlnet = controlnet.to(device=self.device, dtype=self.dtype)
             # Track model_id for updater diffing
             try:
