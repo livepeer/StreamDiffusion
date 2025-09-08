@@ -949,17 +949,12 @@ class StreamDiffusionWrapper:
             logger.warning(f"GPU cleanup warning: {e}")
         
         # Reset CUDA context to prevent corruption from previous runs
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                # Force CUDA context reset by creating and destroying a small tensor
-                temp_tensor = torch.zeros(1, device=self.device)
-                del temp_tensor
-                torch.cuda.empty_cache()
-                logger.info("_load_model: CUDA context reset completed")
-        except Exception as e:
-            logger.warning(f"_load_model: CUDA context reset warning: {e}")
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        # Force CUDA context reset by creating and destroying a small tensor
+        temp_tensor = torch.zeros(1, device=self.device)
+        del temp_tensor
+        logger.info("_load_model: CUDA context reset completed")
 
         # First, try to detect if this is an SDXL model before loading
         # TODO: CAN we do this step with model_detection.py?
@@ -1985,19 +1980,17 @@ class StreamDiffusionWrapper:
         for i in range(3):
             gc.collect()
         
-        # Clear CUDA cache multiple times
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            
-            # Force additional memory cleanup
-            torch.cuda.ipc_collect()
-            torch.cuda.empty_cache()
-            
-            # Get memory info
-            allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
-            cached = torch.cuda.memory_reserved() / (1024**3)     # GB
-            logger.info(f"   GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
+        # Clear CUDA cache and cleanup IPC handles
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Force additional memory cleanup
+        torch.cuda.ipc_collect()
+        
+        # Get memory info
+        allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+        cached = torch.cuda.memory_reserved() / (1024**3)     # GB
+        logger.info(f"   GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
         
         logger.info("   Enhanced GPU memory cleanup complete")
 
