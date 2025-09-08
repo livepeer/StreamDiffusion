@@ -2,7 +2,6 @@ import os
 import torch
 import logging
 from typing import *
-from enum import Enum
 
 from polygraphy import cuda
 import torch.nn.functional as F
@@ -391,13 +390,6 @@ class SafetyCheckerEngine:
     def forward(self, *args, **kwargs):
         pass
 
-class NSFWLevel(str, Enum):
-    """Enum for NSFW content levels."""
-    NEUTRAL = "neutral"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-
 class NSFWDetectorEngine:
     def __init__(self, filepath: str, stream: 'cuda.Stream', use_cuda_graph: bool = False):
         self.engine = Engine(filepath)
@@ -412,13 +404,10 @@ class NSFWDetectorEngine:
             T.Normalize(mean=[0.4815, 0.4578, 0.4082], std=[0.2686, 0.2613, 0.2758])
         ])
 
-        self.idx_to_label = {NSFWLevel.NEUTRAL: 0, NSFWLevel.LOW: 1, 
-                             NSFWLevel.MEDIUM: 2, NSFWLevel.HIGH: 3}
-
         self.engine.load()
         self.engine.activate()
         
-    def __call__(self, image_tensor: torch.Tensor, threshold_level: Literal[NSFWLevel.LOW, NSFWLevel.MEDIUM, NSFWLevel.HIGH] = NSFWLevel.LOW, threshold: float = 0.5):
+    def __call__(self, image_tensor: torch.Tensor, threshold: float):
         pixel_values = self.image_transforms(image_tensor)
         self.engine.allocate_buffers(
             shape_dict={
@@ -434,9 +423,8 @@ class NSFWDetectorEngine:
         )["logits"]
 
         probs = F.softmax(logits, dim=-1)
-        cumsum = probs.flip(-1).cumsum(-1).flip(-1)
-        cumsum[..., 0] = probs[..., 0]
-        if cumsum[0][self.idx_to_label[threshold_level]] >= threshold:
+        nsfw_prob = 1 - probs[0, 0].item()
+        if nsfw_prob >= threshold:
             return True
         else:
             return False

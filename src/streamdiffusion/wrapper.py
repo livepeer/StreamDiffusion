@@ -10,7 +10,6 @@ from diffusers import AutoencoderTiny, StableDiffusionPipeline, StableDiffusionX
 from .pipeline import StreamDiffusion
 from .model_detection import detect_model
 from .image_utils import postprocess_image
-from .acceleration.tensorrt.runtime_engines.unet_engine import NSFWLevel
 
 import logging
 logger = logging.getLogger(__name__)
@@ -108,7 +107,6 @@ class StreamDiffusionWrapper:
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         safety_checker_fallback_type: Literal["blank", "previous"] = "previous",
-        safety_checker_threshold_level: Literal[NSFWLevel.LOW, NSFWLevel.MEDIUM, NSFWLevel.HIGH] = NSFWLevel.LOW,
         safety_checker_threshold: float = 0.5,
     ):
         """
@@ -190,17 +188,8 @@ class StreamDiffusionWrapper:
             Each config should contain: model_id, preprocessor (optional), conditioning_scale, etc.
         safety_checker_fallback_type : Literal["blank", "previous"], optional
             Whether to use a blank image or the previous image as a fallback, by default "previous".
-        safety_checker_threshold_level : Literal["low", "medium", "high"], optional
-            Sensitivity level for NSFW detection using the Freepik classifier. The
-            model computes a cumulative NSFW probability at or above the chosen
-            level: "low" = P(low)+P(medium)+P(high), "medium" = P(medium)+P(high),
-            "high" = P(high). An image is flagged NSFW if this cumulative score is
-            greater than or equal to ``safety_checker_threshold``. Defaults to "low"
-            (most sensitive).
-        safety_checker_threshold : float, optional
-            Probability cutoff in [0.0, 1.0] applied to the cumulative score defined
-            by ``safety_checker_threshold_level``. Frames at or above this value are
-            treated as NSFW and will trigger the configured fallback. Defaults to 0.5.
+        safety_checker_threshold: float, optional
+            The threshold for the safety checker, by default 0.5.
         compile_engines_only : bool, optional
             Whether to only compile engines and not load the model, by default False.
         """
@@ -266,9 +255,6 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             use_ipadapter=use_ipadapter,
             ipadapter_config=ipadapter_config,
-            safety_checker_threshold_level=safety_checker_threshold_level,
-            safety_checker_threshold=safety_checker_threshold,
-            compile_engines_only=compile_engines_only,
         )
 
         if compile_engines_only:
@@ -308,7 +294,6 @@ class StreamDiffusionWrapper:
         self.set_nsfw_fallback_img(height, width)
         self.safety_checker_fallback_type = safety_checker_fallback_type
         self.safety_checker_threshold = safety_checker_threshold
-        self.safety_checker_threshold_level = safety_checker_threshold_level
 
     def prepare(
         self,
@@ -487,7 +472,6 @@ class StreamDiffusionWrapper:
         ipadapter_config: Optional[Dict[str, Any]] = None,
         use_safety_checker: Optional[bool] = None,
         safety_checker_threshold: Optional[float] = None,
-        safety_checker_threshold_level: Literal[NSFWLevel.LOW, NSFWLevel.MEDIUM, NSFWLevel.HIGH] = NSFWLevel.LOW,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -531,9 +515,6 @@ class StreamDiffusionWrapper:
             IPAdapter configuration dict containing scale, style_image, etc.
         use_safety_checker : Optional[bool]
             Whether to use the safety checker.
-        safety_checker_threshold : Optional[float]
-            Probability threshold for the safety checker (0.0–1.0). Frames with
-            NSFW probability above this value will trigger the configured fallback.
         """
         # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
@@ -556,8 +537,6 @@ class StreamDiffusionWrapper:
             self.use_safety_checker = use_safety_checker
         if safety_checker_threshold is not None:
             self.safety_checker_threshold = safety_checker_threshold
-        if safety_checker_threshold_level is not None:
-            self.safety_checker_threshold_level = safety_checker_threshold_level
 
     def __call__(
         self,
@@ -615,9 +594,7 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = (image_tensor / 2 + 0.5).clamp(0, 1).to(self.device)
             else:
                 denormalized_image_tensor = image
-            is_nsfw = self.safety_checker(denormalized_image_tensor, 
-                    self.safety_checker_threshold_level, self.safety_checker_threshold)
-            if is_nsfw:
+            if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
                 image = self.nsfw_fallback_img
             elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
@@ -656,12 +633,7 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = (image_tensor / 2 + 0.5).clamp(0, 1).to(self.device)
             else:
                 denormalized_image_tensor = image
-            is_nsfw = self.safety_checker(
-                        denormalized_image_tensor, 
-                        self.safety_checker_threshold_level, 
-                        self.safety_checker_threshold
-                    )
-            if is_nsfw:
+            if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
                 image = self.nsfw_fallback_img
             elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
@@ -826,8 +798,6 @@ class StreamDiffusionWrapper:
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         safety_checker_model_id: Optional[str] = "Freepik/nsfw_image_detector",
-        safety_checker_threshold_level: Literal["low", "medium", "high"] = "low",
-        safety_checker_threshold: float = 0.5,
         compile_engines_only: bool = False,
     ) -> StreamDiffusion:
         """
