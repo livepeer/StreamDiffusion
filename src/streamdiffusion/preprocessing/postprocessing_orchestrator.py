@@ -223,17 +223,9 @@ class PostprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Tensor]):
             
             # Ensure result is a tensor
             if isinstance(processor_output, torch.Tensor):
-                # Check for NaN corruption
-                if processor_output.isnan().any():
-                    logger.error(f"_apply_single_postprocessor: Processor output contains NaN values - memory corruption detected")
-                
                 # CRITICAL: Convert back from processor output range [0,1] to VAE input range [-1,1]
                 logger.debug(f"_apply_single_postprocessor: Converting result from processor range [0,1] back to VAE range [-1,1]")
                 result = (processor_output - 0.5) * 2.0  # Convert [0,1] -> [-1,1]
-                
-                # Check for NaN corruption after conversion
-                if result.isnan().any():
-                    logger.error(f"_apply_single_postprocessor: Result contains NaN values after conversion - memory corruption detected")
                 
                 return result.to(device=self.device, dtype=self.dtype)
             else:
