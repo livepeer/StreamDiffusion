@@ -1,10 +1,10 @@
 import torch
 from PIL import Image
 from typing import Union, Optional, Any
-from .base import BasePreprocessor
+from .base import PipelineAwareProcessor
 
 
-class FeedbackPreprocessor(BasePreprocessor):
+class FeedbackPreprocessor(PipelineAwareProcessor):
     """
     Feedback preprocessor for ControlNet
     
@@ -41,7 +41,7 @@ class FeedbackPreprocessor(BasePreprocessor):
         }
     
     def __init__(self, 
-                 pipeline_ref: Optional[Any] = None,
+                 pipeline_ref: Any,
                  image_resolution: int = 512,
                  feedback_strength: float = 0.5,
                  **kwargs):
@@ -49,28 +49,23 @@ class FeedbackPreprocessor(BasePreprocessor):
         Initialize feedback preprocessor
         
         Args:
-            pipeline_ref: Reference to the StreamDiffusion pipeline instance (can be set later)
+            pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
             image_resolution: Output image resolution
             feedback_strength: Strength of feedback blend (0.0 = pure input, 1.0 = pure feedback, 0.5 = 50/50)
             **kwargs: Additional parameters passed to BasePreprocessor
         """
         super().__init__(
+            pipeline_ref=pipeline_ref,
             image_resolution=image_resolution,
             feedback_strength=feedback_strength,
             **kwargs
         )
-        self.pipeline_ref = pipeline_ref
         self.feedback_strength = max(0.0, min(1.0, feedback_strength))  # Clamp to [0, 1]
         self._first_frame = True
     
-    def set_pipeline_ref(self, pipeline_ref: Any) -> None:
-        """
-        Set the pipeline reference after initialization
-        
-        Args:
-            pipeline_ref: Reference to the StreamDiffusion pipeline instance
-        """
-        self.pipeline_ref = pipeline_ref
+    def reset(self):
+        """Reset the processor state (useful for new sequences)"""
+        self._first_frame = True
     
     def _process_core(self, image: Image.Image) -> Image.Image:
         """
@@ -88,8 +83,8 @@ class FeedbackPreprocessor(BasePreprocessor):
             self.pipeline_ref.prev_image_result is not None and
             not self._first_frame):
             
-            # Convert previous output tensor to PIL Image
             prev_output_tensor = self.pipeline_ref.prev_image_result
+            # Convert previous output tensor to PIL Image
             if prev_output_tensor.dim() == 4:
                 prev_output_tensor = prev_output_tensor[0]  # Remove batch dimension
             
@@ -129,7 +124,6 @@ class FeedbackPreprocessor(BasePreprocessor):
             not self._first_frame):
             
             prev_output = self.pipeline_ref.prev_image_result
-            
             # CRITICAL FIX: Convert from [-1, 1] (VAE output) to [0, 1] (ControlNet input)
             prev_output = (prev_output / 2.0 + 0.5).clamp(0, 1)
             
@@ -174,9 +168,3 @@ class FeedbackPreprocessor(BasePreprocessor):
             if tensor.dim() == 3:
                 tensor = tensor.unsqueeze(0)
             return tensor.to(device=self.device, dtype=self.dtype)
-    
-    def reset(self):
-        """
-        Reset the preprocessor state (useful for new sequences)
-        """
-        self._first_frame = True
