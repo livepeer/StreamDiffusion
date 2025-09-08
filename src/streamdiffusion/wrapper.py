@@ -486,7 +486,8 @@ class StreamDiffusionWrapper:
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
         use_safety_checker: Optional[bool] = None,
-        safety_checker_threshold: Literal["low", "medium", "high"] = None,
+        safety_checker_threshold: Optional[float] = None,
+        safety_checker_threshold_level: Literal[NSFWLevel.LOW, NSFWLevel.MEDIUM, NSFWLevel.HIGH] = NSFWLevel.LOW,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -555,6 +556,8 @@ class StreamDiffusionWrapper:
             self.use_safety_checker = use_safety_checker
         if safety_checker_threshold is not None:
             self.safety_checker_threshold = safety_checker_threshold
+        if safety_checker_threshold_level is not None:
+            self.safety_checker_threshold_level = safety_checker_threshold_level
 
     def __call__(
         self,
