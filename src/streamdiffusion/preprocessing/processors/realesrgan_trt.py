@@ -67,12 +67,8 @@ class RealESRGANEngine:
     def load(self):
         """Load TensorRT engine from file"""
         # Ensure clean CUDA context before loading TensorRT engine
-        # This prevents corruption from previous runs
-        try:
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-        except:
-            pass
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
 
     def activate(self):
@@ -119,7 +115,6 @@ class RealESRGANEngine:
         
         # Thread-safe TensorRT execution
         with self._inference_lock:
-            # Execute inference
             success = self.context.execute_async_v3(stream)
             
             if not success:
@@ -497,9 +492,6 @@ class RealESRGANProcessor(BasePreprocessor):
         if hasattr(self, '_engine') and self._engine is not None:
             # Cleanup dedicated stream if it exists
             if hasattr(self._engine, '_dedicated_stream'):
-                try:
-                    torch.cuda.synchronize()
-                    del self._engine._dedicated_stream
-                except:
-                    pass
+                torch.cuda.synchronize()
+                del self._engine._dedicated_stream
             del self._engine
