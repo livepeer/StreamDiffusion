@@ -1765,7 +1765,7 @@ class StreamDiffusionWrapper:
         if not self.skip_diffusion:
             self.stream._controlnet_module.update_control_image_efficient(image, index=index)
         else:
-            logger.warning("update_control_image: Skipping ControlNet update in skip diffusion mode")
+            logger.debug("update_control_image: Skipping ControlNet update in skip diffusion mode")
 
 
     def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:

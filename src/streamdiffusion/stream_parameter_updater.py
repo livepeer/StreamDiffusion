@@ -655,7 +655,7 @@ class StreamParameterUpdater(OrchestratorUser):
     def _update_seed(self, seed: int) -> None:
         """Update the generator seed and regenerate seed-dependent tensors."""
         if self.stream.generator is None:
-            print("update_stream_params: Warning: generator is None, cannot update seed")
+            logger.warning("update_stream_params: Warning: generator is None, cannot update seed")
             return
 
         # Store the current seed value
@@ -764,8 +764,6 @@ class StreamParameterUpdater(OrchestratorUser):
         old_prompt, weight = self._current_prompt_list[index]
         self._current_prompt_list[index] = (new_prompt, weight)
 
-        print(f"update_prompt_at_index: Updated prompt {index}: '{old_prompt[:30]}...' -> '{new_prompt[:30]}...'")
-
         # Cache the new prompt embedding
         self._cache_prompt_embeddings([(new_prompt, weight)], self._current_negative_prompt)
 
@@ -816,7 +814,6 @@ class StreamParameterUpdater(OrchestratorUser):
         new_index = len(self._current_prompt_list)
         self._current_prompt_list.append((prompt, weight))
 
-        print(f"add_prompt: Added prompt {new_index}: '{prompt[:30]}...' with weight {weight}")
 
         # Cache the new prompt
         encoder_output = self.stream.pipe.encode_prompt(
@@ -846,12 +843,11 @@ class StreamParameterUpdater(OrchestratorUser):
             return
 
         if len(self._current_prompt_list) <= 1:
-            print("remove_prompt_at_index: Warning: Cannot remove last prompt")
+            logger.warning("remove_prompt_at_index: Warning: Cannot remove last prompt")
             return
 
         # Remove from current list
         removed_prompt = self._current_prompt_list.pop(index)
-        print(f"remove_prompt_at_index: Removed prompt {index}: '{removed_prompt[0][:30]}...'")
 
         # Remove from cache and reindex
         if index in self._prompt_cache:
@@ -878,7 +874,6 @@ class StreamParameterUpdater(OrchestratorUser):
         old_seed, weight = self._current_seed_list[index]
         self._current_seed_list[index] = (new_seed, weight)
 
-        print(f"update_seed_at_index: Updated seed {index}: {old_seed} -> {new_seed}")
 
         # Cache the new seed noise
         self._cache_seed_noise([(new_seed, weight)])
@@ -966,12 +961,11 @@ class StreamParameterUpdater(OrchestratorUser):
             return
 
         if len(self._current_seed_list) <= 1:
-            print("remove_seed_at_index: Warning: Cannot remove last seed")
+            logger.warning("remove_seed_at_index: Warning: Cannot remove last seed")
             return
 
         # Remove from current list
         removed_seed = self._current_seed_list.pop(index)
-        print(f"remove_seed_at_index: Removed seed {index}: {removed_seed[0]}")
 
         # Remove from cache and reindex
         if index in self._seed_cache:
