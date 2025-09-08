@@ -595,8 +595,7 @@ class StreamDiffusionWrapper:
 
 
         if self.mode == "txt2img":
-            logger.warning("_process_skip_diffusion: skip_diffusion mode not applicable for txt2img - no input image")
-            return self.txt2img(prompt)
+            raise RuntimeError("_process_skip_diffusion: skip_diffusion mode not applicable for txt2img - no input image")
         
         if image is None:
             raise ValueError("_process_skip_diffusion: image required for skip diffusion mode")
