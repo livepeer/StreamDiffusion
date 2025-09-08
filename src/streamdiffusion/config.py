@@ -120,6 +120,7 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         'cfg_type': config.get('cfg_type', 'self'),
         'seed': config.get('seed', 2),
         'use_safety_checker': config.get('use_safety_checker', False),
+        'skip_diffusion': config.get('skip_diffusion', False),
         'engine_dir': config.get('engine_dir', 'engines'),
         'normalize_prompt_weights': config.get('normalize_prompt_weights', True),
         'normalize_seed_weights': config.get('normalize_seed_weights', True),
@@ -188,6 +189,7 @@ def _prepare_controlnet_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             'conditioning_scale': cn_config.get('conditioning_scale', 1.0),
             'enabled': cn_config.get('enabled', True),
             'preprocessor_params': cn_config.get('preprocessor_params'),
+            'conditioning_channels': cn_config.get('conditioning_channels'),
             'pipeline_type': pipeline_type,
             'control_guidance_start': cn_config.get('control_guidance_start', 0.0),
             'control_guidance_end': cn_config.get('control_guidance_end', 1.0),
@@ -394,6 +396,12 @@ def _validate_config(config: Dict[str, Any]) -> None:
             
             if 'model_id' not in controlnet:
                 raise ValueError(f"_validate_config: ControlNet {i} missing required 'model_id'")
+            
+            # Validate conditioning_channels if present
+            if 'conditioning_channels' in controlnet:
+                channels = controlnet['conditioning_channels']
+                if not isinstance(channels, int) or channels <= 0:
+                    raise ValueError(f"_validate_config: ControlNet {i} 'conditioning_channels' must be a positive integer, got {channels}")
     
     # Validate ipadapters if present
     if 'ipadapters' in config:

@@ -17,6 +17,7 @@ class ControlNetTRT(BaseModel):
                  min_batch_size: int = 1,
                  embedding_dim: int = 768,
                  unet_dim: int = 4,
+                 conditioning_channels: int = 3,
                  **kwargs):
         super().__init__(
             fp16=fp16,
@@ -27,6 +28,7 @@ class ControlNetTRT(BaseModel):
             **kwargs
         )
         self.unet_dim = unet_dim
+        self.conditioning_channels = conditioning_channels
         self.name = "ControlNet"
         
     def get_input_names(self) -> List[str]:
@@ -94,9 +96,9 @@ class ControlNetTRT(BaseModel):
                 (max_batch, 77, self.embedding_dim),
             ],
             "controlnet_cond": [
-                (min_batch, 3, min_ctrl_h, min_ctrl_w),
-                (batch_size, 3, opt_ctrl_h, opt_ctrl_w),
-                (max_batch, 3, max_ctrl_h, max_ctrl_w),
+                (min_batch, self.conditioning_channels, min_ctrl_h, min_ctrl_w),
+                (batch_size, self.conditioning_channels, opt_ctrl_h, opt_ctrl_w),
+                (max_batch, self.conditioning_channels, max_ctrl_h, max_ctrl_w),
             ],
         }
         
@@ -114,7 +116,7 @@ class ControlNetTRT(BaseModel):
             torch.ones(batch_size, dtype=torch.float32, device=self.device),
             torch.randn(batch_size, 77, self.embedding_dim, 
                        dtype=dtype, device=self.device),
-            torch.randn(batch_size, 3, image_height, image_width, 
+            torch.randn(batch_size, self.conditioning_channels, image_height, image_width, 
                        dtype=dtype, device=self.device)
         )
 
@@ -219,7 +221,7 @@ class ControlNetSDXLTRT(ControlNetTRT):
             torch.ones(batch_size, dtype=torch.float32, device=self.device),  # timestep
             torch.randn(batch_size, self.text_maxlen, self.embedding_dim, 
                        dtype=dtype, device=self.device),  # encoder_hidden_states
-            torch.randn(batch_size, 3, image_height, image_width, 
+            torch.randn(batch_size, self.conditioning_channels, image_height, image_width, 
                        dtype=dtype, device=self.device),  # controlnet_cond
             torch.tensor(1.0, dtype=torch.float32, device=self.device),  # conditioning_scale
             torch.randn(batch_size, 1280, dtype=dtype, device=self.device),  # text_embeds
@@ -241,9 +243,11 @@ class ControlNetSDXLTRT(ControlNetTRT):
 
 def create_controlnet_model(model_type: str = "sd15", 
                            unet=None, model_path: str = "",
+                           conditioning_channels: int = 3,
                            **kwargs) -> ControlNetTRT:
     """Factory function to create appropriate ControlNet TensorRT model"""
     if model_type.lower() in ["sdxl"]:
-        return ControlNetSDXLTRT(unet=unet, model_path=model_path, **kwargs)
+        return ControlNetSDXLTRT(unet=unet, model_path=model_path, 
+                                conditioning_channels=conditioning_channels, **kwargs)
     else:
-        return ControlNetTRT(**kwargs) 
+        return ControlNetTRT(conditioning_channels=conditioning_channels, **kwargs) 

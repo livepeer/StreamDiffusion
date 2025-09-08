@@ -776,6 +776,11 @@ class App:
                     "normalize_prompt_weights": config_normalize_weights,
                     "normalize_seed_weights": config_normalize_weights,
                     "config_values": config_values,
+                    # Include pipeline hooks info
+                    "image_preprocessing": self._get_hook_info("image_preprocessing"),
+                    "image_postprocessing": self._get_hook_info("image_postprocessing"),
+                    "latent_preprocessing": self._get_hook_info("latent_preprocessing"),
+                    "latent_postprocessing": self._get_hook_info("latent_postprocessing"),
                 })
                 
             except Exception as e:
@@ -1549,14 +1554,14 @@ class App:
         async def get_preprocessors_info():
             """Get preprocessor information using metadata from preprocessor classes"""
             try:
-                from src.streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor
+                from streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor_class
                 
                 available_preprocessors = list_preprocessors()
                 preprocessors_info = {}
                 
                 for preprocessor_name in available_preprocessors:
                     try:
-                        preprocessor_class = get_preprocessor(preprocessor_name).__class__
+                        preprocessor_class = get_preprocessor_class(preprocessor_name)
                         
                         # Get comprehensive metadata from class
                         metadata = preprocessor_class.get_preprocessor_metadata()
@@ -1610,16 +1615,16 @@ class App:
                 if controlnet_index >= len(cn_pipeline.preprocessors):
                     raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
                 
-                # Create new preprocessor instance
-                from src.streamdiffusion.preprocessing.processors import get_preprocessor
-                new_preprocessor_instance = get_preprocessor(new_preprocessor)
-
-                # Resolve stream object and preprocessor list regardless of module or stream facade
+                # Resolve stream object first (needed for pipeline-aware preprocessors)
                 stream_obj = getattr(cn_pipeline, '_stream', None)
                 if stream_obj is None:
                     stream_obj = getattr(self.pipeline, 'stream', None)
                 if stream_obj is None:
                     raise HTTPException(status_code=500, detail="Pipeline stream not available")
+
+                # Create new preprocessor instance with pipeline reference
+                from streamdiffusion.preprocessing.processors import get_preprocessor
+                new_preprocessor_instance = get_preprocessor(new_preprocessor, pipeline_ref=stream_obj)
 
                 preproc_list = getattr(cn_pipeline, 'preprocessors', None)
                 if preproc_list is None:
@@ -1665,11 +1670,11 @@ class App:
             try:
                 data = await request.json()
                 controlnet_index = data.get("controlnet_index", 0)
-                preprocessor_params = data.get("preprocessor_params", {})
+                preprocessor_params = data.get("processor_params", {})
                 
-
+                logger.info(f"update_preprocessor_params: controlnet_index={controlnet_index}, params={preprocessor_params}")
                 
-                if not preprocessor_params:
+                if preprocessor_params is None:
                     raise HTTPException(status_code=400, detail="Missing preprocessor_params parameter")
                 
                 if not self.pipeline:
@@ -1841,6 +1846,360 @@ class App:
             except Exception as e:
                 logger.error(f"get_current_preprocessor_params: Failed to get current parameters: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to get current preprocessor parameters: {str(e)}")
+
+        # Pipeline Hooks API Endpoints
+        @self.app.get("/api/pipeline-hooks/info-config")
+        async def get_pipeline_hooks_info_config():
+            """Get pipeline hooks configuration info"""
+            try:
+                hooks_info = {
+                    "image_preprocessing": self._get_hook_info("image_preprocessing"),
+                    "image_postprocessing": self._get_hook_info("image_postprocessing"),
+                    "latent_preprocessing": self._get_hook_info("latent_preprocessing"),
+                    "latent_postprocessing": self._get_hook_info("latent_postprocessing")
+                }
+                return JSONResponse(hooks_info)
+            except Exception as e:
+                logger.error(f"get_pipeline_hooks_info_config: Failed to get hooks info: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get pipeline hooks info: {str(e)}")
+
+        @self.app.get("/api/pipeline-hooks/{hook_type}/info")
+        async def get_hook_processors_info(hook_type: str):
+            """Get available processors for a specific hook type"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                # Use the same processor registry as ControlNet
+                from streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor_class
+                
+                available_processors = list_preprocessors()
+                processors_info = {}
+                
+                for processor_name in available_processors:
+                    try:
+                        preprocessor_class = get_preprocessor_class(processor_name)
+                        
+                        # Get comprehensive metadata from class
+                        metadata = preprocessor_class.get_preprocessor_metadata()
+                        
+                        # Use metadata directly, with the preprocessor name as key
+                        processors_info[processor_name] = metadata
+                        
+                    except Exception as e:
+                        logger.warning(f"get_hook_processors_info: Could not extract info for {processor_name}: {e}")
+                        # Fallback to basic info if metadata method fails
+                        processors_info[processor_name] = {
+                            "display_name": processor_name.replace("_", " ").title(),
+                            "description": f"Processor for {hook_type}",
+                            "parameters": {},
+                            "use_cases": []
+                        }
+                        continue
+                
+                return JSONResponse({
+                    "preprocessors": processors_info,
+                    "available": available_processors
+                })
+                
+            except Exception as e:
+                logger.error(f"get_hook_processors_info: Failed to get processors info for {hook_type}: {e}")
+                return JSONResponse({
+                    "preprocessors": {},
+                    "available": [],
+                    "error": "Could not load processor information"
+                })
+
+        @self.app.post("/api/pipeline-hooks/{hook_type}/add")
+        async def add_hook_processor(hook_type: str, request: Request):
+            """Add a new processor to a hook"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                data = await request.json()
+                processor = data.get("processor", "passthrough")
+                enabled = data.get("enabled", True)
+                processor_params = data.get("processor_params", {})
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"add_hook_processor: Adding {processor} to {hook_type}")
+                
+                # Use update_stream_params pattern instead of direct module access
+                # First get current config
+                state = self.pipeline.stream.get_stream_state()
+                hook_config_key = f"{hook_type}_config"
+                current_config = state.get(hook_config_key, [])
+                
+                # Add new processor config
+                new_proc_config = {
+                    'type': processor,
+                    'order': len(current_config),
+                    'enabled': enabled,
+                    'params': processor_params
+                }
+                current_config.append(new_proc_config)
+                
+                # Update via stream params
+                update_kwargs = {hook_config_key: current_config}
+                self.pipeline.update_stream_params(**update_kwargs)
+                
+                new_index = len(current_config) - 1
+                
+                logger.info(f"add_hook_processor: Successfully added {processor} to {hook_type}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Added {processor} to {hook_type}",
+                    "processor": processor,
+                    "enabled": enabled
+                })
+                
+            except Exception as e:
+                logger.error(f"add_hook_processor: Failed to add processor to {hook_type}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add processor: {str(e)}")
+
+        @self.app.delete("/api/pipeline-hooks/{hook_type}/remove/{processor_index}")
+        async def remove_hook_processor(hook_type: str, processor_index: int):
+            """Remove a processor from a hook"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"remove_hook_processor: Removing processor {processor_index} from {hook_type}")
+                
+                # Use update_stream_params pattern instead of direct module access
+                # First get current config
+                state = self.pipeline.stream.get_stream_state()
+                hook_config_key = f"{hook_type}_config"
+                current_config = state.get(hook_config_key, [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Remove the processor from config
+                removed_processor = current_config.pop(processor_index)
+                
+                # Update via stream params
+                update_kwargs = {hook_config_key: current_config}
+                self.pipeline.update_stream_params(**update_kwargs)
+                
+                logger.info(f"remove_hook_processor: Successfully removed processor {processor_index} ({removed_processor.get('type', 'unknown')}) from {hook_type}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Removed processor {processor_index} from {hook_type}",
+                    "processor_index": processor_index
+                })
+                
+            except Exception as e:
+                logger.error(f"remove_hook_processor: Failed to remove processor from {hook_type}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove processor: {str(e)}")
+
+        @self.app.post("/api/pipeline-hooks/{hook_type}/toggle")
+        async def toggle_hook_processor(hook_type: str, request: Request):
+            """Toggle a processor enabled/disabled"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                data = await request.json()
+                processor_index = data.get("processor_index")
+                enabled = data.get("enabled")
+                
+                if processor_index is None or enabled is None:
+                    raise HTTPException(status_code=400, detail="Missing processor_index or enabled")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"toggle_hook_processor: Toggling {hook_type} processor {processor_index} to {'enabled' if enabled else 'disabled'}")
+                
+                # Use update_stream_params pattern instead of direct module access
+                # First get current config
+                state = self.pipeline.stream.get_stream_state()
+                hook_config_key = f"{hook_type}_config"
+                current_config = state.get(hook_config_key, [])
+                
+                logger.info(f"toggle_hook_processor: Current config has {len(current_config)} processors")
+                logger.info(f"toggle_hook_processor: Config: {current_config}")
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Toggle the enabled state in config
+                old_enabled = current_config[processor_index]['enabled']
+                current_config[processor_index]['enabled'] = enabled
+                
+                logger.info(f"toggle_hook_processor: Changed processor {processor_index} enabled: {old_enabled} -> {enabled}")
+                logger.info(f"toggle_hook_processor: About to call update_stream_params with {hook_config_key}={current_config}")
+                
+                # Update via stream params
+                update_kwargs = {hook_config_key: current_config}
+                self.pipeline.update_stream_params(**update_kwargs)
+                
+                logger.info(f"toggle_hook_processor: update_stream_params call completed")
+                
+                logger.info(f"toggle_hook_processor: Successfully toggled {hook_type} processor {processor_index} to {'enabled' if enabled else 'disabled'}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Toggled processor {processor_index} in {hook_type} to {'enabled' if enabled else 'disabled'}",
+                    "processor_index": processor_index,
+                    "enabled": enabled
+                })
+                
+            except Exception as e:
+                logger.error(f"toggle_hook_processor: Failed to toggle processor in {hook_type}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to toggle processor: {str(e)}")
+
+        @self.app.post("/api/pipeline-hooks/{hook_type}/switch")
+        async def switch_hook_processor(hook_type: str, request: Request):
+            """Switch processor type for a specific index"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                data = await request.json()
+                processor_index = data.get("processor_index")
+                new_processor = data.get("processor")
+                processor_params = data.get("processor_params", {})
+                
+                if processor_index is None or not new_processor:
+                    raise HTTPException(status_code=400, detail="Missing processor_index or processor")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"switch_hook_processor: Switching {hook_type} processor {processor_index} to {new_processor}")
+                
+                # Use update_stream_params pattern instead of direct module access
+                # First get current config
+                state = self.pipeline.stream.get_stream_state()
+                hook_config_key = f"{hook_type}_config"
+                current_config = state.get(hook_config_key, [])
+                
+                # Ensure we have enough processors in config
+                if processor_index < 0 or processor_index >= len(current_config):
+                    # Add missing processors as passthrough
+                    while len(current_config) <= processor_index:
+                        current_config.append({
+                            'type': 'passthrough',
+                            'order': len(current_config),
+                            'enabled': True
+                        })
+                
+                # Update the processor at the specified index
+                current_config[processor_index]['type'] = new_processor
+                if processor_params:
+                    current_config[processor_index]['params'] = processor_params
+                
+                # Update via stream params
+                update_kwargs = {hook_config_key: current_config}
+                self.pipeline.update_stream_params(**update_kwargs)
+                
+                logger.info(f"switch_hook_processor: Successfully switched {hook_type} processor {processor_index} to {new_processor}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Successfully switched to {new_processor} processor",
+                    "processor_index": processor_index,
+                    "processor": new_processor,
+                    "parameters": processor_params
+                })
+                
+            except Exception as e:
+                logger.error(f"switch_hook_processor: Failed to switch processor in {hook_type}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to switch processor: {str(e)}")
+
+        @self.app.post("/api/pipeline-hooks/{hook_type}/update-params")
+        async def update_hook_processor_params(hook_type: str, request: Request):
+            """Update processor parameters"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                data = await request.json()
+                processor_index = data.get("processor_index")
+                processor_params = data.get("processor_params", {})
+                
+                if processor_index is None:
+                    raise HTTPException(status_code=400, detail="Missing processor_index")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                logger.info(f"update_hook_processor_params: Updating parameters for {hook_type} processor {processor_index}")
+                
+                # Use update_stream_params pattern instead of direct module access
+                # First get current config
+                state = self.pipeline.stream.get_stream_state()
+                hook_config_key = f"{hook_type}_config"
+                current_config = state.get(hook_config_key, [])
+                
+                if processor_index >= len(current_config):
+                    raise HTTPException(status_code=400, detail=f"Processor index {processor_index} out of range")
+                
+                # Update processor parameters in config
+                if 'params' not in current_config[processor_index]:
+                    current_config[processor_index]['params'] = {}
+                current_config[processor_index]['params'].update(processor_params)
+                
+                # Update via stream params
+                update_kwargs = {hook_config_key: current_config}
+                self.pipeline.update_stream_params(**update_kwargs)
+                
+                logger.info(f"update_hook_processor_params: Successfully updated parameters for {hook_type} processor {processor_index}")
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Updated parameters for processor {processor_index} in {hook_type}",
+                    "processor_index": processor_index,
+                    "updated_parameters": processor_params
+                })
+                
+            except Exception as e:
+                logger.error(f"update_hook_processor_params: Failed to update parameters in {hook_type}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update parameters: {str(e)}")
+
+        @self.app.get("/api/pipeline-hooks/{hook_type}/current-params/{processor_index}")
+        async def get_current_hook_processor_params(hook_type: str, processor_index: int):
+            """Get current parameter values for a specific hook processor"""
+            try:
+                if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
+                    raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Use get_stream_state pattern to get current parameters
+                state = self.pipeline.stream.get_stream_state()
+                hook_config_key = f"{hook_type}_config"
+                current_config = state.get(hook_config_key, [])
+                
+                if processor_index >= len(current_config):
+                    return JSONResponse({
+                        "processor": None,
+                        "parameters": {}
+                    })
+                
+                proc_config = current_config[processor_index]
+                processor_type = proc_config.get('type', 'unknown')
+                processor_params = proc_config.get('params', {})
+                
+                return JSONResponse({
+                    "processor": processor_type,
+                    "parameters": processor_params
+                })
+                
+            except Exception as e:
+                logger.error(f"get_current_hook_processor_params: Failed to get parameters for {hook_type}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get parameters: {str(e)}")
 
         # Only mount static files if not in API-only mode
         if not self.args.api_only:
@@ -2333,6 +2692,71 @@ class App:
                 pass
         
         return ipadapter_info
+
+    def _get_hook_module(self, hook_type: str):
+        """Get the hook module for a specific hook type using the proper pattern"""
+        if not self.pipeline:
+            return None
+        
+        try:
+            # Use get_stream_state to get current hook config
+            state = self.pipeline.stream.get_stream_state()
+            hook_config_key = f"{hook_type}_config"
+            hook_config = state.get(hook_config_key, [])
+            
+            # If we have config, the module should exist
+            if hook_config:
+                module_attr_name = f"_{hook_type}_module"
+                return getattr(self.pipeline.stream, module_attr_name, None)
+            
+            return None
+        except Exception as e:
+            logger.error(f"_get_hook_module: Failed to get {hook_type} module: {e}")
+            return None
+
+    def _get_hook_info(self, hook_type: str):
+        """Get hook information from uploaded config or active pipeline"""
+        hook_info = {
+            "enabled": False,
+            "config_loaded": False,
+            "processors": []
+        }
+        
+        # Check active pipeline state first
+        if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+            try:
+                # Try to get existing hook module first
+                module_attr_name = f"_{hook_type}_module"
+                hook_module = getattr(self.pipeline.stream, module_attr_name, None)
+                
+                if hook_module and hasattr(hook_module, 'processors'):
+                    hook_info["enabled"] = True
+                    hook_info["config_loaded"] = True
+                    for i, processor in enumerate(hook_module.processors):
+                        processor_name = getattr(processor, '__class__', type(processor)).__name__.replace('Preprocessor', '').lower()
+                        hook_info["processors"].append({
+                            "index": i,
+                            "name": processor_name,
+                            "enabled": getattr(processor, 'enabled', True)
+                        })
+                    return hook_info
+            except Exception as e:
+                logger.warning(f"_get_hook_info: Failed to get hook module for {hook_type}: {e}")
+        
+        # Fall back to uploaded YAML config if no active pipeline
+        if self.uploaded_controlnet_config and hook_type in self.uploaded_controlnet_config:
+            hook_config = self.uploaded_controlnet_config[hook_type]
+            if hook_config.get('enabled', False) and 'processors' in hook_config:
+                hook_info["enabled"] = True
+                hook_info["config_loaded"] = True
+                for i, processor_config in enumerate(hook_config['processors']):
+                    hook_info["processors"].append({
+                        "index": i,
+                        "name": processor_config.get('type', 'passthrough'),  # Map 'type' to 'name'
+                        "enabled": processor_config.get('enabled', True)
+                    })
+        
+        return hook_info
 
     def _calculate_aspect_ratio(self, width: int, height: int) -> str:
         """Calculate and return aspect ratio as a string"""
