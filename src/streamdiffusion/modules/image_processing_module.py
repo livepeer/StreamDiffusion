@@ -2,6 +2,7 @@ from typing import List, Optional, Any, Dict
 import torch
 
 from ..preprocessing.orchestrator_user import OrchestratorUser
+from ..preprocessing.pipeline_preprocessing_orchestrator import PipelinePreprocessingOrchestrator
 from ..hooks import ImageCtx, ImageHook
 
 
@@ -77,19 +78,37 @@ class ImagePreprocessingModule(ImageProcessingModule):
     Image domain preprocessing module - executes before VAE encoding.
     
     Timing: After image_processor.preprocess(), before similar_image_filter
+    Uses pipelined processing for performance optimization.
     """
     
     def install(self, stream) -> None:
-        """Install module by registering hook with stream and attaching orchestrator."""
-        self.attach_orchestrator(stream)
+        """Install module by registering hook with stream and attaching orchestrators."""
+        self.attach_orchestrator(stream)  # For sequential chain processing (fallback)
+        self.attach_pipeline_preprocessing_orchestrator(stream)  # For pipelined processing
         stream.image_preprocessing_hooks.append(self.build_image_hook())
     
     def build_image_hook(self) -> ImageHook:
-        """Build hook function that processes image context."""
+        """Build hook function that processes image context with pipelined processing."""
         def hook(ctx: ImageCtx) -> ImageCtx:
-            ctx.image = self._process_image_chain(ctx.image)
+            ctx.image = self._process_image_pipelined(ctx.image)
             return ctx
         return hook
+    
+    def _process_image_pipelined(self, input_image: torch.Tensor) -> torch.Tensor:
+        """Execute pipelined processing of preprocessors for performance.
+        
+        Uses PipelinePreprocessingOrchestrator for Frame N-1 results while starting Frame N processing.
+        Falls back to synchronous processing when needed.
+        """
+        if not self.processors:
+            return input_image
+        
+        ordered_processors = self._get_ordered_processors()
+        
+        # Use pipelined pipeline preprocessing orchestrator for performance
+        return self._pipeline_preprocessing_orchestrator.process_pipelined(
+            input_image, ordered_processors
+        )
 
 
 class ImagePostprocessingModule(ImageProcessingModule):
@@ -97,16 +116,34 @@ class ImagePostprocessingModule(ImageProcessingModule):
     Image domain postprocessing module - executes after VAE decoding.
     
     Timing: After decode_image(), before returning final output
+    Uses pipelined processing for performance optimization.
     """
     
     def install(self, stream) -> None:
-        """Install module by registering hook with stream and attaching orchestrator."""
-        self.attach_orchestrator(stream)
+        """Install module by registering hook with stream and attaching orchestrators."""
+        self.attach_preprocessing_orchestrator(stream)  # For sequential chain processing (fallback)
+        self.attach_postprocessing_orchestrator(stream)  # For pipelined processing
         stream.image_postprocessing_hooks.append(self.build_image_hook())
     
     def build_image_hook(self) -> ImageHook:
-        """Build hook function that processes image context."""
+        """Build hook function that processes image context with pipelined processing."""
         def hook(ctx: ImageCtx) -> ImageCtx:
-            ctx.image = self._process_image_chain(ctx.image)
+            ctx.image = self._process_image_pipelined(ctx.image)
             return ctx
         return hook
+    
+    def _process_image_pipelined(self, input_image: torch.Tensor) -> torch.Tensor:
+        """Execute pipelined processing of postprocessors for performance.
+        
+        Uses PostprocessingOrchestrator for Frame N-1 results while starting Frame N processing.
+        Falls back to synchronous processing when needed.
+        """
+        if not self.processors:
+            return input_image
+        
+        ordered_processors = self._get_ordered_processors()
+        
+        # Use pipelined postprocessing orchestrator for performance
+        return self._postprocessing_orchestrator.process_pipelined(
+            input_image, ordered_processors
+        )

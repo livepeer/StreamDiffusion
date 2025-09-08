@@ -99,6 +99,7 @@ class StreamDiffusionWrapper:
         cfg_type: Literal["none", "full", "self", "initialize"] = "self",
         seed: int = 2,
         use_safety_checker: bool = False,
+        skip_diffusion: bool = False,
         engine_dir: Optional[Union[str, Path]] = "engines",
         build_engines_if_missing: bool = True,
         normalize_prompt_weights: bool = True,
@@ -273,6 +274,9 @@ class StreamDiffusionWrapper:
             latent_preprocessing_config=latent_preprocessing_config,
             latent_postprocessing_config=latent_postprocessing_config,
         )
+
+        # Store skip_diffusion on wrapper for execution flow control
+        self.skip_diffusion = skip_diffusion
 
         # Set wrapper reference on parameter updater so it can access pipeline structure
         self.stream._param_updater.wrapper = self
@@ -555,10 +559,67 @@ class StreamDiffusionWrapper:
         Union[Image.Image, List[Image.Image]]
             The generated image.
         """
+        if self.skip_diffusion:
+            return self._process_skip_diffusion(image, prompt)
+        
         if self.mode == "img2img":
             return self.img2img(image, prompt)
         else:
             return self.txt2img(prompt)
+
+    def _process_skip_diffusion(
+        self, 
+        image: Optional[Union[str, Image.Image, torch.Tensor]] = None, 
+        prompt: Optional[str] = None
+    ) -> Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]:
+        """
+        Process input directly without diffusion, applying pre/post processing hooks.
+        
+        This method bypasses VAE encoding, diffusion, and VAE decoding, but still
+        applies image preprocessing and postprocessing hooks for consistent processing.
+        
+        Parameters
+        ----------
+        image : Optional[Union[str, Image.Image, torch.Tensor]]
+            The image to process directly.
+        prompt : Optional[str]
+            Prompt (ignored in skip mode, but kept for API consistency).
+            
+        Returns
+        -------
+        Union[Image.Image, List[Image.Image], torch.Tensor, np.ndarray]
+            The processed image with hooks applied.
+        """
+
+        #TODO: add safety checker call somewhere in this method
+
+
+        if self.mode == "txt2img":
+            raise RuntimeError("_process_skip_diffusion: skip_diffusion mode not applicable for txt2img - no input image")
+        
+        if image is None:
+            raise ValueError("_process_skip_diffusion: image required for skip diffusion mode")
+        
+        # Handle input tensor normalization to [-1,1] pipeline range
+        if isinstance(image, str) or isinstance(image, Image.Image):
+            processed_tensor = self.preprocess_image(image)
+            preprocessor_input = self._denormalize_on_gpu(processed_tensor)
+        elif isinstance(image, torch.Tensor):
+            # Ensure tensor is on correct device and dtype first
+            preprocessor_input = image.to(device=self.device, dtype=self.dtype)
+        else:
+            preprocessor_input = image
+
+        preprocessor_output = self.stream._apply_image_preprocessing_hooks(preprocessor_input)
+        
+        # Convert [0,1] -> [-1,1] back to pipeline range for postprocessing hooks
+        processed_tensor = self._normalize_on_gpu(preprocessor_output)
+        
+        # Apply image postprocessing hooks (expect [-1,1] range - post-VAE decoding)
+        processed_tensor = self.stream._apply_image_postprocessing_hooks(processed_tensor)
+        
+        # Final postprocessing for output format
+        return self.postprocess_image(processed_tensor, output_type=self.output_type)
 
     def txt2img(
         self, prompt: Optional[str] = None
@@ -579,11 +640,12 @@ class StreamDiffusionWrapper:
         """
         if prompt is not None:
             self.update_prompt(prompt, warn_about_conflicts=True)
-
+        
         if self.sd_turbo:
             image_tensor = self.stream.txt2img_sd_turbo(self.batch_size)
         else:
             image_tensor = self.stream.txt2img(self.frame_buffer_size)
+        
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
         if self.use_safety_checker:
@@ -628,6 +690,7 @@ class StreamDiffusionWrapper:
         if isinstance(image, str) or isinstance(image, Image.Image):
             image = self.preprocess_image(image)
 
+        # Full pipeline with diffusion
         image_tensor = self.stream(image)
         image = self.postprocess_image(image_tensor, output_type=self.output_type)
 
@@ -730,6 +793,10 @@ class StreamDiffusionWrapper:
             Denormalized tensor on GPU, clamped to [0,1]
         """
         return (image_tensor / 2 + 0.5).clamp(0, 1)
+
+    def _normalize_on_gpu(self, image_tensor: torch.Tensor) -> torch.Tensor:
+        """Convert tensor from [0,1] (processor range) back to [-1,1] (diffusion range)"""
+        return (image_tensor * 2 - 1).clamp(-1, 1)
 
     def _tensor_to_pil_optimized(self, image_tensor: torch.Tensor) -> List[Image.Image]:
         """
@@ -873,6 +940,14 @@ class StreamDiffusionWrapper:
             self.cleanup_gpu_memory()
         except Exception as e:
             logger.warning(f"GPU cleanup warning: {e}")
+        
+        # Reset CUDA context to prevent corruption from previous runs
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        # Force CUDA context reset by creating and destroying a small tensor
+        temp_tensor = torch.zeros(1, device=self.device)
+        del temp_tensor
+        logger.info("_load_model: CUDA context reset completed")
 
         # First, try to detect if this is an SDXL model before loading
         # TODO: CAN we do this step with model_detection.py?
@@ -1557,7 +1632,8 @@ class StreamDiffusionWrapper:
                                     cuda_stream=cuda_stream,
                                     use_cuda_graph=False,
                                     unet=None,
-                                    model_path=cfg['model_id']
+                                    model_path=cfg['model_id'],
+                                    conditioning_channels=cfg.get('conditioning_channels', 3)
                                 )
                                 try:
                                     setattr(engine, 'model_id', cfg['model_id'])
@@ -1673,8 +1749,10 @@ class StreamDiffusionWrapper:
         """Update control image for specific ControlNet index"""
         if not self.use_controlnet:
             raise RuntimeError("update_control_image: ControlNet support not enabled. Set use_controlnet=True in constructor.")
-
-        self.stream._controlnet_module.update_control_image_efficient(image, index=index)
+        if not self.skip_diffusion:
+            self.stream._controlnet_module.update_control_image_efficient(image, index=index)
+        else:
+            logger.debug("update_control_image: Skipping ControlNet update in skip diffusion mode")
 
 
     def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
@@ -1895,19 +1973,17 @@ class StreamDiffusionWrapper:
         for i in range(3):
             gc.collect()
         
-        # Clear CUDA cache multiple times
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            
-            # Force additional memory cleanup
-            torch.cuda.ipc_collect()
-            torch.cuda.empty_cache()
-            
-            # Get memory info
-            allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
-            cached = torch.cuda.memory_reserved() / (1024**3)     # GB
-            logger.info(f"   GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
+        # Clear CUDA cache and cleanup IPC handles
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Force additional memory cleanup
+        torch.cuda.ipc_collect()
+        
+        # Get memory info
+        allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+        cached = torch.cuda.memory_reserved() / (1024**3)     # GB
+        logger.info(f"   GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
         
         logger.info("   Enhanced GPU memory cleanup complete")
 
