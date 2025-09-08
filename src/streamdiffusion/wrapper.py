@@ -603,20 +603,13 @@ class StreamDiffusionWrapper:
         # Handle input tensor normalization to [-1,1] pipeline range
         if isinstance(image, str) or isinstance(image, Image.Image):
             processed_tensor = self.preprocess_image(image)
+            preprocessor_input = self._denormalize_on_gpu(processed_tensor)
         elif isinstance(image, torch.Tensor):
             # Ensure tensor is on correct device and dtype first
-            image = image.to(device=self.device, dtype=self.dtype)
-            # Check if tensor is in [0,1] range and needs normalization to [-1,1]
-            if image.min().item() >= 0.0 and image.max().item() <= 1.0:
-                processed_tensor = image * 2.0 - 1.0
-            else:
-                processed_tensor = image
+            preprocessor_input = image.to(device=self.device, dtype=self.dtype)
         else:
-            processed_tensor = image
-        
-        # Apply image preprocessing hooks (expect [0,1] range - pre-VAE encoding)
-        # Convert [-1,1] -> [0,1] for preprocessing hooks
-        preprocessor_input = self._denormalize_on_gpu(processed_tensor)
+            preprocessor_input = image
+
         preprocessor_output = self.stream._apply_image_preprocessing_hooks(preprocessor_input)
         
         # Convert [0,1] -> [-1,1] back to pipeline range for postprocessing hooks
