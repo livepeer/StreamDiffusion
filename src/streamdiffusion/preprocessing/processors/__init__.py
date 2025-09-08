@@ -1,4 +1,5 @@
-from .base import BasePreprocessor
+from .base import BasePreprocessor, PipelineAwareProcessor
+from typing import Any
 from .canny import CannyPreprocessor
 from .depth import DepthPreprocessor
 from .openpose import OpenPosePreprocessor
@@ -11,6 +12,11 @@ from .hed import HEDPreprocessor
 from .ipadapter_embedding import IPAdapterEmbeddingPreprocessor
 from .faceid_embedding import FaceIDEmbeddingPreprocessor
 from .feedback import FeedbackPreprocessor
+from .latent_feedback import LatentFeedbackPreprocessor
+from .sharpen import SharpenPreprocessor
+from .upscale import UpscalePreprocessor
+from .blur import BlurPreprocessor
+from .realesrgan_trt import RealESRGANProcessor
 
 # Try to import TensorRT preprocessors - might not be available on all systems
 try:
@@ -26,6 +32,13 @@ try:
 except ImportError:
     YoloNasPoseTensorrtPreprocessor = None
     POSE_TENSORRT_AVAILABLE = False
+
+try:
+    from .temporal_net_tensorrt import TemporalNetTensorRTPreprocessor
+    TEMPORAL_NET_TENSORRT_AVAILABLE = True
+except ImportError:
+    TemporalNetTensorRTPreprocessor = None
+    TEMPORAL_NET_TENSORRT_AVAILABLE = False
 
 try:
     from .mediapipe_pose import MediaPipePosePreprocessor
@@ -53,7 +66,12 @@ _preprocessor_registry = {
     "soft_edge": SoftEdgePreprocessor,
     "hed": HEDPreprocessor,
     "feedback": FeedbackPreprocessor,
-}
+    "latent_feedback": LatentFeedbackPreprocessor,
+    "sharpen": SharpenPreprocessor,
+    "upscale": UpscalePreprocessor,
+    "blur": BlurPreprocessor,
+    "realesrgan_trt": RealESRGANProcessor,
+}   
 
 # Add TensorRT preprocessors if available
 if DEPTH_TENSORRT_AVAILABLE:
@@ -61,6 +79,9 @@ if DEPTH_TENSORRT_AVAILABLE:
 
 if POSE_TENSORRT_AVAILABLE:
     _preprocessor_registry["pose_tensorrt"] = YoloNasPoseTensorrtPreprocessor
+
+if TEMPORAL_NET_TENSORRT_AVAILABLE:
+    _preprocessor_registry["temporal_net_tensorrt"] = TemporalNetTensorRTPreprocessor
 
 # Add MediaPipe preprocessors if available
 if MEDIAPIPE_POSE_AVAILABLE:
@@ -70,15 +91,15 @@ if MEDIAPIPE_SEGMENTATION_AVAILABLE:
     _preprocessor_registry["mediapipe_segmentation"] = MediaPipeSegmentationPreprocessor
 
 
-def get_preprocessor(name: str) -> BasePreprocessor:
+def get_preprocessor_class(name: str) -> type:
     """
-    Get a preprocessor by name
+    Get a preprocessor class by name
     
     Args:
         name: Name of the preprocessor
         
     Returns:
-        Preprocessor instance
+        Preprocessor class
         
     Raises:
         ValueError: If preprocessor name is not found
@@ -87,7 +108,32 @@ def get_preprocessor(name: str) -> BasePreprocessor:
         available = ", ".join(_preprocessor_registry.keys())
         raise ValueError(f"Unknown preprocessor '{name}'. Available: {available}")
     
-    return _preprocessor_registry[name]()
+    return _preprocessor_registry[name]
+
+
+def get_preprocessor(name: str, pipeline_ref: Any = None) -> BasePreprocessor:
+    """
+    Get a preprocessor by name
+    
+    Args:
+        name: Name of the preprocessor
+        pipeline_ref: Pipeline reference for pipeline-aware processors (required for some processors)
+        
+    Returns:
+        Preprocessor instance
+        
+    Raises:
+        ValueError: If preprocessor name is not found or pipeline_ref missing for pipeline-aware processor
+    """
+    processor_class = get_preprocessor_class(name)
+    
+    # Check if this is a pipeline-aware processor
+    if hasattr(processor_class, 'requires_sync_processing') and processor_class.requires_sync_processing:
+        if pipeline_ref is None:
+            raise ValueError(f"Processor '{name}' requires a pipeline_ref")
+        return processor_class(pipeline_ref=pipeline_ref, _registry_name=name)
+    else:
+        return processor_class(_registry_name=name)
 
 
 def register_preprocessor(name: str, preprocessor_class):
@@ -108,6 +154,7 @@ def list_preprocessors():
 
 __all__ = [
     "BasePreprocessor",
+    "PipelineAwareProcessor",
     "CannyPreprocessor",
     "DepthPreprocessor", 
     "OpenPosePreprocessor",
@@ -120,7 +167,9 @@ __all__ = [
     "IPAdapterEmbeddingPreprocessor",
     "FaceIDEmbeddingPreprocessor",
     "FeedbackPreprocessor",
+    "LatentFeedbackPreprocessor",
     "get_preprocessor",
+    "get_preprocessor_class",
     "register_preprocessor",
     "list_preprocessors",
 ]
@@ -130,6 +179,9 @@ if DEPTH_TENSORRT_AVAILABLE:
 
 if POSE_TENSORRT_AVAILABLE:
     __all__.append("YoloNasPoseTensorrtPreprocessor")
+
+if TEMPORAL_NET_TENSORRT_AVAILABLE:
+    __all__.append("TemporalNetTensorRTPreprocessor")
 
 if MEDIAPIPE_POSE_AVAILABLE:
     __all__.append("MediaPipePosePreprocessor")
