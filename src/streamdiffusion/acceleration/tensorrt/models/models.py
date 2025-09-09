@@ -72,7 +72,7 @@ class BaseModel:
         fp16=False,
         device="cuda",
         verbose=True,
-        max_batch=16,
+        max_batch_size=4,
         min_batch_size=1,
         embedding_dim=768,
         text_maxlen=77,
@@ -83,7 +83,7 @@ class BaseModel:
         self.verbose = verbose
 
         self.min_batch = min_batch_size
-        self.max_batch = max_batch
+        self.max_batch = max_batch_size
         self.min_image_shape = 256  # min image resolution: 256x256
         self.max_image_shape = 1024  # max image resolution: 1024x1024
         self.min_latent_shape = self.min_image_shape // 8
@@ -186,10 +186,10 @@ class BaseModel:
 
 
 class CLIP(BaseModel):
-    def __init__(self, device, max_batch, embedding_dim, min_batch_size=1):
+    def __init__(self, device, max_batch_size, embedding_dim, min_batch_size=1):
         super(CLIP, self).__init__(
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=embedding_dim,
         )
@@ -245,12 +245,88 @@ class CLIP(BaseModel):
         return opt_onnx_graph
 
 
+class SafetyChecker(BaseModel):
+    def __init__(self, device, max_batch_size = 1, min_batch_size = 1):
+        super(SafetyChecker, self).__init__(
+            device=device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+        )
+        self.name = "safety_checker"
+
+    def get_input_names(self):
+        return ["clip_input"]
+
+    def get_output_names(self):
+        return ["has_nsfw_concepts"]
+
+    def get_dynamic_axes(self):
+        return {"clip_input": {0: "B"}}
+
+    def get_input_profile(self, batch_size, *args, **kwargs):
+        return {
+            "clip_input": [
+                (self.min_batch, 3, 224, 224),
+                (batch_size, 3, 224, 224),
+                (self.max_batch, 3, 224, 224),
+            ],
+        }
+
+    def get_shape_dict(self, batch_size, *args, **kwargs):
+        return {
+            "clip_input": (batch_size, 3, 224, 224),
+            "has_nsfw_concepts": (batch_size,),
+        }
+
+    def get_sample_input(self, batch_size, *args, **kwargs):
+        return (
+            torch.randn(batch_size, 3, 224, 224, dtype=torch.float16, device=self.device),
+        )
+
+class NSFWDetector(BaseModel):
+    def __init__(self, device, max_batch_size = 1, min_batch_size = 1):
+        super(NSFWDetector, self).__init__(
+            device=device,
+            max_batch_size=max_batch_size,
+            min_batch_size=min_batch_size,
+        )
+        self.name = "nsfw_detector"
+    
+    def get_input_names(self):
+        return ["pixel_values"]
+    
+    def get_output_names(self):
+        return ["logits"]
+    
+    def get_dynamic_axes(self):
+        return {"pixel_values": {0: "B"}}
+    
+    def get_input_profile(self, batch_size, *args, **kwargs):
+        return {
+            "pixel_values": [
+                (self.min_batch, 3, 448, 448),
+                (batch_size, 3, 448, 448),
+                (self.max_batch, 3, 448, 448),
+            ],
+        }
+    
+    def get_shape_dict(self, batch_size, *args, **kwargs):
+        return {
+            "pixel_values": (batch_size, 3, 448, 448),
+            "logits": (batch_size, 2),
+        }
+    
+    def get_sample_input(self, batch_size, *args, **kwargs):
+        return (
+            torch.randn(batch_size, 3, 448, 448, dtype=torch.float16, device=self.device),
+        )
+
 class UNet(BaseModel):
     def __init__(
         self,
         fp16=False,
         device="cuda",
-        max_batch=16,
+        max_batch_size=4,
         min_batch_size=1,
         embedding_dim=768,
         text_maxlen=77,
@@ -266,7 +342,7 @@ class UNet(BaseModel):
         super(UNet, self).__init__(
             fp16=fp16,
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=embedding_dim,
             text_maxlen=text_maxlen,
@@ -617,10 +693,10 @@ class UNet(BaseModel):
 
 
 class VAE(BaseModel):
-    def __init__(self, device, max_batch, min_batch_size=1):
+    def __init__(self, device, max_batch_size, min_batch_size=1):
         super(VAE, self).__init__(
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=None,
         )
@@ -680,10 +756,10 @@ class VAE(BaseModel):
 
 
 class VAEEncoder(BaseModel):
-    def __init__(self, device, max_batch, min_batch_size=1):
+    def __init__(self, device, max_batch_size, min_batch_size=1):
         super(VAEEncoder, self).__init__(
             device=device,
-            max_batch=max_batch,
+            max_batch_size=max_batch_size,
             min_batch_size=min_batch_size,
             embedding_dim=None,
         )

@@ -106,6 +106,18 @@ class Engine:
         if not hasattr(self, 'buffers'):
             return
         [buf.free() for buf in self.buffers.values() if isinstance(buf, cuda.DeviceArray)]
+        
+        if hasattr(self, 'cuda_graph_instance') and self.cuda_graph_instance is not None:
+            try:
+                CUASSERT(cudart.cudaGraphExecDestroy(self.cuda_graph_instance))
+            except:
+                pass
+        if hasattr(self, 'graph') and self.graph is not None:
+            try:
+                CUASSERT(cudart.cudaGraphDestroy(self.graph))
+            except:
+                pass
+        
         del self.engine
         del self.context
         del self.buffers
@@ -265,6 +277,15 @@ class Engine:
         # Clear existing buffers before reallocating
         self.tensors.clear()
         
+        # Reset CUDA graph when buffers are reallocated
+        # The captured graph becomes invalid with new memory addresses
+        if self.cuda_graph_instance is not None:
+            CUASSERT(cudart.cudaGraphExecDestroy(self.cuda_graph_instance))
+            self.cuda_graph_instance = None
+            if hasattr(self, 'graph') and self.graph is not None:
+                CUASSERT(cudart.cudaGraphDestroy(self.graph))
+                self.graph = None
+        
         for idx in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(idx)
 
@@ -329,6 +350,14 @@ class Engine:
                 return False
         
         return True
+
+    def reset_cuda_graph(self):
+        if self.cuda_graph_instance is not None:
+            CUASSERT(cudart.cudaGraphExecDestroy(self.cuda_graph_instance))
+            self.cuda_graph_instance = None
+        if hasattr(self, 'graph') and self.graph is not None:
+            CUASSERT(cudart.cudaGraphDestroy(self.graph))
+            self.graph = None
 
     def infer(self, feed_dict, stream, use_cuda_graph=False):
         for name, buf in feed_dict.items():

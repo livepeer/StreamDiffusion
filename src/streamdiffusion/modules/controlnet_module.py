@@ -72,8 +72,6 @@ class ControlNetModule(OrchestratorUser):
     # ---------- Public API (used by wrapper in a later step) ----------
     def install(self, stream) -> None:
         self._stream = stream
-        self.device = stream.device
-        self.dtype = stream.dtype
         if self._preprocessing_orchestrator is None:
             # Enforce shared orchestrator via base helper (raises if missing)
             self.attach_orchestrator(stream)
@@ -96,7 +94,7 @@ class ControlNetModule(OrchestratorUser):
 
     def add_controlnet(self, cfg: ControlNetConfig, control_image: Optional[Union[str, Any, torch.Tensor]] = None) -> None:
         model = self._load_pytorch_controlnet_model(cfg.model_id, cfg.conditioning_channels)
-        model = model.to(device=self.device, dtype=self.dtype)
+        model = model.to(dtype=self.dtype)
 
         preproc = None
         if cfg.preprocessor:
@@ -180,10 +178,7 @@ class ControlNetModule(OrchestratorUser):
                     self._images_version += 1
                     # Invalidate SDXL conditioning cache
                     self._sdxl_conditioning_valid = False
-                    # Pre-prepare tensors if we know the target specs
-                    if self._stream and hasattr(self._stream, 'device') and hasattr(self._stream, 'dtype'):
-                        # Use default batch size of 1 for now, will be adjusted on first use
-                        self.prepare_frame_tensors(self._stream.device, self._stream.dtype, 1)
+                    self.prepare_frame_tensors(self.device, self.dtype, 1)
             return
 
         # Use intelligent pipelining (automatically detects feedback preprocessors and switches to sync)
@@ -209,10 +204,7 @@ class ControlNetModule(OrchestratorUser):
             self._images_version += 1
             # Invalidate SDXL conditioning cache
             self._sdxl_conditioning_valid = False
-            # Pre-prepare tensors if we know the target specs
-            if self._stream and hasattr(self._stream, 'device') and hasattr(self._stream, 'dtype'):
-                # Use default batch size of 1 for now, will be adjusted on first use
-                self.prepare_frame_tensors(self._stream.device, self._stream.dtype, 1)
+            self.prepare_frame_tensors(self.device, self.dtype, 1)
 
     def update_controlnet_scale(self, index: int, scale: float) -> None:
         with self._collections_lock:
@@ -619,7 +611,7 @@ class ControlNetModule(OrchestratorUser):
                     )
                 else:
                     controlnet = ControlNetModel.from_pretrained(model_id, **load_kwargs)
-            controlnet = controlnet.to(device=self.device, dtype=self.dtype)
+            controlnet = controlnet.to(dtype=self.dtype)
             # Track model_id for updater diffing
             try:
                 setattr(controlnet, 'model_id', model_id)

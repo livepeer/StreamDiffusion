@@ -3,7 +3,6 @@ import os
 from typing import *
 
 import torch
-from diffusers.models import ControlNetModel
 
 from .models.models import BaseModel
 from .utilities import (
@@ -90,38 +89,11 @@ class EngineBuilder:
                 build_all_tactics=build_all_tactics,
                 build_enable_refit=build_enable_refit,
             )
-
+        
+        for file in os.listdir(os.path.dirname(engine_path)):
+            if file.endswith('.engine'):
+                continue
+            os.remove(os.path.join(os.path.dirname(engine_path), file))
+        
         gc.collect()
         torch.cuda.empty_cache()
-
-
-def compile_controlnet(
-    controlnet: ControlNetModel,
-    model_data: BaseModel,
-    onnx_path: str,
-    onnx_opt_path: str,
-    engine_path: str,
-    opt_batch_size: int = 1,
-    engine_build_options: dict = {},
-):
-    """
-    Compile ControlNet model to TensorRT
-    
-    Args:
-        controlnet: PyTorch ControlNet model
-        model_data: ControlNet TensorRT model definition
-        onnx_path: Path for ONNX export
-        onnx_opt_path: Path for optimized ONNX
-        engine_path: Path for TensorRT engine
-        opt_batch_size: Optimal batch size for compilation
-        engine_build_options: Additional build options
-    """
-    controlnet = controlnet.to(torch.device("cuda"), dtype=torch.float16)
-    builder = EngineBuilder(model_data, controlnet, device=torch.device("cuda"))
-    builder.build(
-        onnx_path,
-        onnx_opt_path,
-        engine_path,
-        opt_batch_size=opt_batch_size,
-        **engine_build_options,
-    )

@@ -258,6 +258,9 @@ class StreamParameterUpdater(OrchestratorUser):
         """Update streaming parameters efficiently in a single call."""
 
         with self._update_lock:
+            if t_index_list is not None:
+                self._recalculate_timestep_dependent_params(t_index_list)
+                
             if num_inference_steps is not None:
                 self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
                 self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
@@ -300,8 +303,6 @@ class StreamParameterUpdater(OrchestratorUser):
                     interpolation_method=seed_interpolation_method
                 )
 
-            if t_index_list is not None:
-                self._recalculate_timestep_dependent_params(t_index_list)
 
             # Handle ControlNet configuration updates
             if controlnet_config is not None:
@@ -673,10 +674,8 @@ class StreamParameterUpdater(OrchestratorUser):
         # Reset stock_noise to match the new init_noise
         self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
 
-    def _recalculate_timestep_dependent_params(self, t_index_list: List[int]) -> None:
-        """Recalculate all parameters that depend on t_index_list."""
-        self.stream.t_list = t_index_list
-
+    def _update_timestep_calculations(self) -> None:
+        """Update timestep-dependent calculations based on current t_list."""
         self.stream.sub_timesteps = []
         for t in self.stream.t_list:
             self.stream.sub_timesteps.append(self.stream.timesteps[t])
@@ -708,6 +707,15 @@ class StreamParameterUpdater(OrchestratorUser):
             .to(dtype=self.stream.dtype, device=self.stream.device)
         )
 
+        if self.stream.use_denoising_batch:
+            self.stream.c_skip = torch.repeat_interleave(
+                self.stream.c_skip, repeats=self.stream.frame_bff_size, dim=0
+            )
+            self.stream.c_out = torch.repeat_interleave(
+                self.stream.c_out, repeats=self.stream.frame_bff_size, dim=0
+            )
+
+        # Update alpha_prod_t_sqrt and beta_prod_t_sqrt
         alpha_prod_t_sqrt_list = []
         beta_prod_t_sqrt_list = []
         for timestep in self.stream.sub_timesteps:
@@ -736,6 +744,66 @@ class StreamParameterUpdater(OrchestratorUser):
             repeats=self.stream.frame_bff_size if self.stream.use_denoising_batch else 1,
             dim=0,
         )
+
+    def _update_timestep_values_only(self, t_index_list: List[int]) -> None:
+        """Update only timestep-dependent values when t_index_list values change but length stays same.
+        This preserves the working branch behavior for value-only changes."""
+        self.stream.t_list = t_index_list
+        self._update_timestep_calculations()
+
+    def _recalculate_timestep_dependent_params(self, t_index_list: List[int]) -> None:
+        """Recalculate all parameters that depend on t_index_list."""
+        
+        # Check if this is a structural change (length) or just value change
+        if len(t_index_list) == len(self.stream.t_list):
+            # Same length - only values changed, use lightweight update (working branch behavior)
+            self._update_timestep_values_only(t_index_list)
+            return
+        
+        # Length changed - do full recalculation including batch-dependent parameters (broken branch logic - but it works for this case!)
+        self.stream.t_list = t_index_list
+        self.stream.denoising_steps_num = len(self.stream.t_list)
+
+        if self.stream.use_denoising_batch:
+            self.stream.batch_size = self.stream.denoising_steps_num * self.stream.frame_bff_size
+            if self.stream.cfg_type == "initialize":
+                self.stream.trt_unet_batch_size = (
+                    self.stream.denoising_steps_num + 1
+                ) * self.stream.frame_bff_size
+            elif self.stream.cfg_type == "full":
+                self.stream.trt_unet_batch_size = (
+                    2 * self.stream.denoising_steps_num * self.stream.frame_bff_size
+                )
+            else:
+                self.stream.trt_unet_batch_size = self.stream.denoising_steps_num * self.stream.frame_bff_size
+        else:
+            self.stream.trt_unet_batch_size = self.stream.frame_bff_size
+            self.stream.batch_size = self.stream.frame_bff_size
+
+        if self.stream.denoising_steps_num > 1:
+            self.stream.x_t_latent_buffer = torch.zeros(
+                (
+                    (self.stream.denoising_steps_num - 1) * self.stream.frame_bff_size,
+                    4,
+                    self.stream.latent_height,
+                    self.stream.latent_width,
+                ),
+                dtype=self.stream.dtype,
+                device=self.stream.device,
+            )
+        else:
+            self.stream.x_t_latent_buffer = None
+
+        self.stream.init_noise = torch.randn(
+            (self.stream.batch_size, 4, self.stream.latent_height, self.stream.latent_width),
+            generator=self.stream.generator,
+        ).to(device=self.stream.device, dtype=self.stream.dtype)
+
+        self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
+        self.stream.prompt_embeds = self.stream.prompt_embeds[0].repeat(self.stream.batch_size, 1, 1)
+
+        # Update timestep-dependent calculations (shared with value-only path)
+        self._update_timestep_calculations()
 
     def _regenerate_resolution_tensors(self) -> None:
         """This method is no longer used - resolution updates now restart the pipeline"""
