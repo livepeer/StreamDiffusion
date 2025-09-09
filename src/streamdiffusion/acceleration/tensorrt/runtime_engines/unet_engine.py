@@ -424,10 +424,7 @@ class NSFWDetectorEngine:
 
         probs = F.softmax(logits, dim=-1)
         nsfw_prob = 1 - probs[0, 0].item()
-        if nsfw_prob >= threshold:
-            return True
-        else:
-            return False
+        return nsfw_prob >= threshold
         
 
     def to(self, *args, **kwargs):  
