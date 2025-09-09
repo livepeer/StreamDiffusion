@@ -43,7 +43,7 @@ class ImageProcessingModule(OrchestratorUser):
         enabled = proc_config.get('enabled', True)
         
         # Create processor using existing registry (same as ControlNet)
-        processor = get_preprocessor(processor_type)
+        processor = get_preprocessor(processor_type, pipeline_ref=getattr(self, '_stream', None))
         
         # Apply parameters (same pattern as ControlNet)
         processor_params = proc_config.get('params', {})
@@ -64,6 +64,19 @@ class ImageProcessingModule(OrchestratorUser):
         # Set enabled state
         setattr(processor, 'enabled', enabled)
         
+        # Align preprocessor target size with stream resolution (same as ControlNet)
+        if hasattr(self, '_stream'):
+            try:
+                if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
+                    processor.params['image_width'] = int(self._stream.width)
+                    processor.params['image_height'] = int(self._stream.height)
+                if hasattr(processor, 'image_width'):
+                    setattr(processor, 'image_width', int(self._stream.width))
+                if hasattr(processor, 'image_height'):
+                    setattr(processor, 'image_height', int(self._stream.height))
+            except Exception:
+                pass
+        
         self.processors.append(processor)
     
     def _get_ordered_processors(self) -> List[Any]:
@@ -83,6 +96,7 @@ class ImagePreprocessingModule(ImageProcessingModule):
     
     def install(self, stream) -> None:
         """Install module by registering hook with stream and attaching orchestrators."""
+        self._stream = stream  # Store stream reference for dimension access
         self.attach_orchestrator(stream)  # For sequential chain processing (fallback)
         self.attach_pipeline_preprocessing_orchestrator(stream)  # For pipelined processing
         stream.image_preprocessing_hooks.append(self.build_image_hook())
@@ -121,6 +135,7 @@ class ImagePostprocessingModule(ImageProcessingModule):
     
     def install(self, stream) -> None:
         """Install module by registering hook with stream and attaching orchestrators."""
+        self._stream = stream  # Store stream reference for dimension access
         self.attach_preprocessing_orchestrator(stream)  # For sequential chain processing (fallback)
         self.attach_postprocessing_orchestrator(stream)  # For pipelined processing
         stream.image_postprocessing_hooks.append(self.build_image_hook())
