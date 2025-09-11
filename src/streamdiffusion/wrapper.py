@@ -255,6 +255,7 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             use_ipadapter=use_ipadapter,
             ipadapter_config=ipadapter_config,
+            compile_engines_only=compile_engines_only,
         )
 
         if compile_engines_only:
