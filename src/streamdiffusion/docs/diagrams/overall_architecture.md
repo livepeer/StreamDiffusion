@@ -28,6 +28,13 @@ graph TB
         K["Output: Image"]
     end
     
+    subgraph "Runtime Control"
+        L1["StreamDiffusionWrapper"]
+        L2["update_stream_params()"]
+        L3["update_control_image()"]
+        L4["update_style_image()"]
+    end
+    
     subgraph "Management"
         L["StreamParameterUpdater: Blending/Caching"]
         M["Config Loader: YAML/JSON"]
@@ -48,6 +55,13 @@ graph TB
     H --> I
     I --> J
     J --> K
+    
+    L1 --> L2
+    L1 --> L3
+    L1 --> L4
+    L2 -.->|"Runtime Updates"| L
+    L3 -.->|"via Orchestrators"| B
+    L4 -.->|"via Orchestrators"| B
     
     L -.->|"Updates"| E
     L -.->|"Updates"| F
