@@ -17,7 +17,7 @@ class LoRAConfig:
     adapter_name: Optional[str] = None
     scale: float = 1.0
     enabled: bool = True
-    lora_type: Optional[Literal["standard", "lcm"]] = None
+    lora_type: Optional[Literal["text_encoder", "unet", "both"]] = None
     # Additional metadata
     display_name: Optional[str] = None
     description: Optional[str] = None
@@ -64,7 +64,7 @@ class LoRAModule(OrchestratorUser):
         logger.info("install: LoRA module installed successfully")
 
     def _detect_lora_type(self, lora_path: str) -> str:
-        """Detect LoRA type from file content."""
+        """Detect LoRA type from file content - text_encoder, unet, or both."""
         if lora_path in self._lora_type_cache:
             return self._lora_type_cache[lora_path]
             
@@ -78,40 +78,38 @@ class LoRAModule(OrchestratorUser):
                         lora_weights = safetensors.torch.load_file(lora_path, device='cpu')
                     else:
                         lora_weights = torch.load(lora_path, map_location='cpu')
-                except Exception:
-                    # If we can't load the weights, assume standard
-                    lora_type = 'standard'
+                except Exception as e:
+                    # If we can't load the weights, assume both
+                    logger.warning(f"_detect_lora_type: Could not load weights from {lora_path}: {e}. Assuming 'both' type.")
+                    lora_type = 'both'
                     self._lora_type_cache[lora_path] = lora_type
                     return lora_type
             else:
-                # HuggingFace model ID - use heuristics based on name
-                if 'lcm' in lora_path.lower():
-                    lora_type = 'lcm'
-                    self._lora_type_cache[lora_path] = lora_type
-                    return lora_type
-                else:
-                    lora_type = 'standard'
-                    self._lora_type_cache[lora_path] = lora_type
-                    return lora_type
+                # HuggingFace model ID - assume both for unknown models
+                lora_type = 'both'
+                logger.info(f"_detect_lora_type: Assuming 'both' type for HuggingFace model: {lora_path}")
+                self._lora_type_cache[lora_path] = lora_type
+                return lora_type
             
-            # Check for LCM patterns in weights
-            if any('lcm' in key.lower() for key in lora_weights.keys()):
-                lora_type = 'lcm'
+            # Check for text encoder vs unet patterns
+            text_encoder_keys = [k for k in lora_weights.keys() if 'text_model' in k or 'text_encoder' in k or 'lora_te' in k]
+            unet_keys = [k for k in lora_weights.keys() if 'unet' in k or 'diffusion_model' in k or 'lora_unet' in k]
+            
+            if text_encoder_keys and not unet_keys:
+                lora_type = 'text_encoder'
+                logger.info(f"_detect_lora_type: Detected text encoder LoRA from weight patterns in {lora_path}")
+            elif unet_keys and not text_encoder_keys:
+                lora_type = 'unet'
+                logger.info(f"_detect_lora_type: Detected UNet LoRA from weight patterns in {lora_path}")
+            elif unet_keys and text_encoder_keys:
+                lora_type = 'both'
+                logger.info(f"_detect_lora_type: Detected both text encoder and UNet LoRA from weight patterns in {lora_path}")
             else:
-                # Check for text encoder vs unet patterns
-                text_encoder_keys = [k for k in lora_weights.keys() if 'text_model' in k or 'text_encoder' in k]
-                unet_keys = [k for k in lora_weights.keys() if 'unet' in k or 'diffusion_model' in k]
-                
-                if text_encoder_keys and not unet_keys:
-                    lora_type = 'text_encoder'
-                elif unet_keys and not text_encoder_keys:
-                    lora_type = 'unet'
-                else:
-                    lora_type = 'standard'
-                    
+                lora_type = 'unknown'
+                logger.info(f"_detect_lora_type: Detected unknown LoRA from weight patterns in {lora_path}")
         except Exception as e:
-            logger.warning(f"_detect_lora_type: Failed to detect LoRA type for {lora_path}: {e}")
-            lora_type = 'standard'
+            logger.warning(f"_detect_lora_type: Failed to detect LoRA type for {lora_path}: {e}. Assuming 'both' type.")
+            lora_type = 'both'
             
         self._lora_type_cache[lora_path] = lora_type
         return lora_type
@@ -166,7 +164,26 @@ class LoRAModule(OrchestratorUser):
                 # 2. Detect LoRA type if not specified
                 if config.lora_type is None:
                     config.lora_type = self._detect_lora_type(config.lora_path)
-                    logger.info(f"add_lora: Detected LoRA type: {config.lora_type} for {config.lora_path}")
+                    type_description = self._get_type_description(config.lora_type)
+                    logger.info(f"add_lora: Detected LoRA type: {config.lora_type} ({type_description}) for {config.lora_path}")
+                else:
+                    logger.info(f"add_lora: Using specified LoRA type: {config.lora_type} for {config.lora_path}")
+                
+                # 2.5. Check for TensorRT compatibility
+                is_tensorrt = self._is_tensorrt_acceleration()
+                logger.info(f"add_lora: TensorRT detection: {is_tensorrt}, LoRA type: {config.lora_type}")
+                if is_tensorrt and config.lora_type == 'unet':
+                    print("=" * 80)
+                    print("TENSORRT COMPATIBILITY WARNING")
+                    print("=" * 80)
+                    print(f"Pure UNet LoRAs are NOT supported with TensorRT acceleration!")
+                    print(f"LoRA: {config.lora_path}")
+                    print(f"Detected Type: {config.lora_type}")
+                    print(f"Only text_encoder and 'both' type LoRAs are supported with TensorRT pipelines.")
+                    print("=" * 80)
+                    print("This LoRA will NOT be loaded to prevent pipeline errors.")
+                    print("=" * 80)
+                    return False
                 
                 # 3. Generate adapter name if not provided
                 if config.adapter_name is None:
@@ -436,3 +453,68 @@ class LoRAModule(OrchestratorUser):
                 'lora_types': [lora.lora_type for lora in self.loras],
                 'loaded_adapters': dict(self.loaded_adapters),
             }
+
+    def get_lora_type_info(self, lora_path: str) -> Dict[str, Any]:
+        """
+        Get detailed LoRA type information for a specific LoRA.
+        
+        Args:
+            lora_path: Path to the LoRA file or HuggingFace model ID
+            
+        Returns:
+            Dictionary containing type information and detection details
+        """
+        lora_type = self._detect_lora_type(lora_path)
+        
+        # Check if this LoRA is currently loaded
+        loaded_info = None
+        with self._collections_lock:
+            for lora in self.loras:
+                if lora.lora_path == lora_path:
+                    loaded_info = {
+                        'is_loaded': True,
+                        'adapter_name': lora.adapter_name,
+                        'scale': lora.scale,
+                        'enabled': lora.enabled,
+                        'display_name': lora.display_name,
+                        'description': lora.description
+                    }
+                    break
+        
+        if loaded_info is None:
+            loaded_info = {'is_loaded': False}
+        
+        return {
+            'lora_path': lora_path,
+            'detected_type': lora_type,
+            'type_description': self._get_type_description(lora_type),
+            'is_cached': lora_path in self._lora_type_cache,
+            'loaded_info': loaded_info
+        }
+    
+    def _get_type_description(self, lora_type: str) -> str:
+        """Get human-readable description of LoRA type."""
+        descriptions = {
+            'text_encoder': 'Text Encoder LoRA - affects only text processing',
+            'unet': 'UNet LoRA - affects only the diffusion model',
+            'both': 'Both Text Encoder and UNet LoRA - affects text processing and diffusion model',
+            'unknown': 'Unknown LoRA type'
+        }
+        return descriptions.get(lora_type, f'Unknown LoRA type: {lora_type}')
+    
+    def _is_tensorrt_acceleration(self) -> bool:
+        """Check if the pipeline is using TensorRT acceleration."""
+        if not self._stream:
+            logger.info("_is_tensorrt_acceleration: No stream available")
+            return False
+        
+        # Check wrapper's acceleration setting
+        if hasattr(self._stream, '_param_updater') and self._stream._param_updater.wrapper:
+            wrapper = self._stream._param_updater.wrapper
+            acceleration = getattr(wrapper, '_acceleration', None)
+            logger.info(f"_is_tensorrt_acceleration: Wrapper acceleration: {acceleration}")
+            return acceleration == 'tensorrt'
+        
+        logger.info("_is_tensorrt_acceleration: No wrapper available")
+        return False
+    
