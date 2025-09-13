@@ -104,6 +104,7 @@ class Pipeline:
         self.pipeline_mode = "img2img"  # default mode
         self.has_controlnet = False
         self.has_ipadapter = False
+        self.has_lora = False
 
         if args.controlnet_config:
             try:
@@ -115,6 +116,7 @@ class Pipeline:
                 # Check what features are enabled
                 self.has_controlnet = 'controlnets' in self.config and len(self.config['controlnets']) > 0
                 self.has_ipadapter = 'ipadapters' in self.config and len(self.config['ipadapters']) > 0
+                self.has_lora = 'loras' in self.config and len(self.config['loras']) > 0
                 
 
                 
