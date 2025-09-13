@@ -250,6 +250,7 @@ class StreamParameterUpdater(OrchestratorUser):
         normalize_seed_weights: Optional[bool] = None,
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        lora_config: Optional[List[Dict[str, Any]]] = None,
         image_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
         image_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
         latent_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
@@ -313,6 +314,11 @@ class StreamParameterUpdater(OrchestratorUser):
             if ipadapter_config is not None:
                 logger.info(f"update_stream_params: Updating IPAdapter configuration")
                 self._update_ipadapter_config(ipadapter_config)
+            
+            # Handle LoRA configuration updates
+            if lora_config is not None:
+                logger.info(f"update_stream_params: Updating LoRA configuration")
+                self._update_lora_config(lora_config)
             
             # Handle Hook configuration updates
             if image_preprocessing_config is not None:
@@ -1457,4 +1463,127 @@ class StreamParameterUpdater(OrchestratorUser):
             logger.info(f"_update_hook_config: Removed extra processor {removed_idx}: {removed_processor.__class__.__name__}")
         
         logger.info(f"_update_hook_config: Finished updating {hook_type}, now has {len(hook_module.processors)} processors")
+
+    def _update_lora_config(self, desired_config: List[Dict[str, Any]]) -> None:
+        """
+        Update LoRA configuration by diffing current vs desired state.
+        
+        Args:
+            desired_config: Complete LoRA configuration list defining the desired state.
+                           Each dict contains: lora_path, scale, enabled, etc.
+        """
+        logger.debug(f"_update_lora_config: Called with desired_config={desired_config}")
+        
+        # Find the LoRA module
+        lora_module = self._get_lora_module()
+        if not lora_module:
+            logger.warning(f"_update_lora_config: No LoRA module found")
+            return
+        
+        logger.debug(f"_update_lora_config: Found LoRA module: {lora_module}")
+        
+        current_config = self._get_current_lora_config()
+        logger.debug(f"_update_lora_config: Current config: {current_config}")
+        
+        # Simple approach: detect what changed and apply minimal updates
+        current_loras = {i: lora.get('lora_path', f'lora_{i}') for i, lora in enumerate(current_config)}
+        desired_loras = {cfg['lora_path']: cfg for cfg in desired_config}
+        
+        # Remove LoRAs not in desired config
+        for i in reversed(range(len(current_config))):
+            lora_path = current_loras.get(i, f'lora_{i}')
+            if lora_path not in desired_loras:
+                logger.info(f"_update_lora_config: Removing LoRA {lora_path}")
+                try:
+                    lora_module.remove_lora(i)
+                except Exception as e:
+                    logger.error(f"_update_lora_config: Failed to remove LoRA at index {i}: {e}")
+        
+        # Add new LoRAs and update existing ones
+        for desired_cfg in desired_config:
+            lora_path = desired_cfg['lora_path']
+            existing_index = next((i for i, path in current_loras.items() if path == lora_path), None)
+            
+            if existing_index is None:
+                # Add new LoRA
+                logger.info(f"_update_lora_config: Adding LoRA {lora_path}")
+                try:
+                    from .modules.lora_module import LoRAConfig
+                    lora_config_obj = LoRAConfig(**desired_cfg)
+                    lora_module.add_lora(lora_config_obj)
+                except Exception as e:
+                    logger.error(f"_update_lora_config: Failed to add LoRA {lora_path}: {e}")
+            else:
+                # Update existing LoRA
+                if 'scale' in desired_cfg:
+                    current_scale = current_config[existing_index].get('scale', 1.0)
+                    desired_scale = desired_cfg['scale']
+                    
+                    logger.debug(f"_update_lora_config: Comparing scales for {lora_path}: current={current_scale}, desired={desired_scale}")
+                    
+                    if current_scale != desired_scale:
+                        logger.debug(f"_update_lora_config: Scale change detected, updating {lora_path} scale: {current_scale} -> {desired_scale}")
+                        logger.info(f"_update_lora_config: Updating {lora_path} scale: {current_scale} → {desired_scale}")
+                        try:
+                            logger.debug(f"_update_lora_config: Calling lora_module.update_lora_scale({existing_index}, {desired_scale})")
+                            result = lora_module.update_lora_scale(existing_index, desired_scale)
+                            logger.debug(f"_update_lora_config: update_lora_scale returned: {result}")
+                        except Exception as e:
+                            logger.error(f"_update_lora_config: Exception during scale update: {e}")
+                            logger.error(f"_update_lora_config: Failed to update scale for LoRA at index {existing_index}: {e}")
+                    else:
+                        logger.debug(f"_update_lora_config: No scale change needed for {lora_path}")
+                
+                # Enable/disable toggle
+                if 'enabled' in desired_cfg:
+                    current_enabled = current_config[existing_index].get('enabled', True)
+                    desired_enabled = desired_cfg['enabled']
+                    
+                    if current_enabled != desired_enabled:
+                        logger.info(f"_update_lora_config: {'Enabling' if desired_enabled else 'Disabling'} LoRA {lora_path}")
+                        try:
+                            lora_module.update_lora_enabled(existing_index, desired_enabled)
+                        except Exception as e:
+                            logger.error(f"_update_lora_config: Failed to update enabled state for LoRA at index {existing_index}: {e}")
+
+    def _get_lora_module(self):
+        """
+        Get the LoRA module from the pipeline structure.
+        
+        Returns:
+            LoRA module object or None if not found
+        """
+        # Check if stream has LoRA module
+        if hasattr(self.stream, 'lora_module'):
+            return self.stream.lora_module
+            
+        # Check if stream has nested stream
+        if hasattr(self.stream, 'stream') and hasattr(self.stream.stream, 'lora_module'):
+            return self.stream.stream.lora_module
+        
+        # Check if we have a wrapper reference and can access through it
+        if self.wrapper and hasattr(self.wrapper, 'stream'):
+            if hasattr(self.wrapper.stream, 'lora_module'):
+                return self.wrapper.stream.lora_module
+            elif hasattr(self.wrapper.stream, 'stream') and hasattr(self.wrapper.stream.stream, 'lora_module'):
+                return self.wrapper.stream.stream.lora_module
+        
+        return None
+
+    def _get_current_lora_config(self) -> List[Dict[str, Any]]:
+        """
+        Get current LoRA configuration state.
+        
+        Returns:
+            List of current LoRA configurations
+        """
+        lora_module = self._get_lora_module()
+        if not lora_module:
+            return []
+        
+        try:
+            return lora_module.get_loaded_loras_info()
+        except Exception as e:
+            logger.error(f"_get_current_lora_config: Failed to get LoRA info: {e}")
+            return []
 

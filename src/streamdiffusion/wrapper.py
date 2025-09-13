@@ -10,6 +10,7 @@ from diffusers import AutoencoderTiny, StableDiffusionPipeline, StableDiffusionX
 from .pipeline import StreamDiffusion
 from .model_detection import detect_model
 from .image_utils import postprocess_image
+from .modules import LoRAModule
 
 import logging
 logger = logging.getLogger(__name__)
@@ -72,7 +73,6 @@ class StreamDiffusionWrapper:
         t_index_list: List[int],
         min_batch_size: int = 1,
         max_batch_size: int = 4,
-        lora_dict: Optional[Dict[str, float]] = None,
         mode: Literal["img2img", "txt2img"] = "img2img",
         output_type: Literal["pil", "pt", "np", "latent"] = "pil",
         lcm_lora_id: Optional[str] = None,
@@ -107,6 +107,9 @@ class StreamDiffusionWrapper:
         # IPAdapter options
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        # LoRA options
+        use_lora: bool = False,
+        lora_config: Optional[List[Dict[str, Any]]] = None,
         # Pipeline hook configurations
         image_preprocessing_config: Optional[Dict[str, Any]] = None,
         image_postprocessing_config: Optional[Dict[str, Any]] = None,
@@ -124,10 +127,6 @@ class StreamDiffusionWrapper:
             The model id or path to load.
         t_index_list : List[int]
             The t_index_list to use for inference.
-        lora_dict : Optional[Dict[str, float]], optional
-            The lora_dict to load, by default None.
-            Keys are the LoRA names and values are the LoRA scales.
-            Example: {'LoRA_1' : 0.5 , 'LoRA_2' : 0.7 ,...}
         mode : Literal["img2img", "txt2img"], optional
             txt2img or img2img, by default "img2img".
         output_type : Literal["pil", "pt", "np", "latent"], optional
@@ -206,6 +205,8 @@ class StreamDiffusionWrapper:
         self.use_controlnet = use_controlnet
         self.use_ipadapter = use_ipadapter
         self.ipadapter_config = ipadapter_config
+        self.use_lora = use_lora
+        self.lora_config = lora_config
         
         # Store pipeline hook configurations
         self.image_preprocessing_config = image_preprocessing_config
@@ -250,7 +251,6 @@ class StreamDiffusionWrapper:
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
-            lora_dict=lora_dict,
             lcm_lora_id=lcm_lora_id,
             vae_id=vae_id,
             t_index_list=t_index_list,
@@ -267,6 +267,8 @@ class StreamDiffusionWrapper:
             controlnet_config=controlnet_config,
             use_ipadapter=use_ipadapter,
             ipadapter_config=ipadapter_config,
+            use_lora=use_lora,
+            lora_config=lora_config,
             # Pipeline hook configurations
             image_preprocessing_config=image_preprocessing_config,
             image_postprocessing_config=image_postprocessing_config,
@@ -491,6 +493,8 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[List[Dict[str, Any]]] = None,
         # IPAdapter configuration
         ipadapter_config: Optional[Dict[str, Any]] = None,
+        # LoRA configuration
+        lora_config: Optional[List[Dict[str, Any]]] = None,
         # Hook configurations
         image_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
         image_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
@@ -558,6 +562,7 @@ class StreamDiffusionWrapper:
             normalize_seed_weights=normalize_seed_weights,
             controlnet_config=controlnet_config,
             ipadapter_config=ipadapter_config,
+            lora_config=lora_config,
             image_preprocessing_config=image_preprocessing_config,
             image_postprocessing_config=image_postprocessing_config,
             latent_preprocessing_config=latent_preprocessing_config,
@@ -874,7 +879,6 @@ class StreamDiffusionWrapper:
         self,
         model_id_or_path: str,
         t_index_list: List[int],
-        lora_dict: Optional[Dict[str, float]] = None,
         lcm_lora_id: Optional[str] = None,
         vae_id: Optional[str] = None,
         acceleration: Literal["none", "xformers", "tensorrt"] = "tensorrt",
@@ -890,6 +894,8 @@ class StreamDiffusionWrapper:
         controlnet_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
         use_ipadapter: bool = False,
         ipadapter_config: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+        use_lora: bool = False,
+        lora_config: Optional[List[Dict[str, Any]]] = None,
         # Pipeline hook configurations (Phase 4: Configuration Integration)
         image_preprocessing_config: Optional[Dict[str, Any]] = None,
         image_postprocessing_config: Optional[Dict[str, Any]] = None,
@@ -917,10 +923,6 @@ class StreamDiffusionWrapper:
             The model id or path to load.
         t_index_list : List[int]
             The t_index_list to use for inference.
-        lora_dict : Optional[Dict[str, float]], optional
-            The lora_dict to load, by default None.
-            Keys are the LoRA names and values are the LoRA scales.
-            Example: {'LoRA_1' : 0.5 , 'LoRA_2' : 0.7 ,...}
         lcm_lora_id : Optional[str], optional
             The lcm_lora_id to load, by default None.
         vae_id : Optional[str], optional
@@ -1076,20 +1078,29 @@ class StreamDiffusionWrapper:
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
         )
-        if not self.sd_turbo:
-            if use_lcm_lora:
-                if lcm_lora_id is not None:
-                    stream.load_lcm_lora(
-                        pretrained_model_name_or_path_or_dict=lcm_lora_id
-                    )
-                else:
-                    stream.load_lcm_lora()
-                stream.fuse_lora()
+        # Initialize LoRA module if configured
+        if use_lora and lora_config:
+            lora_module = LoRAModule(device=self.device, dtype=self.dtype)
+            lora_module.install(stream)
+            stream.lora_module = lora_module
+            
+            # Load initial LoRAs from config
+            from .modules.lora_module import LoRAConfig
+            for lora_cfg in lora_config:
+                lora_config_obj = LoRAConfig(**lora_cfg)
+                lora_module.add_lora(lora_config_obj)
+                
+            logger.info(f"_load_model: Initialized LoRA module with {len(lora_config)} LoRAs")
 
-            if lora_dict is not None:
-                for lora_name, lora_scale in lora_dict.items():
-                    stream.load_lora(lora_name)
-                    stream.fuse_lora(lora_scale=lora_scale)
+        # Handle LCM LoRA loading (performance LoRA)
+        if not self.sd_turbo and use_lcm_lora:
+            if lcm_lora_id is not None:
+                stream.load_lcm_lora(
+                    pretrained_model_name_or_path_or_dict=lcm_lora_id
+                )
+            else:
+                stream.load_lcm_lora()
+            stream.fuse_lora()
 
         if use_tiny_vae:
             if vae_id is not None:
@@ -1853,7 +1864,7 @@ class StreamDiffusionWrapper:
             'num_inference_steps': num_inference_steps,
         })
 
-        # Module configs (ControlNet, IP-Adapter)
+        # Module configs (ControlNet, IP-Adapter, LoRA)
         try:
             controlnet_config = updater._get_current_controlnet_config()
         except Exception:
@@ -1862,6 +1873,10 @@ class StreamDiffusionWrapper:
             ipadapter_config = updater._get_current_ipadapter_config()
         except Exception:
             ipadapter_config = None
+        try:
+            lora_config = updater._get_current_lora_config()
+        except Exception:
+            lora_config = []
         # Hook configs
         try:
             image_preprocessing_config = updater._get_current_hook_config('image_preprocessing')
@@ -1883,6 +1898,7 @@ class StreamDiffusionWrapper:
         state.update({
             'controlnet_config': controlnet_config,
             'ipadapter_config': ipadapter_config,
+            'lora_config': lora_config,
             'image_preprocessing_config': image_preprocessing_config,
             'image_postprocessing_config': image_postprocessing_config,
             'latent_preprocessing_config': latent_preprocessing_config,

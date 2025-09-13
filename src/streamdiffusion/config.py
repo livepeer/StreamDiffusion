@@ -141,6 +141,14 @@ def _extract_wrapper_params(config: Dict[str, Any]) -> Dict[str, Any]:
         param_map['use_ipadapter'] = config.get('use_ipadapter', False)
         param_map['ipadapter_config'] = config.get('ipadapter_config')
     
+    # Set LoRA usage if LoRAs are configured
+    if 'loras' in config and config['loras']:
+        param_map['use_lora'] = True
+        param_map['lora_config'] = _prepare_lora_configs(config)
+    else:
+        param_map['use_lora'] = config.get('use_lora', False)
+        param_map['lora_config'] = config.get('lora_config')
+    
     # Pipeline hook configurations (Phase 4: Configuration Integration)
     hook_configs = _prepare_pipeline_hook_configs(config)
     param_map.update(hook_configs)
@@ -217,6 +225,24 @@ def _prepare_ipadapter_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         ipadapter_configs.append(ipadapter_config)
     
     return ipadapter_configs
+
+
+def _prepare_lora_configs(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Prepare LoRA configurations for wrapper"""
+    lora_configs = []
+    
+    for lora_config in config['loras']:
+        lora_config_prepared = {
+            'lora_path': lora_config['lora_path'],
+            'scale': lora_config.get('scale', 1.0),
+            'enabled': lora_config.get('enabled', True),
+            'lora_type': lora_config.get('lora_type'),
+            'display_name': lora_config.get('display_name'),
+            'description': lora_config.get('description'),
+        }
+        lora_configs.append(lora_config_prepared)
+    
+    return lora_configs
 
 
 def _prepare_pipeline_hook_configs(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -417,6 +443,24 @@ def _validate_config(config: Dict[str, Any]) -> None:
             
             if 'image_encoder_path' not in ipadapter:
                 raise ValueError(f"_validate_config: IPAdapter {i} missing required 'image_encoder_path'")
+
+    # Validate loras if present
+    if 'loras' in config:
+        if not isinstance(config['loras'], list):
+            raise ValueError("_validate_config: 'loras' must be a list")
+        
+        for i, lora in enumerate(config['loras']):
+            if not isinstance(lora, dict):
+                raise ValueError(f"_validate_config: LoRA {i} must be a dictionary")
+            
+            if 'lora_path' not in lora:
+                raise ValueError(f"_validate_config: LoRA {i} missing required 'lora_path'")
+            
+            # Validate scale if provided
+            if 'scale' in lora:
+                scale = lora['scale']
+                if not isinstance(scale, (int, float)) or scale < 0:
+                    raise ValueError(f"_validate_config: LoRA {i} 'scale' must be a non-negative number, got {scale}")
 
     # Validate prompt blending configuration if present
     if 'prompt_blending' in config:

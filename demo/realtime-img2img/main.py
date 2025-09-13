@@ -502,6 +502,9 @@ class App:
             # Add IPAdapter information
             ipadapter_info = self._get_ipadapter_info()
             
+            # Add LoRA information
+            lora_info = self._get_lora_info()
+            
             # Include config prompt if available, otherwise use default
             config_prompt = None
             if self.uploaded_controlnet_config and 'prompt' in self.uploaded_controlnet_config:
@@ -636,6 +639,7 @@ class App:
                     "pipeline_active": bool(self.pipeline) and hasattr(self.pipeline, 'stream'),
                     "controlnet": controlnet_info,
                     "ipadapter": ipadapter_info,
+                    "lora": lora_info,
                     "config_prompt": config_prompt,
                     "t_index_list": current_t_index_list,
                     "acceleration": current_acceleration,
@@ -1271,6 +1275,252 @@ class App:
             except Exception as e:
                 logging.error(f"update_ipadapter_weight_type: Failed to update weight type: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update weight type: {str(e)}")
+
+        # LoRA API endpoints
+        @self.app.get("/api/lora/list")
+        async def get_lora_list():
+            """Get list of loaded LoRAs"""
+            try:
+                return JSONResponse({"lora": self._get_lora_info()})
+            except Exception as e:
+                logging.error(f"get_lora_list: Failed to get LoRA list: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to get LoRA list: {str(e)}")
+
+        @self.app.post("/api/lora/add")
+        async def add_lora(request: Request):
+            """Add a LoRA by path or HuggingFace model ID"""
+            try:
+                data = await request.json()
+                lora_path = data.get("lora_path")
+                scale = data.get("scale", 1.0)
+                
+                if not lora_path:
+                    raise HTTPException(status_code=400, detail="Missing lora_path parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Add LoRA using update_stream_params
+                lora_config = [{
+                    "lora_path": lora_path,
+                    "scale": scale,
+                    "enabled": True
+                }]
+                
+                # Get current LoRA config and append new one
+                try:
+                    current_state = self.pipeline.stream.get_stream_state()
+                    current_lora_config = current_state.get('lora_config', [])
+                    updated_lora_config = current_lora_config + lora_config
+                    
+                    self.pipeline.update_stream_params(lora_config=updated_lora_config)
+                    success = True
+                except Exception as e:
+                    logger.error(f"add_lora: Failed to update stream params: {e}")
+                    success = False
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Added LoRA: {lora_path}",
+                        "lora_info": self._get_lora_info()
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to add LoRA")
+                
+            except Exception as e:
+                logging.error(f"add_lora: Failed to add LoRA: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to add LoRA: {str(e)}")
+
+        @self.app.post("/api/lora/remove")
+        async def remove_lora(request: Request):
+            """Remove a LoRA by index"""
+            try:
+                data = await request.json()
+                index = data.get("index")
+                
+                if index is None:
+                    raise HTTPException(status_code=400, detail="Missing index parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Remove LoRA using update_stream_params
+                try:
+                    current_state = self.pipeline.stream.get_stream_state()
+                    current_lora_config = current_state.get('lora_config', [])
+                    
+                    if index < 0 or index >= len(current_lora_config):
+                        raise HTTPException(status_code=400, detail=f"Invalid LoRA index: {index}")
+                    
+                    # Remove LoRA at index
+                    updated_lora_config = current_lora_config[:index] + current_lora_config[index+1:]
+                    
+                    self.pipeline.update_stream_params(lora_config=updated_lora_config)
+                    success = True
+                except Exception as e:
+                    logger.error(f"remove_lora: Failed to update stream params: {e}")
+                    success = False
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Removed LoRA at index {index}",
+                        "lora_info": self._get_lora_info()
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to remove LoRA")
+                
+            except Exception as e:
+                logging.error(f"remove_lora: Failed to remove LoRA: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to remove LoRA: {str(e)}")
+
+        @self.app.post("/api/lora/update-scale")
+        async def update_lora_scale(request: Request):
+            """Update LoRA scale in real-time"""
+            try:
+                data = await request.json()
+                index = data.get("index")
+                scale = data.get("scale")
+                
+                if index is None or scale is None:
+                    raise HTTPException(status_code=400, detail="Missing index or scale parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update LoRA scale using update_stream_params
+                try:
+                    current_state = self.pipeline.stream.get_stream_state()
+                    current_lora_config = current_state.get('lora_config', [])
+                    
+                    if index < 0 or index >= len(current_lora_config):
+                        raise HTTPException(status_code=400, detail=f"Invalid LoRA index: {index}")
+                    
+                    # Update scale at index
+                    updated_lora_config = current_lora_config.copy()
+                    updated_lora_config[index] = {**updated_lora_config[index], "scale": scale}
+                    
+                    self.pipeline.update_stream_params(lora_config=updated_lora_config)
+                    success = True
+                except Exception as e:
+                    logger.error(f"update_lora_scale: Failed to update stream params: {e}")
+                    success = False
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Updated LoRA scale at index {index} to {scale}"
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to update LoRA scale")
+                
+            except Exception as e:
+                logging.error(f"update_lora_scale: Failed to update LoRA scale: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update LoRA scale: {str(e)}")
+
+        @self.app.post("/api/lora/update-enabled")
+        async def update_lora_enabled(request: Request):
+            """Update LoRA enabled state in real-time"""
+            try:
+                data = await request.json()
+                index = data.get("index")
+                enabled = data.get("enabled")
+                
+                if index is None or enabled is None:
+                    raise HTTPException(status_code=400, detail="Missing index or enabled parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Update LoRA enabled state using update_stream_params
+                try:
+                    current_state = self.pipeline.stream.get_stream_state()
+                    current_lora_config = current_state.get('lora_config', [])
+                    
+                    if index < 0 or index >= len(current_lora_config):
+                        raise HTTPException(status_code=400, detail=f"Invalid LoRA index: {index}")
+                    
+                    # Update enabled state at index
+                    updated_lora_config = current_lora_config.copy()
+                    updated_lora_config[index] = {**updated_lora_config[index], "enabled": enabled}
+                    
+                    self.pipeline.update_stream_params(lora_config=updated_lora_config)
+                    success = True
+                except Exception as e:
+                    logger.error(f"update_lora_enabled: Failed to update stream params: {e}")
+                    success = False
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"{'Enabled' if enabled else 'Disabled'} LoRA at index {index}"
+                    })
+                else:
+                    raise HTTPException(status_code=500, detail="Failed to update LoRA enabled state")
+                
+            except Exception as e:
+                logging.error(f"update_lora_enabled: Failed to update LoRA enabled state: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update LoRA enabled state: {str(e)}")
+
+        @self.app.post("/api/lora/upload")
+        async def upload_lora(file: UploadFile = File(...)):
+            """Upload a LoRA file"""
+            try:
+                # Validate file type
+                if not file.filename or not (file.filename.endswith('.safetensors') or file.filename.endswith('.bin')):
+                    raise HTTPException(status_code=400, detail="File must be a .safetensors or .bin file")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Create uploads directory if it doesn't exist
+                uploads_dir = Path(__file__).parent / "uploads" / "loras"
+                uploads_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save uploaded file
+                file_path = uploads_dir / file.filename
+                content = await file.read()
+                
+                with open(file_path, 'wb') as f:
+                    f.write(content)
+                
+                # Add LoRA using update_stream_params
+                lora_config = [{
+                    "lora_path": str(file_path),
+                    "scale": 1.0,
+                    "enabled": True,
+                    "display_name": file.filename
+                }]
+                
+                try:
+                    current_state = self.pipeline.stream.get_stream_state()
+                    current_lora_config = current_state.get('lora_config', [])
+                    updated_lora_config = current_lora_config + lora_config
+                    
+                    self.pipeline.update_stream_params(lora_config=updated_lora_config)
+                    success = True
+                except Exception as e:
+                    logger.error(f"upload_lora: Failed to update stream params: {e}")
+                    success = False
+                
+                if success:
+                    return JSONResponse({
+                        "status": "success",
+                        "message": f"Uploaded and added LoRA: {file.filename}",
+                        "lora_info": self._get_lora_info()
+                    })
+                else:
+                    # Clean up file if adding failed
+                    try:
+                        file_path.unlink()
+                    except:
+                        pass
+                    raise HTTPException(status_code=500, detail="Failed to add uploaded LoRA")
+                
+            except Exception as e:
+                logging.error(f"upload_lora: Failed to upload LoRA: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to upload LoRA: {str(e)}")
 
         @self.app.post("/api/params")
         async def update_params(request: Request):
@@ -2706,6 +2956,78 @@ class App:
                 pass
         
         return ipadapter_info
+
+    def _get_lora_info(self):
+        """Get LoRA information from uploaded config or active pipeline"""
+        lora_info = {
+            "enabled": False,
+            "config_loaded": False,
+            "loras": []
+        }
+        
+        # Check uploaded config first
+        if self.uploaded_controlnet_config:
+            if 'loras' in self.uploaded_controlnet_config and len(self.uploaded_controlnet_config['loras']) > 0:
+                lora_info["enabled"] = True
+                lora_info["config_loaded"] = True
+                
+                # Convert config LoRAs to display format
+                for i, lora_config in enumerate(self.uploaded_controlnet_config['loras']):
+                    lora_info["loras"].append({
+                        "index": i,
+                        "lora_path": lora_config.get('lora_path', ''),
+                        "scale": lora_config.get('scale', 1.0),
+                        "enabled": lora_config.get('enabled', True),
+                        "lora_type": lora_config.get('lora_type'),
+                        "display_name": lora_config.get('display_name'),
+                        "description": lora_config.get('description'),
+                        "adapter_name": lora_config.get('adapter_name')
+                    })
+                    
+        # Otherwise check active pipeline
+        elif self.pipeline and self.pipeline.use_config and self.pipeline.config and 'loras' in self.pipeline.config:
+            if len(self.pipeline.config['loras']) > 0:
+                lora_info["enabled"] = True
+                lora_info["config_loaded"] = True
+                
+                # Convert config LoRAs to display format
+                for i, lora_config in enumerate(self.pipeline.config['loras']):
+                    lora_info["loras"].append({
+                        "index": i,
+                        "lora_path": lora_config.get('lora_path', ''),
+                        "scale": lora_config.get('scale', 1.0),
+                        "enabled": lora_config.get('enabled', True),
+                        "lora_type": lora_config.get('lora_type'),
+                        "display_name": lora_config.get('display_name'),
+                        "description": lora_config.get('description'),
+                        "adapter_name": lora_config.get('adapter_name')
+                    })
+        
+        # Try to get current LoRA state from active pipeline if available
+        if self.pipeline and hasattr(self.pipeline.stream, 'get_stream_state'):
+            try:
+                # Get current LoRA info from stream state
+                current_state = self.pipeline.stream.get_stream_state()
+                current_lora_config = current_state.get('lora_config', [])
+                if current_lora_config:
+                    lora_info["enabled"] = True
+                    lora_info["loras"] = [
+                        {
+                            "index": i,
+                            "lora_path": lora.get('lora_path', ''),
+                            "scale": lora.get('scale', 1.0),
+                            "enabled": lora.get('enabled', True),
+                            "lora_type": lora.get('lora_type'),
+                            "display_name": lora.get('display_name'),
+                            "description": lora.get('description'),
+                            "adapter_name": lora.get('adapter_name')
+                        }
+                        for i, lora in enumerate(current_lora_config)
+                    ]
+            except Exception as e:
+                logger.warning(f"_get_lora_info: Failed to get current LoRA state: {e}")
+        
+        return lora_info
 
     def _get_hook_module(self, hook_type: str):
         """Get the hook module for a specific hook type using the proper pattern"""

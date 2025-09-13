@@ -8,6 +8,7 @@
   import PipelineOptions from '$lib/components/PipelineOptions.svelte';
   import ControlNetConfig from '$lib/components/ControlNetConfig.svelte';
   import IPAdapterConfig from '$lib/components/IPAdapterConfig.svelte';
+  import LoRAConfig from '$lib/components/LoRAConfig.svelte';
   import BlendingControl from '$lib/components/BlendingControl.svelte';
   import PipelineHooksConfig from '$lib/components/PipelineHooksConfig.svelte';
   import ResolutionPicker from '$lib/components/ResolutionPicker.svelte';
@@ -25,6 +26,7 @@
   let pipelineInfo: PipelineInfo;
   let controlnetInfo: any = null;
   let ipadapterInfo: any = null;
+  let loraInfo: any = null;
   let imagePreprocessingInfo: any = null;
   let imagePostprocessingInfo: any = null;
   let latentPreprocessingInfo: any = null;
@@ -131,6 +133,7 @@
       
       controlnetInfo = settings.controlnet || null;
       ipadapterInfo = settings.ipadapter || null;
+      loraInfo = settings.lora || null;
       
       // Load pipeline hooks info
       try {
@@ -1024,6 +1027,11 @@
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}
           ></IPAdapterConfig>
+
+          <LoRAConfig 
+            {loraInfo}
+            on:loraConfigChanged={getSettings}
+          ></LoRAConfig>
 
           <PipelineHooksConfig 
             hookType="image_preprocessing"
