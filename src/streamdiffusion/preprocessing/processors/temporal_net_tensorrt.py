@@ -200,7 +200,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         self.enable_tensorrt = enable_tensorrt and TENSORRT_AVAILABLE
         self.force_rebuild = force_rebuild
         self._first_frame = True
-        self.prev_input_frame = None  # Store previous input frame for correct temporal flow computation
+        self.prev_input_frame = None  # Store previous input frame for temporal flow computation
         
         # Model paths
         self.models_dir = Path("models") / "temporal_net"
@@ -371,7 +371,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             image: Current input image
             
         Returns:
-            Warped previous frame for temporal guidance, or fallback for first frame
+            Processed frame for temporal guidance, or fallback for first frame
         """
         # Convert to tensor and use tensor processing path for efficiency
         tensor = self.pil_to_tensor(image)
@@ -386,7 +386,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             tensor: Current input tensor
             
         Returns:
-            Warped previous frame tensor for temporal guidance
+            Processed frame tensor for temporal guidance
         """
         
         # Normalize input tensor
@@ -415,18 +415,18 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                 prev_output = prev_output[0]
             
             try:
-                # CORRECTED LOGIC: Compute optical flow between consecutive INPUT frames
-                # then warp previous OUTPUT using that flow
-                warped_tensor = self._compute_and_warp_tensor(input_tensor, prev_output)
+                # Compute optical flow between consecutive input frames
+                # then create flow visualization
+                flow_image_tensor = self._compute_flow_image_tensor(input_tensor, prev_output)
                 
                 # Check output format
                 output_format = self.params.get('output_format', 'concat')
                 if output_format == "concat":
-                    # Concatenate current frame + warped frame for TemporalNet2 (6 channels)
-                    result_tensor = self._concatenate_frames_tensor(input_tensor, warped_tensor)
+                    # Concatenate previous output + flow visualization for TemporalNet2 (6 channels)
+                    result_tensor = self._concatenate_frames_tensor(prev_output, flow_image_tensor)
                 else:
-                    # Return only warped frame (3 channels)
-                    result_tensor = warped_tensor
+                    # Return only flow visualization (3 channels)
+                    result_tensor = flow_image_tensor
                 
                 # Ensure correct output format
                 if result_tensor.dim() == 3:
@@ -440,17 +440,18 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                 logger.error(f"_process_tensor_core: TensorRT optical flow failed: {e}")
                 output_format = self.params.get('output_format', 'concat')
                 if output_format == "concat":
-                    # Create 6-channel fallback by concatenating current frame with itself
-                    result_tensor = self._concatenate_frames_tensor(input_tensor, input_tensor)
+                    # Create 6-channel fallback: previous output + black flow image
+                    black_flow = torch.zeros_like(prev_output)
+                    result_tensor = self._concatenate_frames_tensor(prev_output, black_flow)
                     if result_tensor.dim() == 3:
                         result_tensor = result_tensor.unsqueeze(0)
                     result = result_tensor.to(device=self.device, dtype=self.dtype)
                 else:
-                    # Create 6-channel fallback by concatenating current frame with itself
-                    result_tensor = self._concatenate_frames_tensor(input_tensor, input_tensor)
-                    if result_tensor.dim() == 3:
-                        result_tensor = result_tensor.unsqueeze(0)
-                    result = result_tensor.to(device=self.device, dtype=self.dtype)
+                    # Return black flow image as fallback
+                    black_flow = torch.zeros_like(input_tensor)
+                    if black_flow.dim() == 3:
+                        black_flow = black_flow.unsqueeze(0)
+                    result = black_flow.to(device=self.device, dtype=self.dtype)
         else:
             # First frame or no previous data available
             self._first_frame = False
@@ -460,48 +461,40 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             # Handle 6-channel output for first frame
             output_format = self.params.get('output_format', 'concat')
             if output_format == "concat":
-                # For first frame, duplicate current frame to create 6-channel output
-                if tensor.dim() == 4 and tensor.shape[0] == 1:
-                    current_tensor = tensor[0]
-                else:
-                    current_tensor = tensor
-                result_tensor = self._concatenate_frames_tensor(current_tensor, current_tensor)
+                # For first frame: current frame + black flow image
+                black_flow = torch.zeros_like(input_tensor)
+                result_tensor = self._concatenate_frames_tensor(input_tensor, black_flow)
                 if result_tensor.dim() == 3:
                     result_tensor = result_tensor.unsqueeze(0)
                 result = result_tensor.to(device=self.device, dtype=self.dtype)
             else:
-                # Create 6-channel fallback by concatenating current frame with itself
-                if tensor.dim() == 4 and tensor.shape[0] == 1:
-                    current_tensor = tensor[0]
-                else:
-                    current_tensor = tensor
-                result_tensor = self._concatenate_frames_tensor(current_tensor, current_tensor)
-                if result_tensor.dim() == 3:
-                    result_tensor = result_tensor.unsqueeze(0)
-                result = result_tensor.to(device=self.device, dtype=self.dtype)
+                # Return black flow image for first frame
+                black_flow = torch.zeros_like(input_tensor)
+                if black_flow.dim() == 3:
+                    black_flow = black_flow.unsqueeze(0)
+                result = black_flow.to(device=self.device, dtype=self.dtype)
             
             # Store current input for next iteration
             self.prev_input_frame = input_tensor.detach().clone()
         
         return result
     
-    def _compute_and_warp_tensor(self, current_tensor: torch.Tensor, prev_output_tensor: torch.Tensor) -> torch.Tensor:
+    def _compute_flow_image_tensor(self, current_tensor: torch.Tensor, prev_output_tensor: torch.Tensor) -> torch.Tensor:
         """
-        CORRECTED: Compute optical flow between consecutive INPUT frames and warp previous OUTPUT
+        Compute optical flow between consecutive input frames and convert to flow visualization
         
         Args:
             current_tensor: Current input frame tensor (CHW format, [0,1]) on GPU
             prev_output_tensor: Previous pipeline output tensor (CHW format, [0,1]) on GPU
             
         Returns:
-            Warped previous output tensor using input-based flow on GPU
+            Flow visualization tensor (RGB image showing flow vectors) on GPU
         """
         target_width, target_height = self.get_target_dimensions()
         
         # Convert to float32 for TensorRT processing
         current_tensor = current_tensor.to(device=self.device, dtype=torch.float32)
         prev_input_tensor = self.prev_input_frame.to(device=self.device, dtype=torch.float32)
-        prev_output_tensor = prev_output_tensor.to(device=self.device, dtype=torch.float32)
         
         # Resize input frames for flow computation if needed (keep on GPU)
         if current_tensor.shape[-1] != self.detect_resolution or current_tensor.shape[-2] != self.detect_resolution:
@@ -521,7 +514,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             current_resized = current_tensor
             prev_input_resized = prev_input_tensor
         
-        # CORRECTED: Compute optical flow between consecutive INPUT frames
+        # Compute optical flow between consecutive input frames
         flow = self._compute_optical_flow_tensorrt(prev_input_resized, current_resized)
         
         # Apply flow strength scaling (GPU operation)
@@ -529,33 +522,26 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         if flow_strength != 1.0:
             flow = flow * flow_strength
         
-        # Resize previous output for warping if needed
-        if prev_output_tensor.shape[-1] != self.detect_resolution or prev_output_tensor.shape[-2] != self.detect_resolution:
-            prev_output_resized = F.interpolate(
-                prev_output_tensor.unsqueeze(0),
-                size=(self.detect_resolution, self.detect_resolution), 
-                mode='bilinear',
-                align_corners=False
-            ).squeeze(0)
-        else:
-            prev_output_resized = prev_output_tensor
+        # Convert flow to RGB visualization using flow_to_image
+        flow_image = flow_to_image(flow.unsqueeze(0)).squeeze(0)  # flow_to_image expects batch dimension
         
-        # Warp previous OUTPUT using INPUT-based flow (GPU operation)
-        warped_frame = self._warp_frame_tensor(prev_output_resized, flow)
+        # Convert from [0,255] uint8 to [0,1] float format
+        flow_image = flow_image.float() / 255.0
         
-        # Resize back to target resolution if needed (keep on GPU)
-        if warped_frame.shape[-1] != target_width or warped_frame.shape[-2] != target_height:
-            warped_frame = F.interpolate(
-                warped_frame.unsqueeze(0),
+        # Resize to target resolution if needed (keep on GPU)
+        if flow_image.shape[-1] != target_width or flow_image.shape[-2] != target_height:
+            flow_image = F.interpolate(
+                flow_image.unsqueeze(0),
                 size=(target_height, target_width),
                 mode='bilinear',
                 align_corners=False
             ).squeeze(0)
         
-        # Convert to processor's dtype only at the very end
-        result = warped_frame.to(dtype=self.dtype)
+        # Convert to processor's dtype
+        result = flow_image.to(dtype=self.dtype)
         
         return result
+
     
     def _compute_optical_flow_tensorrt(self, frame1: torch.Tensor, frame2: torch.Tensor) -> torch.Tensor:
         """
@@ -590,7 +576,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         
         cuda_stream = torch.cuda.current_stream().cuda_stream
         result = self.trt_engine.infer(feed_dict, cuda_stream)
-        flow = result['flow'][0]  # Remove batch dimension
+        flow = result['flow'][0]
         
         return flow
     
@@ -694,7 +680,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         Reset the preprocessor state (useful for new sequences)
         """
         self._first_frame = True
-        self.prev_input_frame = None  # Clear previous input frame
+        self.prev_input_frame = None
         # Clear caches to free memory
         self._grid_cache.clear()
         self._tensor_cache.clear()
