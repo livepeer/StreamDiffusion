@@ -582,96 +582,41 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
     
 
     
-    def _warp_frame_tensor(self, frame: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
+    
+    
+    def _concatenate_frames_tensor(self, first_tensor: torch.Tensor, second_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Warp frame using optical flow with cached coordinate grids
+        Concatenate two frame tensors for TemporalNet2 (6-channel input)
         
         Args:
-            frame: Frame to warp (CHW format)
-            flow: Optical flow (2HW format)
-            
-        Returns:
-            Warped frame tensor
-        """
-        H, W = frame.shape[-2:]
-        
-        # Use cached grid if available
-        grid_key = (H, W)
-        if grid_key not in self._grid_cache:
-            grid_y, grid_x = torch.meshgrid(
-                torch.arange(H, device=self.device, dtype=torch.float32),
-                torch.arange(W, device=self.device, dtype=torch.float32),
-                indexing='ij'
-            )
-            self._grid_cache[grid_key] = (grid_x, grid_y)
-        else:
-            grid_x, grid_y = self._grid_cache[grid_key]
-        
-        # Apply flow to coordinates
-        new_x = grid_x + flow[0]
-        new_y = grid_y + flow[1]
-        
-        # Normalize coordinates to [-1, 1] for grid_sample
-        new_x = 2.0 * new_x / (W - 1) - 1.0
-        new_y = 2.0 * new_y / (H - 1) - 1.0
-        
-        # Create sampling grid (HW2 format for grid_sample)
-        grid = torch.stack([new_x, new_y], dim=-1).unsqueeze(0)
-        
-        # Warp frame
-        warped_batch = F.grid_sample(
-            frame.unsqueeze(0), 
-            grid, 
-            mode='bilinear', 
-            padding_mode='border',
-            align_corners=True
-        )
-        
-        result = warped_batch.squeeze(0)
-        
-        return result
-    
-    def _concatenate_frames(self, current_image: Image.Image, warped_image: Image.Image) -> Image.Image:
-        """Concatenate current frame and warped previous frame for TemporalNet2 (6-channel input)"""
-        # Convert to tensors and use tensor concatenation for consistency
-        current_tensor = self.pil_to_tensor(current_image).squeeze(0)
-        warped_tensor = self.pil_to_tensor(warped_image).squeeze(0)
-        result_tensor = self._concatenate_frames_tensor(current_tensor, warped_tensor)
-        return self.tensor_to_pil(result_tensor)
-    
-    def _concatenate_frames_tensor(self, current_tensor: torch.Tensor, warped_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Concatenate current frame and warped previous frame tensors for TemporalNet2 (6-channel input)
-        
-        Args:
-            current_tensor: Current input frame tensor (CHW format)
-            warped_tensor: Warped previous frame tensor (CHW format)
+            first_tensor: First frame tensor (CHW format)
+            second_tensor: Second frame tensor (CHW format)
             
         Returns:
             Concatenated tensor (6CHW format)
         """
         # Ensure same size
-        if current_tensor.shape != warped_tensor.shape:
+        if first_tensor.shape != second_tensor.shape:
             target_width, target_height = self.get_target_dimensions()
             
-            if current_tensor.shape[-2:] != (target_height, target_width):
-                current_tensor = F.interpolate(
-                    current_tensor.unsqueeze(0),
+            if first_tensor.shape[-2:] != (target_height, target_width):
+                first_tensor = F.interpolate(
+                    first_tensor.unsqueeze(0),
                     size=(target_height, target_width),
                     mode='bilinear',
                     align_corners=False
                 ).squeeze(0)
             
-            if warped_tensor.shape[-2:] != (target_height, target_width):
-                warped_tensor = F.interpolate(
-                    warped_tensor.unsqueeze(0),
+            if second_tensor.shape[-2:] != (target_height, target_width):
+                second_tensor = F.interpolate(
+                    second_tensor.unsqueeze(0),
                     size=(target_height, target_width),
                     mode='bilinear',
                     align_corners=False
                 ).squeeze(0)
         
-        # Concatenate along channel dimension: [current_R, current_G, current_B, warped_R, warped_G, warped_B]
-        concatenated = torch.cat([current_tensor, warped_tensor], dim=0)
+        # Concatenate along channel dimension: [first_R, first_G, first_B, second_R, second_G, second_B]
+        concatenated = torch.cat([first_tensor, second_tensor], dim=0)
         
         return concatenated
     
