@@ -193,8 +193,8 @@ class IPAdapterModule(OrchestratorUser):
                     setattr(stream, 'scale', float(new_scale))
                 except Exception:
                     pass
-            def _update_style_image(style_image) -> None:
-                stream._param_updater.update_style_image(style_key, style_image, is_stream=False)
+            def _update_style_image(style_image, is_stream=False) -> None:
+                stream._param_updater.update_style_image(style_key, style_image, is_stream=is_stream)
             setattr(stream, 'update_scale', _update_scale)
             setattr(stream, 'update_style_image', _update_style_image)
         except Exception:

@@ -1773,11 +1773,11 @@ class StreamDiffusionWrapper:
             logger.debug("update_control_image: Skipping ControlNet update in skip diffusion mode")
 
 
-    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
+    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor], is_stream: bool = False) -> None:
         """Update IPAdapter style image"""
         if not self.use_ipadapter:
             raise RuntimeError("update_style_image: IPAdapter support not enabled. Set use_ipadapter=True in constructor.")
-        self.stream.update_style_image(image)
+        self.stream.update_style_image(image, is_stream=is_stream)
         
 
     def clear_caches(self) -> None:

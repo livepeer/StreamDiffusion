@@ -26,9 +26,28 @@ class IPAdapterEmbeddingPreprocessor(BasePreprocessor):
         if not hasattr(ipadapter, 'get_image_embeds'):
             raise ValueError("IPAdapterEmbeddingPreprocessor: ipadapter must have 'get_image_embeds' method")
         
+        # Create dedicated CUDA stream for IPAdapter processing to avoid TensorRT conflicts
+        self._ipadapter_stream = torch.cuda.Stream() if torch.cuda.is_available() else None
+        
     def _process_core(self, image: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns (positive_embeds, negative_embeds) instead of processed image"""
-        image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
+        if self._ipadapter_stream is not None:
+            # Use dedicated stream to avoid TensorRT stream capture conflicts
+            with torch.cuda.stream(self._ipadapter_stream):
+                image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
+                
+            # Wait for stream completion and move tensors to default stream
+            self._ipadapter_stream.synchronize()
+            
+            # Ensure tensors are accessible from default stream
+            if hasattr(image_embeds, 'record_stream'):
+                image_embeds.record_stream(torch.cuda.current_stream())
+            if hasattr(negative_embeds, 'record_stream'):
+                negative_embeds.record_stream(torch.cuda.current_stream())
+        else:
+            # Fallback for non-CUDA environments
+            image_embeds, negative_embeds = self.ipadapter.get_image_embeds(images=[image])
+            
         return image_embeds, negative_embeds
         
     def _process_tensor_core(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
