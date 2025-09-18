@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any
+from enum import Enum
 import torch
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+
+
+class IPAdapterType(Enum):
+    REGULAR = "regular"
+    PLUS = "plus"
+    FACEID = "faceid"
 
 
 @dataclass
@@ -24,8 +31,8 @@ class IPAdapterConfig:
     scale: float = 1.0
     weight_type: Optional[str] = None  # Weight type for per-layer scaling
     enabled: bool = True  # Runtime enable/disable state
-    # FaceID support
-    is_faceid: bool = False
+
+    adapter_type: IPAdapterType = IPAdapterType.REGULAR
     insightface_model_name: Optional[str] = None
 
 
@@ -135,7 +142,7 @@ class IPAdapterModule(OrchestratorUser):
             'device': stream.device,
             'dtype': stream.dtype,
         }
-        if bool(self.config.is_faceid) and self.config.insightface_model_name:
+        if self.config.adapter_type == IPAdapterType.FACEID and self.config.insightface_model_name:
             ip_kwargs['insightface_model_name'] = self.config.insightface_model_name
             print(
                 f"IPAdapterModule.install: Initializing FaceID IP-Adapter with InsightFace model: {self.config.insightface_model_name}"
@@ -145,11 +152,7 @@ class IPAdapterModule(OrchestratorUser):
 
         # Register embedding preprocessor for this style key 
         # Use FaceID preprocessor if applicable
-        try:
-            use_faceid_preproc = hasattr(ipadapter, 'is_faceid') and bool(getattr(ipadapter, 'is_faceid'))
-        except Exception:
-            use_faceid_preproc = False
-        if use_faceid_preproc:
+        if self.config.adapter_type == IPAdapterType.FACEID:
             try:
                 from streamdiffusion.preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
                 embedding_preprocessor = FaceIDEmbeddingPreprocessor(
