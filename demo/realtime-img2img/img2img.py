@@ -22,6 +22,7 @@ from config import Args
 from pydantic import BaseModel, Field
 from PIL import Image
 import math
+from typing import Optional
 
 base_model = "stabilityai/sd-turbo"
 taesd_model = "madebyollin/taesd"
@@ -221,6 +222,9 @@ class Pipeline:
         # Model and acceleration setup
 
     def predict(self, params: "Pipeline.InputParams") -> Image.Image:
+        # Get input manager if available (passed from websocket handler)
+        input_manager = getattr(params, 'input_manager', None)
+        
         # Handle different modes
         if self.pipeline_mode == "txt2img":
             # Text-to-image mode
@@ -232,13 +236,24 @@ class Pipeline:
                 except Exception:
                     current_cfg = []
                 if current_cfg:
-                    # Update control image for all configured ControlNets using direct method
+                    # Update control image for all configured ControlNets using input sources
                     for i in range(len(current_cfg)):
-                        self.stream.update_control_image(index=i, image=params.image)
-                output_image = self.stream(params.image)
+                        control_image = self._get_controlnet_input(input_manager, i, params.image)
+                        if control_image is not None:
+                            self.stream.update_control_image(index=i, image=control_image)
+                
+                # Use base pipeline input for generation
+                base_input = self._get_base_input(input_manager, params.image)
+                output_image = self.stream(base_input)
             elif self.has_ipadapter:
-                # txt2img with IPAdapter: no input image needed (style image handled separately)
-                output_image = self.stream()
+                # txt2img with IPAdapter: check for IPAdapter input
+                ipadapter_input = self._get_ipadapter_input(input_manager)
+                if ipadapter_input is not None:
+                    # If IPAdapter has a specific input source, use it
+                    output_image = self.stream(ipadapter_input)
+                else:
+                    # txt2img with IPAdapter: no input image needed (style image handled separately)
+                    output_image = self.stream()
             else:
                 # Pure txt2img: no image needed
                 output_image = self.stream()
@@ -252,24 +267,84 @@ class Pipeline:
                 except Exception:
                     current_cfg = []
                 if current_cfg:
-                    # Update control image for all configured ControlNets using direct method
+                    # Update control image for all configured ControlNets using input sources
                     for i in range(len(current_cfg)):
-                        self.stream.update_control_image(index=i, image=params.image)
-                output_image = self.stream(params.image)
+                        control_image = self._get_controlnet_input(input_manager, i, params.image)
+                        if control_image is not None:
+                            self.stream.update_control_image(index=i, image=control_image)
+                
+                # Use base pipeline input for img2img
+                base_input = self._get_base_input(input_manager, params.image)
+                output_image = self.stream(base_input)
             elif self.has_ipadapter:
-                # IPAdapter mode: use PIL image for img2img
-                output_image = self.stream(params.image)
+                # IPAdapter mode: use base input for img2img
+                base_input = self._get_base_input(input_manager, params.image)
+                output_image = self.stream(base_input)
             else:
                 # Standard mode: handle tensor inputs (always from bytes_to_pt)
-                if isinstance(params.image, torch.Tensor):
+                base_input = self._get_base_input(input_manager, params.image)
+                if isinstance(base_input, torch.Tensor):
                     # Direct tensor input - already preprocessed
-                    output_image = self.stream(image=params.image)
+                    output_image = self.stream(image=base_input)
                 else:
                     # Fallback for PIL input - needs preprocessing
-                    image_tensor = self.stream.preprocess_image(params.image)
+                    image_tensor = self.stream.preprocess_image(base_input)
                     output_image = self.stream(image=image_tensor)
 
         return output_image
+
+    def _get_controlnet_input(self, input_manager, index: int, fallback_image):
+        """
+        Get input image for a specific ControlNet index.
+        
+        Args:
+            input_manager: InputSourceManager instance (can be None)
+            index: ControlNet index
+            fallback_image: Fallback image if no specific source is configured
+            
+        Returns:
+            Input image for the ControlNet or fallback
+        """
+        if input_manager:
+            frame = input_manager.get_frame('controlnet', index)
+            if frame is not None:
+                return frame
+        
+        # Fallback to main image input
+        return fallback_image
+    
+    def _get_ipadapter_input(self, input_manager):
+        """
+        Get input image for IPAdapter.
+        
+        Args:
+            input_manager: InputSourceManager instance (can be None)
+            
+        Returns:
+            Input image for IPAdapter or None
+        """
+        if input_manager:
+            return input_manager.get_frame('ipadapter')
+        return None
+    
+    def _get_base_input(self, input_manager, fallback_image):
+        """
+        Get input image for base pipeline.
+        
+        Args:
+            input_manager: InputSourceManager instance (can be None)
+            fallback_image: Fallback image if no specific source is configured
+            
+        Returns:
+            Input image for base pipeline or fallback
+        """
+        if input_manager:
+            frame = input_manager.get_frame('base')
+            if frame is not None:
+                return frame
+        
+        # Fallback to main image input
+        return fallback_image
 
     def update_ipadapter_config(self, scale: float = None, style_image: Image.Image = None) -> bool:
         """

@@ -249,7 +249,7 @@ class App:
     
     def _register_routes(self):
         """Register all route modules with dependency injection"""
-        from routes import parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket
+        from routes import parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket, input_sources
         from routes.common.dependencies import get_app_instance as shared_get_app_instance, get_pipeline_class as shared_get_pipeline_class, get_default_settings as shared_get_default_settings, get_available_controlnets as shared_get_available_controlnets
         
         # Create dependency overrides to inject app instance and other dependencies
@@ -266,7 +266,7 @@ class App:
             return AVAILABLE_CONTROLNETS
         
         # Include routers and set up dependency overrides on the main app
-        for router_module in [parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket]:
+        for router_module in [parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket, input_sources]:
             # Include the router
             self.app.include_router(router_module.router)
         
