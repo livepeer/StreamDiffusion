@@ -8,6 +8,7 @@ from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsD
 import os
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
 import logging
+from streamdiffusion.utils.reporting import report_error
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ class IPAdapterModule(OrchestratorUser):
                 )
                 print("IPAdapterModule.install: Using FaceIDEmbeddingPreprocessor for FaceID model")
             except Exception as e:
-                logger.error(f"IPAdapterModule.install: Failed to initialize FaceIDEmbeddingPreprocessor: {e}", extra={"report_error": True})
+                report_error(f"IPAdapterModule.install: Failed to initialize FaceIDEmbeddingPreprocessor: {e}")
                 raise
         else:
             embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
