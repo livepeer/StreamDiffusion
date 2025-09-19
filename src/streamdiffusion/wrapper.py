@@ -1221,7 +1221,7 @@ class StreamDiffusionWrapper:
                     # scale omitted from engine naming; runtime will pass ipadapter_scale vector
                     ipadapter_tokens = cfg0.get('num_image_tokens', 4)
                     # Determine FaceID type from config for engine naming
-                    is_faceid = (cfg0.get('type') == 'faceid' or bool(cfg0.get('is_faceid', False)))
+                    is_faceid = (cfg0['type'] == 'faceid')
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
                     EngineType.UNET,
@@ -1309,7 +1309,7 @@ class StreamDiffusionWrapper:
                 # If using TensorRT with IP-Adapter, ensure processors and weights are installed BEFORE export
                 if use_ipadapter_trt and has_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
                     try:
-                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
                         cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
                         ip_cfg = IPAdapterConfig(
                             style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
@@ -1318,7 +1318,7 @@ class StreamDiffusionWrapper:
                             image_encoder_path=cfg['image_encoder_path'],
                             style_image=cfg.get('style_image'),
                             scale=cfg.get('scale', 1.0),
-                            is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                            type=IPAdapterType(cfg.get('type', "regular")),
                             insightface_model_name=cfg.get('insightface_model_name'),
                         )
                         ip_module_for_export = IPAdapterModule(ip_cfg)
@@ -1680,9 +1680,13 @@ class StreamDiffusionWrapper:
 
         if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
             try:
-                from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
                 # Use first config if list provided
                 cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                
+                # Get adapter type from config  
+                ipadapter_type = IPAdapterType(cfg['type'])
+                
                 ip_cfg = IPAdapterConfig(
                     style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
                     num_image_tokens=cfg.get('num_image_tokens', 4),
@@ -1690,7 +1694,7 @@ class StreamDiffusionWrapper:
                     image_encoder_path=cfg['image_encoder_path'],
                     style_image=cfg.get('style_image'),
                     scale=cfg.get('scale', 1.0),
-                    is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                    type=ipadapter_type,
                     insightface_model_name=cfg.get('insightface_model_name'),
                 )
                 ip_module = IPAdapterModule(ip_cfg)
@@ -1775,11 +1779,17 @@ class StreamDiffusionWrapper:
             logger.debug("update_control_image: Skipping ControlNet update in skip diffusion mode")
 
 
-    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
+    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor], is_stream: bool = False, style_key = "ipadapter_main") -> None:
         """Update IPAdapter style image"""
         if not self.use_ipadapter:
             raise RuntimeError("update_style_image: IPAdapter support not enabled. Set use_ipadapter=True in constructor.")
-        self.stream.update_style_image(image)
+        
+        if not self.skip_diffusion:
+            self.stream._param_updater.update_style_image(style_key, image, is_stream=is_stream)
+        else:
+            logger.debug("update_style_image: Skipping IPAdapter update in skip diffusion mode")
+        
+        
         
 
     def clear_caches(self) -> None:

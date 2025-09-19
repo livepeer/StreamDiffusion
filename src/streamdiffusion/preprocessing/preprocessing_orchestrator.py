@@ -118,12 +118,37 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             # Set CUDA stream for background processing
             original_stream = self._set_background_stream_context()
             
-            # Check if we're in embedding processing mode
-            if hasattr(self, '_current_processing_mode') and self._current_processing_mode == "embedding":
+            # Check if last argument is "ipadapter" processing type
+            if args and len(args) >= 5 and args[4] == "ipadapter":
                 # Handle embedding preprocessing
                 embedding_preprocessors = args[0]
-                stream_width = args[1]  
-                stream_height = args[2]
+                stream_width = args[2]  
+                stream_height = args[3]
+                
+                # Prepare processing data
+                control_variants = self._prepare_input_variants(control_image, thread_safe=True)
+                
+                # Process using existing IPAdapter logic
+                try:
+                    results = self._process_ipadapter_preprocessors_parallel(
+                        embedding_preprocessors, control_variants, stream_width, stream_height
+                    )
+                    return {
+                        'results': results,
+                        'status': 'success'
+                    }
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    return {
+                        'error': str(e),
+                        'status': 'error'
+                    }
+            elif hasattr(self, '_current_processing_mode') and self._current_processing_mode == "embedding":
+                # Handle embedding preprocessing (legacy path)
+                embedding_preprocessors = args[0]
+                stream_width = args[2]  
+                stream_height = args[3]
                 
                 # Prepare processing data
                 control_variants = self._prepare_input_variants(control_image, thread_safe=True)

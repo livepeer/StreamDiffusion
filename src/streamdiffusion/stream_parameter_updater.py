@@ -1206,65 +1206,81 @@ class StreamParameterUpdater(OrchestratorUser):
             logger.warning(f"_update_ipadapter_config: No IPAdapter pipeline found")
             return
         
-        # Update scale if provided
-        if 'scale' in desired_config:
-            current_scale = getattr(ipadapter_pipeline, 'scale', 1.0)
-            desired_scale = desired_config['scale']
+        if 'scale' in desired_config and desired_config['scale'] is not None:
+            desired_scale = float(desired_config['scale'])
+            # Get current scale from IPAdapter instance
+            current_scale = getattr(self.stream.ipadapter, 'scale', 1.0) if hasattr(self.stream, 'ipadapter') else 1.0
             
             if current_scale != desired_scale:
                 logger.info(f"_update_ipadapter_config: Updating scale: {current_scale} → {desired_scale}")
-                # If a weight_type is active, apply per-layer vector at the new base scale
-                try:
-                    weight_type = getattr(self.stream, 'ipadapter_weight_type', None)
-                    if weight_type is not None and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None:
+                
+                # Get weight_type from IPAdapter instance
+                weight_type = getattr(self.stream.ipadapter, 'weight_type', None) if hasattr(self.stream, 'ipadapter') else None
+                
+                # Apply scale with weight type consideration
+                if weight_type is not None and hasattr(self.stream, 'ipadapter'):
+                    try:
                         from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
                         ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
                         num_layers = len(ip_procs)
-                        weights = build_layer_weights(num_layers, float(desired_scale), weight_type)
+                        weights = build_layer_weights(num_layers, desired_scale, weight_type)
                         if weights is not None:
-                            ipadapter_pipeline.ipadapter.set_scale(weights)
+                            self.stream.ipadapter.set_scale(weights)
                         else:
-                            ipadapter_pipeline.ipadapter.set_scale(float(desired_scale))
-                        # Keep pipeline/stream scales in sync
-                        ipadapter_pipeline.scale = float(desired_scale)
-                        try:
-                            setattr(self.stream, 'ipadapter_scale', float(desired_scale))
-                        except Exception:
-                            pass
-                    else:
-                        # No weight_type: uniform scale
-                        ipadapter_pipeline.update_scale(desired_scale)
-                except Exception:
-                    # Do not introduce fallback mechanisms
-                    raise
+                            self.stream.ipadapter.set_scale(desired_scale)
+                        # Update our tracking attribute
+                        setattr(self.stream.ipadapter, 'scale', desired_scale)
+                    except Exception:
+                        # Do not add fallback mechanisms
+                        raise
+                else:
+                    # Simple uniform scale
+                    if hasattr(self.stream, 'ipadapter'):
+                        # Tell diffusers_ipadapter to set the scale
+                        self.stream.ipadapter.set_scale(desired_scale)
+                        # Update our tracking attribute
+                        setattr(self.stream.ipadapter, 'scale', desired_scale)
         
 
+        # Update enabled state if provided
+        if 'enabled' in desired_config and desired_config['enabled'] is not None:
+            enabled_state = bool(desired_config['enabled'])
+            # Update IPAdapter instance
+            if hasattr(self.stream, 'ipadapter'):
+                current_enabled = getattr(self.stream.ipadapter, 'enabled', True)
+                if current_enabled != enabled_state:
+                    logger.info(f"_update_ipadapter_config: Updating enabled state: {current_enabled} → {enabled_state}")
+                    setattr(self.stream.ipadapter, 'enabled', enabled_state)
+
         # Update weight type if provided (affects per-layer distribution and/or per-step factor)
-        if 'weight_type' in desired_config:
+        if 'weight_type' in desired_config and desired_config['weight_type'] is not None:
             weight_type = desired_config['weight_type']
-            try:
-                setattr(self.stream, 'ipadapter_weight_type', weight_type)
-            except Exception:
-                pass
-            # For PyTorch UNet, immediately apply a per-layer scale vector so layers reflect selection types
-            try:
-                is_tensorrt_engine = hasattr(self.stream.unet, 'engine') and hasattr(self.stream.unet, 'stream')
-                if not is_tensorrt_engine and hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None:
-                    # Compute per-layer vector using Diffusers_IPAdapter helper
-                    from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
-                    # Count installed IP layers by scanning processors with _ip_layer_index
-                    ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
-                    num_layers = len(ip_procs)
-                    base_weight = float(getattr(self.stream, 'ipadapter_scale', getattr(ipadapter_pipeline, 'scale', 1.0)))
-                    weights = build_layer_weights(num_layers, base_weight, weight_type)
-                    # If None, keep uniform base scale; else set per-layer vector
-                    if weights is not None:
-                        ipadapter_pipeline.ipadapter.set_scale(weights)
-                    else:
-                        ipadapter_pipeline.ipadapter.set_scale(base_weight)
-            except Exception:
-                # Do not add fallback mechanisms
-                raise
+            # Update IPAdapter instance
+            if hasattr(self.stream, 'ipadapter'):
+                setattr(self.stream.ipadapter, 'weight_type', weight_type)
+                
+                # For PyTorch UNet, immediately apply a per-layer scale vector so layers reflect selection types
+                try:
+                    is_tensorrt_engine = hasattr(self.stream.unet, 'engine') and hasattr(self.stream.unet, 'stream')
+                    if not is_tensorrt_engine:
+                        # Compute per-layer vector using Diffusers_IPAdapter helper
+                        from diffusers_ipadapter.ip_adapter.attention_processor import build_layer_weights
+                        # Count installed IP layers by scanning processors with _ip_layer_index
+                        ip_procs = [p for p in self.stream.pipe.unet.attn_processors.values() if hasattr(p, "_ip_layer_index")]
+                        num_layers = len(ip_procs)
+                        # Get base weight from IPAdapter instance
+                        base_weight = float(getattr(self.stream.ipadapter, 'scale', 1.0))
+                        weights = build_layer_weights(num_layers, base_weight, weight_type)
+                        # If None, keep uniform base scale; else set per-layer vector
+                        if weights is not None:
+                            self.stream.ipadapter.set_scale(weights)
+                        else:
+                            self.stream.ipadapter.set_scale(base_weight)
+                        # Keep our tracking attribute in sync
+                        setattr(self.stream.ipadapter, 'scale', base_weight)
+                except Exception:
+                    # Do not add fallback mechanisms
+                    raise
 
     def _get_ipadapter_pipeline(self):
         """
@@ -1292,27 +1308,41 @@ class StreamParameterUpdater(OrchestratorUser):
 
     def _get_current_ipadapter_config(self) -> Optional[Dict[str, Any]]:
         """
-        Get current IPAdapter configuration by introspecting the pipeline state.
+        Get current IPAdapter configuration by introspecting the IPAdapter instance.
         
         Returns:
             Current IPAdapter configuration dict or None if no IPAdapter
         """
-        ipadapter_pipeline = self._get_ipadapter_pipeline()
-        if not ipadapter_pipeline:
-            return None
-        
-        config = {
-            'scale': getattr(ipadapter_pipeline, 'scale', 1.0),
-            'enabled': hasattr(ipadapter_pipeline, 'ipadapter') and ipadapter_pipeline.ipadapter is not None
-        }
-        
-        # Add style image info if available
-        if hasattr(ipadapter_pipeline, 'style_image') and ipadapter_pipeline.style_image:
-            config['has_style_image'] = True
-        else:
-            config['has_style_image'] = False
+        # Get config from IPAdapter instance
+        if hasattr(self.stream, 'ipadapter') and self.stream.ipadapter is not None:
+            ipadapter = self.stream.ipadapter
             
-        return config
+            config = {
+                'scale': getattr(ipadapter, 'scale', 1.0),
+                'weight_type': getattr(ipadapter, 'weight_type', None),
+                'enabled': getattr(ipadapter, 'enabled', True),  # Check actual enabled state
+            }
+            
+            # Add static initialization fields
+            if hasattr(self.stream, '_ipadapter_module'):
+                module_config = self.stream._ipadapter_module.config
+                config.update({
+                    'style_image_key': module_config.style_image_key,
+                    'num_image_tokens': module_config.num_image_tokens,
+                    'type': module_config.type.value,
+                })
+            
+            # Check if style image is set
+            ipadapter_pipeline = self._get_ipadapter_pipeline()
+            if ipadapter_pipeline and hasattr(ipadapter_pipeline, 'style_image') and ipadapter_pipeline.style_image:
+                config['has_style_image'] = True
+            else:
+                config['has_style_image'] = False
+            
+            return config
+        
+        # No IPAdapter instance found
+        return None
 
     def _get_current_hook_config(self, hook_type: str) -> List[Dict[str, Any]]:
         """

@@ -376,16 +376,14 @@ class App:
                         logger.debug(f"stream: unet_is_trt={is_trt}, has_ipadapter={getattr(self.pipeline, 'has_ipadapter', False)}")
                         if is_trt:
                             logger.debug(f"stream: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
-                        if hasattr(stream_obj, 'ipadapter_scale'):
-                            try:
-                                scale_val = getattr(stream_obj, 'ipadapter_scale')
-                                if hasattr(scale_val, 'shape'):
-                                    logger.debug(f"stream: ipadapter_scale tensor shape={tuple(scale_val.shape)}")
-                                else:
-                                    logger.debug(f"stream: ipadapter_scale scalar={scale_val}")
-                            except Exception:
-                                pass
-                        logger.debug(f"stream: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                        try:
+                            stream_state = self.pipeline.get_stream_state()
+                            ipadapter_config = stream_state.get('ipadapter_config', {})
+                            if ipadapter_config:
+                                logger.debug(f"stream: ipadapter_scale={ipadapter_config.get('scale')}")
+                                logger.debug(f"stream: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
+                        except Exception:
+                            pass
                     except Exception:
                         logger.exception("stream: failed to log pipeline state after creation")
                 
@@ -437,13 +435,11 @@ class App:
                                 if is_trt:
                                     logger.debug(f"generate: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
                                     try:
-                                        base_scale = getattr(stream_obj, 'ipadapter_scale', None)
-                                        if base_scale is not None:
-                                            if hasattr(base_scale, 'shape'):
-                                                logger.debug(f"generate: base ipadapter_scale shape={tuple(base_scale.shape)}")
-                                            else:
-                                                logger.debug(f"generate: base ipadapter_scale scalar={base_scale}")
-                                        logger.debug(f"generate: ipadapter_weight_type={getattr(stream_obj, 'ipadapter_weight_type', None)}")
+                                        stream_state = self.pipeline.get_stream_state()
+                                        ipadapter_config = stream_state.get('ipadapter_config', {})
+                                        if ipadapter_config:
+                                            logger.debug(f"generate: base ipadapter_scale={ipadapter_config.get('scale')}")
+                                            logger.debug(f"generate: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
                                     except Exception:
                                         pass
                             except Exception:
@@ -1271,6 +1267,41 @@ class App:
             except Exception as e:
                 logging.error(f"update_ipadapter_weight_type: Failed to update weight type: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to update weight type: {str(e)}")
+
+        @self.app.post("/api/ipadapter/update-enabled")
+        async def update_ipadapter_enabled(request: Request):
+            """Enable or disable IPAdapter in real-time"""
+            try:
+                data = await request.json()
+                enabled = data.get("enabled")
+                
+                if enabled is None:
+                    raise HTTPException(status_code=400, detail="Missing enabled parameter")
+                
+                if not self.pipeline:
+                    raise HTTPException(status_code=400, detail="Pipeline is not initialized")
+                
+                # Check if we're using config mode and have ipadapters configured
+                ipadapter_enabled = (self.pipeline.use_config and 
+                                    self.pipeline.config and 
+                                    'ipadapters' in self.pipeline.config)
+                
+                if not ipadapter_enabled:
+                    raise HTTPException(status_code=400, detail="IPAdapter is not available in this configuration")
+                
+                # Update IPAdapter enabled state in the pipeline
+                self.pipeline.stream.update_stream_params(
+                    ipadapter_config={'enabled': bool(enabled)}
+                )
+                
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"IPAdapter {'enabled' if enabled else 'disabled'} successfully"
+                })
+                
+            except Exception as e:
+                logging.error(f"update_ipadapter_enabled: Failed to update enabled state: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update enabled state: {str(e)}")
 
         @self.app.post("/api/params")
         async def update_params(request: Request):
