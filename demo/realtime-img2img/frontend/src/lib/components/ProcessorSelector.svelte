@@ -16,6 +16,50 @@
   onMount(async () => {
     await loadProcessorsInfo();
   });
+  
+  // Handle currentProcessor prop changes after mount (e.g., when parent component updates)
+  let lastEmittedProcessor = '';
+  $: {
+    if (currentProcessor && currentProcessor !== lastEmittedProcessor && currentProcessor !== 'passthrough' && processorsInfo[currentProcessor] && !loading) {
+      console.log(`ProcessorSelector: currentProcessor prop changed to:`, currentProcessor);
+      lastEmittedProcessor = currentProcessor;
+      
+      // Emit processor info when prop changes
+      const emitProcessorInfo = async () => {
+        try {
+          const paramsResponse = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
+          if (paramsResponse.ok) {
+            const paramsData = await paramsResponse.json();
+            console.log(`ProcessorSelector: Current params loaded for prop change:`, paramsData);
+            
+            dispatch('processorChanged', {
+              processor_index: processorIndex,
+              processor: currentProcessor,
+              processor_info: processorsInfo[currentProcessor],
+              current_params: paramsData.parameters || {}
+            });
+          } else {
+            // Fallback without current params
+            dispatch('processorChanged', {
+              processor_index: processorIndex,
+              processor: currentProcessor,
+              processor_info: processorsInfo[currentProcessor]
+            });
+          }
+        } catch (err) {
+          console.warn(`ProcessorSelector: Failed to load current params for prop change:`, err);
+          // Fallback without current params
+          dispatch('processorChanged', {
+            processor_index: processorIndex,
+            processor: currentProcessor,
+            processor_info: processorsInfo[currentProcessor]
+          });
+        }
+      };
+      
+      emitProcessorInfo();
+    }
+  }
 
   async function loadProcessorsInfo() {
     try {
@@ -38,7 +82,7 @@
       console.log(`ProcessorSelector: ${processorType}s info:`, processorsInfo);
       
       // Emit initial processor info if we have a current processor
-      if (currentProcessor && processorsInfo[currentProcessor]) {
+      if (currentProcessor && currentProcessor !== 'passthrough' && processorsInfo[currentProcessor]) {
         console.log(`ProcessorSelector: Emitting initial ${processorType} info for:`, currentProcessor);
         
         // Fetch current parameter values
