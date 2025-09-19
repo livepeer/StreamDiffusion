@@ -32,7 +32,7 @@ class IPAdapterConfig:
     weight_type: Optional[str] = None  # Weight type for per-layer scaling
     enabled: bool = True  # Runtime enable/disable state
 
-    adapter_type: IPAdapterType = IPAdapterType.REGULAR
+    type: IPAdapterType = IPAdapterType.REGULAR
     insightface_model_name: Optional[str] = None
 
 
@@ -142,7 +142,7 @@ class IPAdapterModule(OrchestratorUser):
             'device': stream.device,
             'dtype': stream.dtype,
         }
-        if self.config.adapter_type == IPAdapterType.FACEID and self.config.insightface_model_name:
+        if self.config.type == IPAdapterType.FACEID and self.config.insightface_model_name:
             ip_kwargs['insightface_model_name'] = self.config.insightface_model_name
             print(
                 f"IPAdapterModule.install: Initializing FaceID IP-Adapter with InsightFace model: {self.config.insightface_model_name}"
@@ -152,7 +152,7 @@ class IPAdapterModule(OrchestratorUser):
 
         # Register embedding preprocessor for this style key 
         # Use FaceID preprocessor if applicable
-        if self.config.adapter_type == IPAdapterType.FACEID:
+        if self.config.type == IPAdapterType.FACEID:
             try:
                 from streamdiffusion.preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
                 embedding_preprocessor = FaceIDEmbeddingPreprocessor(

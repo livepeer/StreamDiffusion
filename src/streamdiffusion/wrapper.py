@@ -1316,7 +1316,7 @@ class StreamDiffusionWrapper:
                             image_encoder_path=cfg['image_encoder_path'],
                             style_image=cfg.get('style_image'),
                             scale=cfg.get('scale', 1.0),
-                            adapter_type=IPAdapterType(cfg.get('type', "regular")),
+                            type=IPAdapterType(cfg.get('type', "regular")),
                             insightface_model_name=cfg.get('insightface_model_name'),
                         )
                         ip_module_for_export = IPAdapterModule(ip_cfg)
@@ -1683,7 +1683,7 @@ class StreamDiffusionWrapper:
                 cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
                 
                 # Get adapter type from config  
-                adapter_type = IPAdapterType(cfg['type'])
+                ipadapter_type = IPAdapterType(cfg['type'])
                 
                 ip_cfg = IPAdapterConfig(
                     style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
@@ -1692,7 +1692,7 @@ class StreamDiffusionWrapper:
                     image_encoder_path=cfg['image_encoder_path'],
                     style_image=cfg.get('style_image'),
                     scale=cfg.get('scale', 1.0),
-                    adapter_type=adapter_type,
+                    type=ipadapter_type,
                     insightface_model_name=cfg.get('insightface_model_name'),
                 )
                 ip_module = IPAdapterModule(ip_cfg)

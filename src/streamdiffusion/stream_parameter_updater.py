@@ -1327,7 +1327,7 @@ class StreamParameterUpdater(OrchestratorUser):
                 config.update({
                     'style_image_key': module_config.style_image_key,
                     'num_image_tokens': module_config.num_image_tokens,
-                    'type': module_config.adapter_type.value,
+                    'type': module_config.type.value,
                 })
             
             # Check if style image is set
