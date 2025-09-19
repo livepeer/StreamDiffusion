@@ -43,12 +43,6 @@ class FaceIDEmbeddingPreprocessor(IPAdapterEmbeddingPreprocessor):
         super().__init__(ipadapter=ipadapter, **kwargs)
         self.faceid_v2_weight = float(faceid_v2_weight)
 
-        # Verify this is a FaceID-capable IP-Adapter
-        if not hasattr(ipadapter, "is_faceid") or not bool(ipadapter.is_faceid):
-            raise ValueError(
-                "FaceIDEmbeddingPreprocessor: ipadapter must be a FaceID-capable IPAdapter with is_faceid=True"
-            )
-
         if not hasattr(ipadapter, "insightface_model") or ipadapter.insightface_model is None:
             raise ValueError(
                 "FaceIDEmbeddingPreprocessor: ipadapter must have an initialized InsightFace model"

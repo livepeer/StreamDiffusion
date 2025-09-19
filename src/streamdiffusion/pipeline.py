@@ -104,9 +104,6 @@ class StreamDiffusion:
 
         # Initialize parameter updater
         self._param_updater = StreamParameterUpdater(self, normalize_prompt_weights, normalize_seed_weights)
-        # Default IP-Adapter runtime weight mode (None = uniform). Can be set to strings like
-        # "ease in", "ease out", "ease in-out", "reverse in-out", "style transfer precise", "composition precise".
-        self.ipadapter_weight_type = None
 
         # Hook containers (step 1: introduced but initially no-op)
         self.embedding_hooks: List[EmbeddingHook] = []

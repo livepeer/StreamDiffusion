@@ -298,11 +298,11 @@ class Pipeline:
             return False
 
     def update_ipadapter_scale(self, scale: float) -> bool:
-        """Legacy method - use update_ipadapter_config instead"""
+        """Update IPAdapter scale - convenience method"""
         return self.update_ipadapter_config(scale=scale)
 
     def update_ipadapter_style_image(self, style_image: Image.Image) -> bool:
-        """Legacy method - use update_ipadapter_config instead"""
+        """Update IPAdapter style image - convenience method"""
         return self.update_ipadapter_config(style_image=style_image)
 
     def update_ipadapter_weight_type(self, weight_type: str) -> bool:
@@ -315,10 +315,7 @@ class Pipeline:
             if hasattr(self.stream, 'update_stream_params'):
                 self.stream.update_stream_params(ipadapter_config={ 'weight_type': weight_type })
                 return True
-            # Direct attribute set as last resort
-            if hasattr(self.stream, 'ipadapter_weight_type'):
-                self.stream.ipadapter_weight_type = weight_type
-                return True
+            # Should not reach here in normal operation
             return False
         except Exception as e:
             return False
@@ -347,14 +344,16 @@ class Pipeline:
                 info["model_path"] = ipadapter_config.get('ipadapter_model_path')
                 info["style_image_set"] = 'style_image' in ipadapter_config
                 
-        # Try to get current scale and weight type from stream if available
-        if hasattr(self.stream, 'scale'):
-            info["scale"] = self.stream.scale
-        elif hasattr(self.stream, 'ipadapter') and hasattr(self.stream.ipadapter, 'scale'):
-            info["scale"] = self.stream.ipadapter.scale
-            
-        if hasattr(self.stream, 'ipadapter_weight_type'):
-            info["weight_type"] = self.stream.ipadapter_weight_type
+        # Get current runtime state from wrapper's public API
+        try:
+            if hasattr(self.stream, 'get_stream_state'):
+                stream_state = self.stream.get_stream_state()
+                ipadapter_runtime_config = stream_state.get('ipadapter_config', {})
+                if ipadapter_runtime_config:
+                    info["scale"] = ipadapter_runtime_config.get('scale', info.get("scale", 1.0))
+                    info["weight_type"] = ipadapter_runtime_config.get('weight_type', info.get("weight_type", 'linear'))
+        except Exception:
+            pass  # Use defaults from config if wrapper method fails
             
         return info
 

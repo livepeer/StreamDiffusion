@@ -1023,6 +1023,7 @@
             {ipadapterInfo} 
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}
+            currentEnabled={ipadapterInfo?.enabled ?? true}
           ></IPAdapterConfig>
 
           <PipelineHooksConfig 
