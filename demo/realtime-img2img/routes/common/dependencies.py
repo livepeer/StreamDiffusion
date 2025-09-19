@@ -23,3 +23,9 @@ def get_default_settings():
     """Dependency to get the DEFAULT_SETTINGS - will be injected during router registration"""
     # This will be overridden when the router is included in main.py
     pass
+
+
+def get_available_controlnets():
+    """Dependency to get the AVAILABLE_CONTROLNETS - will be injected during router registration"""
+    # This will be overridden when the router is included in main.py
+    pass
