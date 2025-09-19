@@ -308,7 +308,7 @@
             <div class="space-y-2">
               <div class="flex items-center justify-between">
                 <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Strength</label>
-                <span class="text-xs text-gray-600 dark:text-gray-400">{currentScale.toFixed(2)}</span>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{(currentScale || 0).toFixed(2)}</span>
               </div>
               <input
                 type="range"

@@ -553,12 +553,16 @@
       const result = await response.json();
 
       if (response.ok) {
+        console.log('uploadConfig: Full response received:', result);
+        console.log('uploadConfig: controls_updated flag:', result.controls_updated);
+        
         successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
         fileInput.value = '';
         
         // Update ControlNet info
         if (result.controlnet) {
           controlnetInfo = result.controlnet;
+          console.log('uploadConfig: Updated controlnetInfo to:', controlnetInfo);
         }
         
         // Update IPAdapter info
@@ -574,18 +578,23 @@
         // Update streaming parameters
         if (result.t_index_list) {
           tIndexList = [...result.t_index_list];
+          console.log('uploadConfig: Updated tIndexList to:', tIndexList);
         }
         if (result.guidance_scale !== undefined) {
           guidanceScale = result.guidance_scale;
+          console.log('uploadConfig: Updated guidanceScale to:', guidanceScale);
         }
         if (result.delta !== undefined) {
           delta = result.delta;
+          console.log('uploadConfig: Updated delta to:', delta);
         }
         if (result.num_inference_steps !== undefined) {
           numInferenceSteps = result.num_inference_steps;
+          console.log('uploadConfig: Updated numInferenceSteps to:', numInferenceSteps);
         }
         if (result.seed !== undefined) {
           seed = result.seed;
+          console.log('uploadConfig: Updated seed to:', seed);
         }
         
         // Apply config_values (from YAML upload) into the pipelineValues store
@@ -963,7 +972,7 @@
                 <div class="flex items-center gap-2 px-3 py-1 bg-green-100 dark:bg-green-900 rounded-lg">
                   <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                   <span class="text-sm font-medium text-green-800 dark:text-green-200">
-                    {fps.toFixed(1)} FPS
+                    {(fps || 0).toFixed(1)} FPS
                   </span>
                 </div>
               {/if}

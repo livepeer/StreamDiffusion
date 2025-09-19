@@ -126,8 +126,8 @@
       ctx.fillStyle = '#f3f4f6';
       ctx.font = '14px Arial';
       ctx.textAlign = 'center';
-      ctx.fillText(`Axis ${axisIndex}: ${axisValue.toFixed(3)}`, centerX, centerY + 100);
-      ctx.fillText(`Normalized: ${currentValue.toFixed(3)}`, centerX, centerY + 115);
+      ctx.fillText(`Axis ${axisIndex}: ${(axisValue || 0).toFixed(3)}`, centerX, centerY + 100);
+      ctx.fillText(`Normalized: ${(currentValue || 0).toFixed(3)}`, centerX, centerY + 115);
     }
     
     // Draw all axes as small bars
@@ -241,7 +241,7 @@
       ></canvas>
       
       <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
-        Gamepad {gamepadIndex}, Axis {axisIndex}: {currentValue.toFixed(3)}
+        Gamepad {gamepadIndex}, Axis {axisIndex}: {(currentValue || 0).toFixed(3)}
       </div>
     </div>
     
@@ -264,7 +264,7 @@
 {:else}
   <div class="gamepad-info">
     <div class="text-sm text-gray-400">
-      Gamepad {gamepadIndex}, Axis {axisIndex}: {currentValue.toFixed(3)}
+      Gamepad {gamepadIndex}, Axis {axisIndex}: {(currentValue || 0).toFixed(3)}
     </div>
     <div class="text-xs text-gray-500">
       Connected: {connectedGamepads.length}

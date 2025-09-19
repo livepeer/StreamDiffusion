@@ -358,7 +358,7 @@
               <span class="text-sm font-medium">Prompt {index + 1}</span>
               <div class="flex items-center gap-2">
                 <span class="text-sm text-gray-600 dark:text-gray-400">
-                  Weight: {promptList[index][1].toFixed(3)}
+                  Weight: {(promptList[index][1] || 0).toFixed(3)}
                 </span>
                 {#if promptList.length > 1}
                   <Button on:click={() => removePrompt(index)} classList="text-xs text-red-600">
@@ -396,7 +396,7 @@
 
         <!-- Total Weight Display -->
         <div class="text-sm text-gray-600 dark:text-gray-400 text-center">
-          Total Weight: {promptList.reduce((sum, [, weight]) => sum + weight, 0).toFixed(3)}
+          Total Weight: {promptList.reduce((sum, [, weight]) => sum + (weight || 0), 0).toFixed(3)}
         </div>
       </div>
     </div>
@@ -449,7 +449,7 @@
               <span class="text-sm font-medium">Seed {index + 1}</span>
               <div class="flex items-center gap-2">
                 <span class="text-sm text-gray-600 dark:text-gray-400">
-                  Weight: {weight.toFixed(3)}
+                  Weight: {(weight || 0).toFixed(3)}
                 </span>
                 {#if seedList.length > 1}
                   <Button on:click={() => removeSeed(index)} classList="text-xs text-red-600">
@@ -493,7 +493,7 @@
 
         <!-- Total Weight Display -->
         <div class="text-sm text-gray-600 dark:text-gray-400 text-center">
-          Total Weight: {seedList.reduce((sum, [, weight]) => sum + weight, 0).toFixed(3)}
+          Total Weight: {seedList.reduce((sum, [, weight]) => sum + (weight || 0), 0).toFixed(3)}
         </div>
       </div>
     </div>

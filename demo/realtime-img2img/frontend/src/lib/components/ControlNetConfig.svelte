@@ -269,38 +269,42 @@
     // Create a signature based on controlnet names and indices to detect changes
     const currentSignature = controlnetInfo.controlnets.map((cn: any) => `${cn.index}:${cn.name}`).join(',');
     
-    // If the signature changed, clear state (new YAML or reordering)
-    if (currentSignature !== lastControlNetSignature && lastControlNetSignature !== '') {
+    // If the signature changed, clear state (including initial load)
+    if (currentSignature !== lastControlNetSignature) {
       console.log('ControlNetConfig: ControlNet configuration changed, clearing preprocessor state');
       console.log('ControlNetConfig: Old signature:', lastControlNetSignature);
       console.log('ControlNetConfig: New signature:', currentSignature);
       currentPreprocessors = {};
       preprocessorInfos = {};
       preprocessorParams = {};
-    }
-    lastControlNetSignature = currentSignature;
-    
-    controlnetInfo.controlnets.forEach(async (controlnet: any, index: number) => {
-      if (controlnet.preprocessor && !currentPreprocessors[index]) {
-        currentPreprocessors[index] = controlnet.preprocessor;
-        
-        // Also initialize parameters by fetching current values
-        try {
-          const response = await fetch(`/api/preprocessors/current-params/${index}`);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.parameters && Object.keys(data.parameters).length > 0) {
-              preprocessorParams[index] = { ...data.parameters };
-              // Force reactivity
-              preprocessorParams = { ...preprocessorParams };
-              console.log('ControlNetConfig: Loaded initial params for CN', index, ':', data.parameters);
+      lastControlNetSignature = currentSignature;
+      
+      // Initialize all preprocessors from config
+      controlnetInfo.controlnets.forEach(async (controlnet: any, index: number) => {
+        if (controlnet.preprocessor) {
+          currentPreprocessors[index] = controlnet.preprocessor;
+          
+          // Also initialize parameters by fetching current values
+          try {
+            const response = await fetch(`/api/preprocessors/current-params/${index}`);
+            if (response.ok) {
+              const data = await response.json();
+              if (data.parameters && Object.keys(data.parameters).length > 0) {
+                preprocessorParams[index] = { ...data.parameters };
+                // Force reactivity
+                preprocessorParams = { ...preprocessorParams };
+                console.log('ControlNetConfig: Loaded initial params for CN', index, ':', data.parameters);
+              }
             }
+          } catch (err) {
+            console.warn('ControlNetConfig: Failed to load initial params for CN', index, ':', err);
           }
-        } catch (err) {
-          console.warn('ControlNetConfig: Failed to load initial params for CN', index, ':', err);
+          
+          // Force reactivity for preprocessors
+          currentPreprocessors = { ...currentPreprocessors };
         }
-      }
-    });
+      });
+    }
   }
 </script>
 
@@ -366,7 +370,7 @@
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-medium">Strength</span>
                     <span class="text-xs text-gray-600 dark:text-gray-400">
-                      {controlnet.strength.toFixed(2)}
+                      {(controlnet.strength || 0).toFixed(2)}
                     </span>
                   </div>
                   <input
@@ -485,7 +489,7 @@
             <div class="space-y-1">
               <div class="flex items-center justify-between">
                 <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Guidance Scale</label>
-                <span class="text-xs text-gray-600 dark:text-gray-400">{guidanceScale.toFixed(2)}</span>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{(guidanceScale || 0).toFixed(2)}</span>
               </div>
               <input
                 type="range"
@@ -503,7 +507,7 @@
             <div class="space-y-1">
               <div class="flex items-center justify-between">
                 <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Delta</label>
-                <span class="text-xs text-gray-600 dark:text-gray-400">{delta.toFixed(2)}</span>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{(delta || 0).toFixed(2)}</span>
               </div>
               <input
                 type="range"

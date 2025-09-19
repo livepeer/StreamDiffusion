@@ -30,17 +30,39 @@
       error = '';
       console.log(`ProcessorParams: Updating params for ${processorType} ${processorIndex}:`, updatedParams);
       
+      // Use different parameter names based on the endpoint
+      let requestBody: any;
+      if (apiEndpoint === '/api/preprocessors') {
+        // ControlNet preprocessors expect different parameter names
+        requestBody = {
+          controlnet_index: processorIndex,
+          params: updatedParams
+        };
+      } else {
+        // Pipeline hooks use the standard parameter names
+        requestBody = {
+          processor_index: processorIndex,
+          processor_params: updatedParams
+        };
+      }
+
       const response = await fetch(`${apiEndpoint}/update-params`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          processor_index: processorIndex,
-          processor_params: updatedParams
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
         const result = await response.json();
+        
+        // Check if this is a "no processors configured" error
+        if (result.detail && result.detail.includes('No processors configured')) {
+          // This is expected - processor hasn't been added yet, just show a helpful message
+          console.log(`ProcessorParams: Processor not configured yet - ${result.detail}`);
+          error = 'Add a processor first before configuring parameters';
+          return; // Don't throw error, just show message
+        }
+        
         throw new Error(result.detail || 'Failed to update parameters');
       }
 
@@ -205,7 +227,7 @@
               <input
                 type="checkbox"
                 id="param-{processorIndex}-{paramName}"
-                checked={parameterValues[paramName] || false}
+                checked={getDisplayValue(paramName, paramInfo as any) || false}
                 on:change={(e) => handleParameterChange(paramName, (e.target as HTMLInputElement).checked)}
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
@@ -222,7 +244,7 @@
               </label>
               <select
                 id="param-{processorIndex}-{paramName}"
-                bind:value={parameterValues[paramName]}
+                value={getDisplayValue(paramName, paramInfo as any)}
                 on:change={(e) => handleParameterChange(paramName, (e.target as HTMLSelectElement).value)}
                 class="w-full rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white cursor-pointer"
               >
@@ -244,7 +266,7 @@
                 <input
                   type="number"
                   step={getStepValue(paramInfo as any)}
-                  value={parameterValues[paramName] || 0}
+                  value={getDisplayValue(paramName, paramInfo as any)}
                   on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                   class="w-20 rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-center text-xs bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   min={getMinValue(paramInfo as any)}
@@ -253,7 +275,7 @@
               </div>
               <input
                 class="w-full h-2 cursor-pointer appearance-none rounded-lg bg-gray-200 dark:bg-gray-600"
-                value={parameterValues[paramName] || 0}
+                value={getDisplayValue(paramName, paramInfo as any)}
                 on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                 type="range"
                 id="param-{processorIndex}-{paramName}"
@@ -272,7 +294,7 @@
               <input
                 type="text"
                 id="param-{processorIndex}-{paramName}"
-                value={parameterValues[paramName] || ''}
+                value={getDisplayValue(paramName, paramInfo as any) || ''}
                 on:input={(e) => handleParameterChange(paramName, (e.target as HTMLInputElement).value)}
                 class="w-full rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                 placeholder={(paramInfo as any).default || ''}

@@ -707,7 +707,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           controlnet_index: controlnetIndex,
-          preprocessor_params: {
+          params: {
             [paramName]: scaledValue
           }
         })
@@ -1049,7 +1049,7 @@
                     {control.is_active ? 'Active' : 'Inactive'}
                   </span>
                   <span class="value-display">
-                    {control.current_value.toFixed(3)}
+                    {(control.current_value || 0).toFixed(3)}
                   </span>
                 </div>
                 <div class="control-actions">
