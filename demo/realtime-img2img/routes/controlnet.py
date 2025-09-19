@@ -13,6 +13,31 @@ from .common.api_utils import handle_api_request, create_success_response, handl
 
 router = APIRouter(prefix="/api", tags=["controlnet"])
 
+def _ensure_runtime_controlnet_config(app_instance):
+    """Ensure runtime controlnet config is initialized from uploaded config or create minimal config"""
+    if app_instance.runtime_controlnet_config is None:
+        if app_instance.uploaded_controlnet_config:
+            # Copy from YAML (deep copy to avoid modifying original)
+            app_instance.runtime_controlnet_config = copy.deepcopy(app_instance.uploaded_controlnet_config)
+        else:
+            # Create minimal config if no YAML exists
+            app_instance.runtime_controlnet_config = {'controlnets': []}
+    
+    # Ensure controlnets key exists in runtime config
+    if 'controlnets' not in app_instance.runtime_controlnet_config:
+        app_instance.runtime_controlnet_config['controlnets'] = []
+
+def _update_pipeline_controlnet_config(app_instance, operation_name: str):
+    """Update pipeline with current controlnet config, with fallback to reload"""
+    try:
+        current_config = app_instance._get_current_controlnet_config()
+        app_instance.pipeline.update_stream_params(controlnet_config=current_config)
+        logging.info(f"{operation_name}: Successfully updated ControlNet using consolidated API")
+    except Exception as e:
+        logging.exception(f"{operation_name}: Failed to update ControlNet: {e}")
+        # Mark for reload as fallback
+        app_instance.config_needs_reload = True
+
 def get_app_instance():
     """Dependency to get the app instance - will be injected during router registration"""
     # This will be overridden when the router is included in main.py
@@ -320,17 +345,7 @@ async def add_controlnet(request: Request, app_instance=Depends(get_app_instance
             conditioning_scale = controlnet_def['default_scale']
         
         # Initialize runtime config from YAML if not already done
-        if app_instance.runtime_controlnet_config is None:
-            if app_instance.uploaded_controlnet_config:
-                # Copy from YAML (deep copy to avoid modifying original)
-                app_instance.runtime_controlnet_config = copy.deepcopy(app_instance.uploaded_controlnet_config)
-            else:
-                # Create minimal config if no YAML exists
-                app_instance.runtime_controlnet_config = {'controlnets': []}
-        
-        # Ensure controlnets key exists in runtime config
-        if 'controlnets' not in app_instance.runtime_controlnet_config:
-            app_instance.runtime_controlnet_config['controlnets'] = []
+        _ensure_runtime_controlnet_config(app_instance)
         
         # Create new ControlNet entry
         new_controlnet = {
@@ -345,15 +360,9 @@ async def add_controlnet(request: Request, app_instance=Depends(get_app_instance
         app_instance.runtime_controlnet_config['controlnets'].append(new_controlnet)
         
         # Update pipeline using consolidated API
-        try:
-            current_config = app_instance._get_current_controlnet_config()
-            current_config.append(new_controlnet)
-            app_instance.pipeline.update_stream_params(controlnet_config=current_config)
-            logging.info(f"add_controlnet: Successfully added ControlNet using consolidated API")
-        except Exception as e:
-            logging.exception(f"add_controlnet: Failed to add ControlNet: {e}")
-            # Mark for reload as fallback
-            app_instance.config_needs_reload = True
+        current_config = app_instance._get_current_controlnet_config()
+        current_config.append(new_controlnet)
+        _update_pipeline_controlnet_config(app_instance, "add_controlnet")
         
         logging.info(f"add_controlnet: Added {controlnet_def['name']} with scale {conditioning_scale}")
         
@@ -406,12 +415,7 @@ async def remove_controlnet(request: Request, app_instance=Depends(get_app_insta
             raise HTTPException(status_code=400, detail="Missing index parameter")
         
         # Initialize runtime config from YAML if not already done
-        if app_instance.runtime_controlnet_config is None:
-            if app_instance.uploaded_controlnet_config:
-                # Copy from YAML (deep copy to avoid modifying original)
-                app_instance.runtime_controlnet_config = copy.deepcopy(app_instance.uploaded_controlnet_config)
-            else:
-                raise HTTPException(status_code=400, detail="No ControlNet configuration found")
+        _ensure_runtime_controlnet_config(app_instance)
         
         if 'controlnets' not in app_instance.runtime_controlnet_config:
             raise HTTPException(status_code=400, detail="No ControlNet configuration found")
@@ -424,19 +428,13 @@ async def remove_controlnet(request: Request, app_instance=Depends(get_app_insta
         removed_controlnet = controlnets.pop(index)
         
         # Update pipeline using consolidated API
-        try:
-            current_config = app_instance._get_current_controlnet_config()
-            if index >= len(current_config):
-                raise HTTPException(status_code=400, detail=f"ControlNet index {index} out of range")
-            
-            # Remove the controlnet at the specified index
-            current_config.pop(index)
-            app_instance.pipeline.update_stream_params(controlnet_config=current_config)
-            logging.info(f"remove_controlnet: Successfully removed ControlNet using consolidated API")
-        except Exception as e:
-            logging.exception(f"remove_controlnet: Failed to remove ControlNet: {e}")
-            # Mark for reload as fallback
-            app_instance.config_needs_reload = True
+        current_config = app_instance._get_current_controlnet_config()
+        if index >= len(current_config):
+            raise HTTPException(status_code=400, detail=f"ControlNet index {index} out of range")
+        
+        # Remove the controlnet at the specified index
+        current_config.pop(index)
+        _update_pipeline_controlnet_config(app_instance, "remove_controlnet")
         
         logging.info(f"remove_controlnet: Removed ControlNet at index {index}: {removed_controlnet.get('model_id', 'unknown')}")
         

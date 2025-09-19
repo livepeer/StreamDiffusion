@@ -10,6 +10,12 @@ from .common.api_utils import handle_api_request, create_success_response, handl
 
 router = APIRouter(prefix="/api", tags=["pipeline-hooks"])
 
+def _update_pipeline_hook_config(app_instance, hook_type: str, current_hooks: list, operation_name: str):
+    """Update pipeline with current hook config"""
+    update_kwargs = {f"{hook_type}_config": current_hooks}
+    app_instance.pipeline.update_stream_params(**update_kwargs)
+    logging.info(f"{operation_name}: Successfully updated {hook_type} config")
+
 def get_app_instance():
     """Dependency to get the app instance - will be injected during router registration"""
     # This will be overridden when the router is included in main.py
@@ -145,8 +151,7 @@ async def add_hook_processor(hook_type: str, request: Request, app_instance=Depe
         current_hooks.append(new_processor)
         
         # Update using the standard parameter update mechanism
-        update_kwargs = {f"{hook_type}_config": current_hooks}
-        app_instance.pipeline.update_stream_params(**update_kwargs)
+        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "add_hook_processor")
         
         logging.info(f"add_hook_processor: Successfully added {processor_type} to {hook_type}")
         
@@ -172,8 +177,7 @@ async def remove_hook_processor(hook_type: str, processor_index: int, app_instan
         removed_processor = current_hooks.pop(processor_index)
         
         # Update using the standard parameter update mechanism
-        update_kwargs = {f"{hook_type}_config": current_hooks}
-        app_instance.pipeline.update_stream_params(**update_kwargs)
+        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "remove_hook_processor")
         
         logging.info(f"remove_hook_processor: Successfully removed processor {processor_index} ({removed_processor.get('type', 'unknown')}) from {hook_type}")
         
@@ -206,8 +210,7 @@ async def toggle_hook_processor(hook_type: str, request: Request, app_instance=D
         current_hooks[processor_index]['enabled'] = bool(enabled)
         
         # Update using the standard parameter update mechanism
-        update_kwargs = {f"{hook_type}_config": current_hooks}
-        app_instance.pipeline.update_stream_params(**update_kwargs)
+        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "toggle_hook_processor")
         
         logging.info(f"toggle_hook_processor: Successfully toggled processor {processor_index} in {hook_type}")
         
