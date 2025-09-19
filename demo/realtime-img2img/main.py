@@ -169,6 +169,7 @@ class App:
             else:
                 logger.warning(f"_handle_input_parameter_update: Unknown parameter {parameter_name}")
 
+            logger.info(f"_handle_input_parameter_update: Updated {parameter_name} to {value}")
         except Exception as e:
             logger.exception(f"_handle_input_parameter_update: Failed to update {parameter_name}: {e}")
 
@@ -196,29 +197,36 @@ class App:
             return stream._controlnet_module
         return None
 
-    def _get_current_config(self, config_type: str):
-        """Get the current configuration state from the pipeline using public API"""
+    def _get_current_controlnet_config(self):
+        """Get the current ControlNet configuration state from the pipeline using public API"""
         if not self.pipeline or not self.pipeline.stream:
-            logging.warning(f"_get_current_config: No pipeline or stream wrapper for {config_type}")
+            logging.warning("_get_current_controlnet_config: No pipeline or stream wrapper")
             return []
         
         try:
             # Use the public get_stream_state API from the wrapper
             stream_state = self.pipeline.stream.get_stream_state()
-            config_key = f"{config_type}_config"
-            config = stream_state.get(config_key, [])
-            return config
+            controlnet_config = stream_state.get('controlnet_config', [])
+            return controlnet_config
         except Exception as e:
-            logging.warning(f"_get_current_config: Failed to get {config_type} config via get_stream_state: {e}")
+            logging.warning(f"_get_current_controlnet_config: Failed to get ControlNet config via get_stream_state: {e}")
             return []
-
-    def _get_current_controlnet_config(self):
-        """Get the current ControlNet configuration state from the pipeline using public API"""
-        return self._get_current_config("controlnet")
 
     def _get_current_hook_config(self, hook_type: str):
         """Get the current hook configuration state from the pipeline using public API"""
-        return self._get_current_config(hook_type)
+        if not self.pipeline or not self.pipeline.stream:
+            logging.warning(f"_get_current_hook_config: No pipeline or stream wrapper for {hook_type}")
+            return []
+        
+        try:
+            # Use the public get_stream_state API from the wrapper
+            stream_state = self.pipeline.stream.get_stream_state()
+            config_key = f"{hook_type}_config"
+            hook_config = stream_state.get(config_key, [])
+            return hook_config
+        except Exception as e:
+            logging.warning(f"_get_current_hook_config: Failed to get hook config for {hook_type} via get_stream_state: {e}")
+            return []
 
     def init_app(self):
         # Enhanced CORS for API-only development mode
@@ -250,7 +258,6 @@ class App:
     def _register_routes(self):
         """Register all route modules with dependency injection"""
         from routes import parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket
-        from routes.common.dependencies import get_app_instance as shared_get_app_instance, get_pipeline_class as shared_get_pipeline_class, get_default_settings as shared_get_default_settings, get_available_controlnets as shared_get_available_controlnets
         
         # Create dependency overrides to inject app instance and other dependencies
         def get_app_instance():
@@ -271,10 +278,22 @@ class App:
             self.app.include_router(router_module.router)
         
         # Set up dependency overrides on the main app (not individual routers)
-        self.app.dependency_overrides[shared_get_app_instance] = get_app_instance
-        self.app.dependency_overrides[shared_get_pipeline_class] = get_pipeline_class
-        self.app.dependency_overrides[shared_get_default_settings] = get_default_settings
-        self.app.dependency_overrides[shared_get_available_controlnets] = get_available_controlnets
+        self.app.dependency_overrides[parameters.get_app_instance] = get_app_instance
+        self.app.dependency_overrides[controlnet.get_app_instance] = get_app_instance
+        self.app.dependency_overrides[ipadapter.get_app_instance] = get_app_instance  
+        self.app.dependency_overrides[inference.get_app_instance] = get_app_instance
+        self.app.dependency_overrides[pipeline_hooks.get_app_instance] = get_app_instance
+        self.app.dependency_overrides[websocket.get_app_instance] = get_app_instance
+        
+        # Set up other dependencies where needed
+        if hasattr(inference, 'get_pipeline_class'):
+            self.app.dependency_overrides[inference.get_pipeline_class] = get_pipeline_class
+        if hasattr(inference, 'get_default_settings'):
+            self.app.dependency_overrides[inference.get_default_settings] = get_default_settings
+        if hasattr(controlnet, 'get_available_controlnets'):
+            self.app.dependency_overrides[controlnet.get_available_controlnets] = get_available_controlnets
+        if hasattr(websocket, 'get_pipeline_class'):
+            self.app.dependency_overrides[websocket.get_pipeline_class] = get_pipeline_class
         
         # Set up static files if not in API-only mode
         if not self.args.api_only:
@@ -515,22 +534,7 @@ class App:
             hooks_config = self._get_current_hook_config(hook_type)
             if hooks_config:
                 hook_info["enabled"] = True
-                
-                # Process raw processors to add frontend-expected fields
-                processed_processors = []
-                for index, processor in enumerate(hooks_config):
-                    if isinstance(processor, dict):
-                        processed_processor = {
-                            "index": index,
-                            "name": processor.get("type", "unknown"),  # Map type to name
-                            "type": processor.get("type", "unknown"),
-                            "enabled": processor.get("enabled", False),
-                            "order": processor.get("order", index + 1),
-                            "params": processor.get("params", {})
-                        }
-                        processed_processors.append(processed_processor)
-                
-                hook_info["processors"] = processed_processors
+                hook_info["processors"] = hooks_config
         elif self.uploaded_controlnet_config and hook_type in self.uploaded_controlnet_config:
             # Fallback to config when no pipeline
             config = self.uploaded_controlnet_config[hook_type]
@@ -580,6 +584,21 @@ class App:
             torch.cuda.empty_cache()
         except Exception as e:
             logging.exception(f"_cleanup_pipeline: Error during cleanup: {e}")
+
+
+app = App(config).app
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=config.host,
+        port=config.port,
+        reload=config.reload,
+        ssl_certfile=config.ssl_certfile,
+        ssl_keyfile=config.ssl_keyfile,
+    )
 
 
 app = App(config).app
