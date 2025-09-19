@@ -73,6 +73,13 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         app_instance.runtime_controlnet_config = None  # Clear any runtime additions
         app_instance.config_needs_reload = True  # Mark that pipeline needs recreation
         
+        # FORCE DESTROY ACTIVE PIPELINE TO MAKE CONFIG THE SOURCE OF TRUTH
+        if app_instance.pipeline:
+            logging.info("upload_controlnet_config: DESTROYING active pipeline to force config as source of truth")
+            old_pipeline = app_instance.pipeline
+            app_instance.pipeline = None
+            app_instance._cleanup_pipeline(old_pipeline)
+        
         logging.info(f"upload_controlnet_config: YAML uploaded - resetting ControlNet configuration to source of truth")
         
         # Get config prompt if available

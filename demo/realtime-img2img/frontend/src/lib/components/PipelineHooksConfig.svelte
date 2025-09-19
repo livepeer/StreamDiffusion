@@ -189,31 +189,17 @@
       processorParams = {};
       lastHookSignature = currentSignature;
       
-      // Initialize all processors from config
-      hookInfo.processors.forEach(async (processor: any, index: number) => {
+      // Initialize all processors from config (synchronously)
+      hookInfo.processors.forEach((processor: any, index: number) => {
         if (processor.name) {
           currentProcessors[index] = processor.name;
-          
-          // Also initialize parameters by fetching current values
-          try {
-            const response = await fetch(`/api/pipeline-hooks/${hookType}/current-params/${index}`);
-            if (response.ok) {
-              const data = await response.json();
-              if (data.parameters && Object.keys(data.parameters).length > 0) {
-                processorParams[index] = { ...data.parameters };
-                // Force reactivity
-                processorParams = { ...processorParams };
-                console.log(`PipelineHooksConfig: Loaded initial params for processor`, index, ':', data.parameters);
-              }
-            }
-          } catch (err) {
-            console.warn(`PipelineHooksConfig: Failed to load initial params for processor`, index, ':', err);
-          }
-          
-          // Force reactivity for processors
-          currentProcessors = { ...currentProcessors };
+          console.log(`PipelineHooksConfig: Initialized processor ${index} with name:`, processor.name);
         }
       });
+      
+      // Force reactivity for processors after all are set
+      currentProcessors = { ...currentProcessors };
+      console.log(`PipelineHooksConfig: Final currentProcessors state:`, currentProcessors);
     }
   }
 </script>
@@ -292,7 +278,7 @@
               <div class="mb-4">
                 <ProcessorSelector
                   processorIndex={index}
-                  currentProcessor={currentProcessors[index] || processor.name || 'passthrough'}
+                  currentProcessor={processor.name || processor.type}
                   apiEndpoint="/api/pipeline-hooks/{hookType}"
                   processorType="{getHookDisplayName(hookType)} processor"
                   on:processorChanged={handleProcessorChanged}

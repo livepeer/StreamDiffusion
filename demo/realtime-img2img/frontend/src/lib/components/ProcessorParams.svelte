@@ -76,11 +76,8 @@
   }, 100); // Reduced to 100ms for better responsiveness
 
   function handleParameterChange(paramName: string, value: any) {
-    console.log(`ProcessorParams: handleParameterChange called for ${paramName} with value:`, value, typeof value);
-    
     // Update UI immediately
     currentParams = { ...currentParams, [paramName]: value };
-    console.log(`ProcessorParams: Updated currentParams:`, currentParams);
     
     // Notify parent immediately for UI updates
     dispatch('parametersUpdated', {
@@ -141,14 +138,6 @@
         return [paramName, value];
       })
     ) : {};
-    
-  // Debug reactive values
-  $: {
-    if (parameterValues && Object.keys(parameterValues).length > 0) {
-      console.log(`ProcessorParams: parameterValues updated:`, parameterValues);
-      console.log(`ProcessorParams: currentParams:`, currentParams);
-    }
-  }
   
   // Initialize parameters when component mounts or processorInfo changes
   let lastProcessorName = '';
@@ -157,45 +146,47 @@
   async function initializeParams() {
     if (!processorInfo || !processorInfo.parameters || initialized) return;
     
-    console.log(`ProcessorParams: Initializing parameters...`);
+    console.log(`ProcessorParams: Initializing parameters for processor ${processorIndex}...`);
     
-    // Check if currentParams is empty or missing values
-    const hasCurrentValues = Object.keys(currentParams).length > 0;
-    
-    if (!hasCurrentValues) {
-      // Try to fetch current values from server
-      try {
-        const response = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.parameters && Object.keys(data.parameters).length > 0) {
-            currentParams = { ...data.parameters };
-            console.log(`ProcessorParams: Loaded current params from server:`, currentParams);
-          }
+    // Always try to fetch current values from server first (config is source of truth)
+    let serverParams: { [key: string]: any } = {};
+    try {
+      const response = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.parameters && Object.keys(data.parameters).length > 0) {
+          serverParams = { ...data.parameters };
+          console.log(`ProcessorParams: Loaded current params from server:`, serverParams);
         }
-      } catch (err) {
-        console.warn(`ProcessorParams: Failed to fetch current params:`, err);
       }
+    } catch (err) {
+      console.warn(`ProcessorParams: Failed to fetch current params:`, err);
     }
     
-    // Fill in any missing parameters with defaults
-    const updatedParams = { ...currentParams };
-    let hasUpdates = false;
+    // Build complete parameter set: server params take priority, then defaults
+    const completeParams: { [key: string]: any } = {};
     
     for (const [paramName, paramInfo] of Object.entries(processorInfo.parameters)) {
-      if (!(paramName in updatedParams)) {
-        const paramData = paramInfo as any;
-        if (paramData.default !== undefined) {
-          updatedParams[paramName] = paramData.default;
-          hasUpdates = true;
-        }
+      const paramData = paramInfo as any;
+      
+      // Priority: server value > current value > default value > type default
+      if (serverParams[paramName] !== undefined) {
+        completeParams[paramName] = serverParams[paramName];
+        console.log(`ProcessorParams: Using server value for ${paramName}:`, serverParams[paramName]);
+      } else if (currentParams[paramName] !== undefined) {
+        completeParams[paramName] = currentParams[paramName];
+      } else if (paramData.default !== undefined) {
+        completeParams[paramName] = paramData.default;
+        console.log(`ProcessorParams: Using default value for ${paramName}:`, paramData.default);
+      } else {
+        // Fallback to type-based defaults
+        completeParams[paramName] = getDefaultValue(paramData);
       }
     }
     
-    if (hasUpdates) {
-      currentParams = updatedParams;
-      console.log(`ProcessorParams: Added default values:`, updatedParams);
-    }
+    // Update currentParams completely
+    currentParams = { ...completeParams };
+    console.log(`ProcessorParams: Final initialized params:`, currentParams);
     
     initialized = true;
   }
@@ -211,6 +202,12 @@
       initialized = false;
       initializeParams();
     }
+  }
+  
+  // Also trigger initialization when component is mounted fresh (config upload scenario)
+  $: if (processorInfo && processorInfo.parameters && !initialized) {
+    console.log(`ProcessorParams: Fresh initialization triggered for processor ${processorIndex}`);
+    initializeParams();
   }
 
   function getDefaultValue(paramInfo: any): any {

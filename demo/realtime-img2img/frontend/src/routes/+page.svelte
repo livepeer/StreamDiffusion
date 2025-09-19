@@ -50,6 +50,7 @@
   let successMessage: string = '';
   let selectedModelId: string = '';
   let pipelineActive: boolean = false;
+  let configRefreshKey: number = 0; // Used to force component refresh when config is uploaded
 
   let currentResolution: ResolutionInfo;
   let apiError: string = '';
@@ -556,7 +557,14 @@
         console.log('uploadConfig: Full response received:', result);
         console.log('uploadConfig: controls_updated flag:', result.controls_updated);
         
-        successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        // If pipeline is running, stop it first
+        if (isLCMRunning) {
+          console.log('uploadConfig: Stopping active pipeline before applying config...');
+          await toggleLcmLive(); // Stop the current pipeline
+          successMessage = 'Configuration uploaded successfully! Pipeline stopped and reset to config.';
+        } else {
+          successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        }
         fileInput.value = '';
         
         // Update ControlNet info
@@ -656,7 +664,10 @@
           console.log('uploadConfig: Updated resolution to:', result.current_resolution);
         }
         
-        // Update pipeline hooks info
+        // Force complete refresh of all pipeline hook components by generating new keys
+        const configUploadTimestamp = Date.now();
+        
+        // Update pipeline hooks info with forced refresh
         if (result.image_preprocessing) {
           imagePreprocessingInfo = result.image_preprocessing;
           console.log('uploadConfig: Updated image preprocessing info:', imagePreprocessingInfo);
@@ -673,6 +684,9 @@
           latentPostprocessingInfo = result.latent_postprocessing;
           console.log('uploadConfig: Updated latent postprocessing info:', latentPostprocessingInfo);
         }
+        
+        // Trigger complete re-initialization of all components by updating the config refresh key
+        configRefreshKey = configUploadTimestamp;
         
         // Success toast will auto-dismiss
       } else {
@@ -1035,31 +1049,33 @@
             currentEnabled={ipadapterInfo?.enabled ?? true}
           ></IPAdapterConfig>
 
-          <PipelineHooksConfig 
-            hookType="image_preprocessing"
-            hookInfo={imagePreprocessingInfo}
-            {skipDiffusion}
-            on:refresh={handleImagePreprocessingRefresh}
-            on:skipDiffusionChanged={(e) => handleSkipDiffusionUpdate(e.detail)}
-          ></PipelineHooksConfig>
+          {#key configRefreshKey}
+            <PipelineHooksConfig 
+              hookType="image_preprocessing"
+              hookInfo={imagePreprocessingInfo}
+              {skipDiffusion}
+              on:refresh={handleImagePreprocessingRefresh}
+              on:skipDiffusionChanged={(e) => handleSkipDiffusionUpdate(e.detail)}
+            ></PipelineHooksConfig>
 
-          <PipelineHooksConfig 
-            hookType="image_postprocessing"
-            hookInfo={imagePostprocessingInfo}
-            on:refresh={handleImagePostprocessingRefresh}
-          ></PipelineHooksConfig>
+            <PipelineHooksConfig 
+              hookType="image_postprocessing"
+              hookInfo={imagePostprocessingInfo}
+              on:refresh={handleImagePostprocessingRefresh}
+            ></PipelineHooksConfig>
 
-          <PipelineHooksConfig 
-            hookType="latent_preprocessing"
-            hookInfo={latentPreprocessingInfo}
-            on:refresh={handleLatentPreprocessingRefresh}
-          ></PipelineHooksConfig>
+            <PipelineHooksConfig 
+              hookType="latent_preprocessing"
+              hookInfo={latentPreprocessingInfo}
+              on:refresh={handleLatentPreprocessingRefresh}
+            ></PipelineHooksConfig>
 
-          <PipelineHooksConfig 
-            hookType="latent_postprocessing"
-            hookInfo={latentPostprocessingInfo}
-            on:refresh={handleLatentPostprocessingRefresh}
-          ></PipelineHooksConfig>
+            <PipelineHooksConfig 
+              hookType="latent_postprocessing"
+              hookInfo={latentPostprocessingInfo}
+              on:refresh={handleLatentPostprocessingRefresh}
+            ></PipelineHooksConfig>
+          {/key}
         </div>
       {:else}
         <!-- Collapsed Right Panel Toggle -->
