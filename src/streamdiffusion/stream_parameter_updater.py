@@ -1236,7 +1236,9 @@ class StreamParameterUpdater(OrchestratorUser):
                 else:
                     # Simple uniform scale
                     if hasattr(self.stream, 'ipadapter'):
+                        # Tell diffusers_ipadapter to set the scale
                         self.stream.ipadapter.set_scale(desired_scale)
+                        # Update our tracking attribute
                         setattr(self.stream.ipadapter, 'scale', desired_scale)
         
 
@@ -1327,7 +1329,7 @@ class StreamParameterUpdater(OrchestratorUser):
                 config.update({
                     'style_image_key': module_config.style_image_key,
                     'num_image_tokens': module_config.num_image_tokens,
-                    'is_faceid': module_config.is_faceid,
+                    'type': module_config.type.value,
                 })
             
             # Check if style image is set

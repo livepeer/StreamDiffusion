@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any
+from enum import Enum
 import torch
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+
+
+class IPAdapterType(Enum):
+    REGULAR = "regular"
+    PLUS = "plus"
+    FACEID = "faceid"
 
 
 @dataclass
@@ -24,8 +31,8 @@ class IPAdapterConfig:
     scale: float = 1.0
     weight_type: Optional[str] = None  # Weight type for per-layer scaling
     enabled: bool = True  # Runtime enable/disable state
-    # FaceID support
-    is_faceid: bool = False
+
+    type: IPAdapterType = IPAdapterType.REGULAR
     insightface_model_name: Optional[str] = None
 
 
@@ -135,7 +142,7 @@ class IPAdapterModule(OrchestratorUser):
             'device': stream.device,
             'dtype': stream.dtype,
         }
-        if bool(self.config.is_faceid) and self.config.insightface_model_name:
+        if self.config.type == IPAdapterType.FACEID and self.config.insightface_model_name:
             ip_kwargs['insightface_model_name'] = self.config.insightface_model_name
             print(
                 f"IPAdapterModule.install: Initializing FaceID IP-Adapter with InsightFace model: {self.config.insightface_model_name}"
@@ -145,11 +152,7 @@ class IPAdapterModule(OrchestratorUser):
 
         # Register embedding preprocessor for this style key 
         # Use FaceID preprocessor if applicable
-        try:
-            use_faceid_preproc = hasattr(ipadapter, 'is_faceid') and bool(getattr(ipadapter, 'is_faceid'))
-        except Exception:
-            use_faceid_preproc = False
-        if use_faceid_preproc:
+        if self.config.type == IPAdapterType.FACEID:
             try:
                 from streamdiffusion.preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
                 embedding_preprocessor = FaceIDEmbeddingPreprocessor(
@@ -246,6 +249,8 @@ class IPAdapterModule(OrchestratorUser):
         - For TensorRT UNet engines compiled with IP-Adapter, pass a per-layer vector in extra kwargs
         - For PyTorch UNet with installed IP processors, modulate per-layer processor scale by time factor
         """
+        _last_enabled_state = None  # Track previous enabled state to avoid redundant updates
+        
         def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
             # If no IP-Adapter installed, do nothing
             if not hasattr(stream, 'ipadapter') or stream.ipadapter is None:
@@ -312,7 +317,11 @@ class IPAdapterModule(OrchestratorUser):
 
             # PyTorch UNet path: modulate installed processor scales by time factor and enabled state
             try:
-                if (time_factor != 1.0 or not enabled) and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                nonlocal _last_enabled_state
+                # Only process if we need to make changes (time scaling or state transition)
+                needs_update = (time_factor != 1.0 or enabled != _last_enabled_state)
+                if needs_update and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                    _last_enabled_state = enabled
                     for proc in stream.pipe.unet.attn_processors.values():
                         if hasattr(proc, 'scale') and hasattr(proc, '_ip_layer_index'):
                             base_val = getattr(proc, '_base_scale', proc.scale)
