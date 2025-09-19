@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 import logging
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
+from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["pipeline-hooks"])
 
@@ -15,12 +16,6 @@ def _update_pipeline_hook_config(app_instance, hook_type: str, current_hooks: li
     update_kwargs = {f"{hook_type}_config": current_hooks}
     app_instance.pipeline.update_stream_params(**update_kwargs)
     logging.info(f"{operation_name}: Successfully updated {hook_type} config")
-
-def get_app_instance():
-    """Dependency to get the app instance - will be injected during router registration"""
-    # This will be overridden when the router is included in main.py
-    pass
-
 
 # Pipeline Hooks API Endpoints
 @router.get("/pipeline-hooks/info-config")

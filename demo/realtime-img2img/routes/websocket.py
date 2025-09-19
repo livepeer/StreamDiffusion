@@ -9,13 +9,9 @@ from types import SimpleNamespace
 
 from util import bytes_to_pt
 from connection_manager import ServerFullException
+from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["websocket"])
-
-def get_app_instance():
-    """Dependency to get the app instance - will be injected during router registration"""
-    # This will be overridden when the router is included in main.py
-    pass
 
 def get_pipeline_class():
     """Dependency to get the Pipeline class - will be injected during router registration"""

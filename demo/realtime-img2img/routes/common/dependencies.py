@@ -1,0 +1,13 @@
+"""
+Shared dependency injection functions for all route modules.
+
+This module consolidates dependency injection functions that were previously
+duplicated across multiple route files to eliminate code duplication and
+centralize dependency management.
+"""
+
+
+def get_app_instance():
+    """Dependency to get the app instance - will be injected during router registration"""
+    # This will be overridden when the router is included in main.py
+    pass
