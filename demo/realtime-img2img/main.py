@@ -527,7 +527,22 @@ class App:
             hooks_config = self._get_current_hook_config(hook_type)
             if hooks_config:
                 hook_info["enabled"] = True
-                hook_info["processors"] = hooks_config
+                
+                # Process raw processors to add frontend-expected fields
+                processed_processors = []
+                for index, processor in enumerate(hooks_config):
+                    if isinstance(processor, dict):
+                        processed_processor = {
+                            "index": index,
+                            "name": processor.get("type", "unknown"),  # Map type to name
+                            "type": processor.get("type", "unknown"),
+                            "enabled": processor.get("enabled", False),
+                            "order": processor.get("order", index + 1),
+                            "params": processor.get("params", {})
+                        }
+                        processed_processors.append(processed_processor)
+                
+                hook_info["processors"] = processed_processors
         elif self.uploaded_controlnet_config and hook_type in self.uploaded_controlnet_config:
             # Fallback to config when no pipeline
             config = self.uploaded_controlnet_config[hook_type]
