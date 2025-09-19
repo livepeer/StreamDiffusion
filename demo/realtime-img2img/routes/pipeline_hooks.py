@@ -263,8 +263,7 @@ async def switch_hook_processor(hook_type: str, request: Request, app_instance=D
             current_hooks[processor_index]['params'] = {}
             
             # Update using the standard parameter update mechanism
-            update_kwargs = {f"{hook_type}_hooks": current_hooks}
-            app_instance.pipeline.update_stream_params(**update_kwargs)
+            _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "switch_hook_processor")
         
         logging.info(f"switch_hook_processor: Successfully switched processor {processor_index} in {hook_type} to {new_processor_type}")
         
@@ -307,7 +306,17 @@ async def update_hook_processor_params(hook_type: str, request: Request, app_ins
         
         # Update the processor parameters
         logging.info(f"update_hook_processor_params: Current processor config: {current_hooks[processor_index]}")
-        current_hooks[processor_index]['params'].update(processor_params)
+        
+        # Handle 'enabled' field separately as it's a top-level processor field, not a parameter
+        if 'enabled' in processor_params:
+            enabled_value = processor_params.pop('enabled')  # Remove from params dict
+            current_hooks[processor_index]['enabled'] = bool(enabled_value)
+            logging.info(f"update_hook_processor_params: Updated enabled field to: {enabled_value}")
+        
+        # Update remaining parameters in the params field
+        if processor_params:  # Only update if there are remaining params
+            current_hooks[processor_index]['params'].update(processor_params)
+        
         logging.info(f"update_hook_processor_params: Updated processor config: {current_hooks[processor_index]}")
         
         # Update using the standard parameter update mechanism

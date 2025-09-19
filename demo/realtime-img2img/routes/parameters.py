@@ -18,7 +18,7 @@ def get_app_instance():
 async def update_params(request: Request, app_instance=Depends(get_app_instance)):
     """Update multiple streaming parameters in a single unified call"""
     try:
-        data = await handle_api_request(request, "update_params", pipeline_required=False)
+        data = await request.json()
         
         # Allow updating resolution even when pipeline is not initialized.
         # We save the new values so they take effect on the next stream start.
@@ -39,7 +39,10 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                     raise HTTPException(status_code=400, detail="Invalid resolution format")
             else:
                 raise HTTPException(status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string")
-            return create_success_response(f"Updated resolution to {app_instance.new_width}x{app_instance.new_height} (will apply on next stream start)")
+            return JSONResponse({
+                "status": "success",
+                "message": f"Updated resolution to {app_instance.new_width}x{app_instance.new_height} (will apply on next stream start)"
+            })
 
         if not app_instance.pipeline:
             raise HTTPException(status_code=400, detail="Pipeline is not initialized")
@@ -64,12 +67,20 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
 
         if params:
             app_instance.pipeline.update_stream_params(**params)
-            return create_success_response(f"Updated parameters: {list(params.keys())}", updated_params=params)
+            return JSONResponse({
+                "status": "success",
+                "message": f"Updated parameters: {list(params.keys())}",
+                "updated_params": params
+            })
         else:
-            return create_success_response("No valid parameters provided to update")
+            return JSONResponse({
+                "status": "success",
+                "message": "No valid parameters provided to update"
+            })
         
     except Exception as e:
-        raise handle_api_error(e, "update_params")
+        logging.exception(f"update_params: Failed to update parameters: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update parameters: {str(e)}")
 
 async def _update_single_parameter(
     request: Request, 
@@ -123,7 +134,7 @@ async def update_seed(request: Request, app_instance=Depends(get_app_instance)):
 async def update_blending(request: Request, app_instance=Depends(get_app_instance)):
     """Update prompt and/or seed blending configuration in real-time"""
     try:
-        data = await handle_api_request(request, "update_blending")
+        data = await request.json()
         
         validate_pipeline(app_instance.pipeline, "update_blending")
         
@@ -189,9 +200,12 @@ async def update_blending(request: Request, app_instance=Depends(get_app_instanc
 async def update_prompt_weight(request: Request, app_instance=Depends(get_app_instance)):
     """Update a specific prompt weight in the current blending configuration"""
     try:
-        data = await handle_api_request(request, "update_prompt_weight", ["index", "weight"])
+        data = await request.json()
         index = data.get('index')
         weight = data.get('weight')
+        
+        if index is None or weight is None:
+            raise HTTPException(status_code=400, detail="Missing index or weight parameter")
         
         validate_pipeline(app_instance.pipeline, "update_prompt_weight")
         
@@ -224,9 +238,12 @@ async def update_prompt_weight(request: Request, app_instance=Depends(get_app_in
 async def update_seed_weight(request: Request, app_instance=Depends(get_app_instance)):
     """Update a specific seed weight in the current blending configuration"""
     try:
-        data = await handle_api_request(request, "update_seed_weight", ["index", "weight"])
+        data = await request.json()
         index = data.get('index')
         weight = data.get('weight')
+        
+        if index is None or weight is None:
+            raise HTTPException(status_code=400, detail="Missing index or weight parameter")
         
         validate_pipeline(app_instance.pipeline, "update_seed_weight")
         
