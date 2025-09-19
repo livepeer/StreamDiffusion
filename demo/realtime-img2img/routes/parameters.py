@@ -6,13 +6,9 @@ from fastapi.responses import JSONResponse
 import logging
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
+from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["parameters"])
-
-def get_app_instance():
-    """Dependency to get the app instance - will be injected during router registration"""
-    # This will be overridden when the router is included in main.py
-    pass
 
 @router.post("/params")
 async def update_params(request: Request, app_instance=Depends(get_app_instance)):
