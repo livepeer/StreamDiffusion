@@ -1236,9 +1236,21 @@ class StreamParameterUpdater(OrchestratorUser):
                 else:
                     # Simple uniform scale
                     if hasattr(self.stream, 'ipadapter'):
+                        # Tell diffusers_ipadapter to set the scale
                         self.stream.ipadapter.set_scale(desired_scale)
+                        # Update our tracking attribute
                         setattr(self.stream.ipadapter, 'scale', desired_scale)
         
+
+        # Update enabled state if provided
+        if 'enabled' in desired_config and desired_config['enabled'] is not None:
+            enabled_state = bool(desired_config['enabled'])
+            # Update IPAdapter instance
+            if hasattr(self.stream, 'ipadapter'):
+                current_enabled = getattr(self.stream.ipadapter, 'enabled', True)
+                if current_enabled != enabled_state:
+                    logger.info(f"_update_ipadapter_config: Updating enabled state: {current_enabled} → {enabled_state}")
+                    setattr(self.stream.ipadapter, 'enabled', enabled_state)
 
         # Update weight type if provided (affects per-layer distribution and/or per-step factor)
         if 'weight_type' in desired_config and desired_config['weight_type'] is not None:
@@ -1308,7 +1320,7 @@ class StreamParameterUpdater(OrchestratorUser):
             config = {
                 'scale': getattr(ipadapter, 'scale', 1.0),
                 'weight_type': getattr(ipadapter, 'weight_type', None),
-                'enabled': True,  # If instance exists, it's enabled
+                'enabled': getattr(ipadapter, 'enabled', True),  # Check actual enabled state
             }
             
             # Add static initialization fields
@@ -1317,7 +1329,7 @@ class StreamParameterUpdater(OrchestratorUser):
                 config.update({
                     'style_image_key': module_config.style_image_key,
                     'num_image_tokens': module_config.num_image_tokens,
-                    'is_faceid': module_config.is_faceid,
+                    'type': module_config.type.value,
                 })
             
             # Check if style image is set
