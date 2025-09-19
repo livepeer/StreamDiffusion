@@ -169,7 +169,6 @@ class App:
             else:
                 logger.warning(f"_handle_input_parameter_update: Unknown parameter {parameter_name}")
 
-            logger.info(f"_handle_input_parameter_update: Updated {parameter_name} to {value}")
         except Exception as e:
             logger.exception(f"_handle_input_parameter_update: Failed to update {parameter_name}: {e}")
 

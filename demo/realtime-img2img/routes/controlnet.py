@@ -43,19 +43,15 @@ def _update_pipeline_controlnet_config(app_instance, operation_name: str):
 async def upload_controlnet_config(file: UploadFile = File(...), app_instance=Depends(get_app_instance)):
     """Upload and load a new ControlNet YAML configuration"""
     try:
-        logging.info(f"upload_controlnet_config: Starting upload for file: {file.filename}")
-        
         if not file.filename.endswith(('.yaml', '.yml')):
             raise HTTPException(status_code=400, detail="File must be a YAML file")
         
         # Save uploaded file temporarily
         content = await file.read()
-        logging.info(f"upload_controlnet_config: Read {len(content)} bytes from file")
         
         # Parse YAML content
         try:
             config_data = yaml.safe_load(content.decode('utf-8'))
-            logging.info(f"upload_controlnet_config: Parsed YAML with keys: {list(config_data.keys()) if config_data else 'None'}")
         except yaml.YAMLError as e:
             raise HTTPException(status_code=400, detail=f"Invalid YAML format: {str(e)}")
         
@@ -66,12 +62,10 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         
         # FORCE DESTROY ACTIVE PIPELINE TO MAKE CONFIG THE SOURCE OF TRUTH
         if app_instance.pipeline:
-            logging.info("upload_controlnet_config: DESTROYING active pipeline to force config as source of truth")
+            logging.info("upload_controlnet_config: Destroying active pipeline to force config as source of truth")
             old_pipeline = app_instance.pipeline
             app_instance.pipeline = None
             app_instance._cleanup_pipeline(old_pipeline)
-        
-        logging.info(f"upload_controlnet_config: YAML uploaded - resetting ControlNet configuration to source of truth")
         
         # Get config prompt if available
         config_prompt = config_data.get('prompt', None)
@@ -109,7 +103,6 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         # Store acceleration if different
         if config_acceleration != app_instance.args.acceleration:
             app_instance.new_acceleration = config_acceleration
-            logging.info(f"upload_controlnet_config: Updated acceleration from config to {config_acceleration}")
         
         # Normalize blending configurations using existing methods
         normalized_prompt_blending = app_instance._normalize_prompt_config(config_data)
@@ -178,13 +171,6 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
             "latent_postprocessing": app_instance._get_hook_info("latent_postprocessing"),
         }
         
-        logging.info(f"upload_controlnet_config: Response keys: {list(response_data.keys())}")
-        logging.info(f"upload_controlnet_config: controls_updated = {response_data['controls_updated']}")
-        logging.info(f"upload_controlnet_config: config_prompt = {config_prompt[:50] if config_prompt else 'None'}...")
-        logging.info(f"upload_controlnet_config: t_index_list = {t_index_list}")
-        logging.info(f"upload_controlnet_config: guidance_scale = {config_guidance_scale}")
-        logging.info(f"upload_controlnet_config: controlnet info = {response_data['controlnet']}")
-        
         return JSONResponse(response_data)
         
     except Exception as e:
@@ -245,19 +231,14 @@ async def update_controlnet_strength(request: Request, app_instance=Depends(get_
         
         # Update ControlNet strength using consolidated API
         current_config = app_instance._get_current_controlnet_config()
-        logging.info(f"update_controlnet_strength: Current config: {current_config}")
-        
         if controlnet_index >= len(current_config):
             raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
         
         # Update only the conditioning_scale for the specified controlnet
         old_strength = current_config[controlnet_index]['conditioning_scale']
         current_config[controlnet_index]['conditioning_scale'] = float(strength)
-        logging.info(f"update_controlnet_strength: Updating ControlNet {controlnet_index} strength from {old_strength} to {strength}")
-        logging.info(f"update_controlnet_strength: Sending config: {current_config}")
         
         app_instance.pipeline.update_stream_params(controlnet_config=current_config)
-        logging.info(f"update_controlnet_strength: update_stream_params call completed")
             
         return create_success_response(f"Updated ControlNet {controlnet_index} strength to {strength}")
         
@@ -269,7 +250,6 @@ async def get_available_controlnets_endpoint(app_instance=Depends(get_app_instan
     """Get list of available ControlNets that can be added"""
     try:
         # Debug the dependency injection
-        logging.debug(f"get_available_controlnets: available_controlnets type={type(available_controlnets)}, value={available_controlnets}")
         
         # Detect current model architecture to filter appropriate ControlNets
         model_type = "sd15"  # Default fallback
@@ -362,7 +342,6 @@ async def add_controlnet(request: Request, app_instance=Depends(get_app_instance
         current_config.append(new_controlnet)
         _update_pipeline_controlnet_config(app_instance, "add_controlnet")
         
-        logging.info(f"add_controlnet: Added {controlnet_def['name']} with scale {conditioning_scale}")
         
         # Return updated ControlNet info immediately
         updated_info = app_instance._get_controlnet_info()
@@ -434,7 +413,6 @@ async def remove_controlnet(request: Request, app_instance=Depends(get_app_insta
         current_config.pop(index)
         _update_pipeline_controlnet_config(app_instance, "remove_controlnet")
         
-        logging.info(f"remove_controlnet: Removed ControlNet at index {index}: {removed_controlnet.get('model_id', 'unknown')}")
         
         # Return updated ControlNet info immediately
         updated_info = app_instance._get_controlnet_info()
@@ -524,7 +502,6 @@ async def switch_preprocessor(request: Request, app_instance=Depends(get_app_ins
                 app_instance.runtime_controlnet_config['controlnets'][controlnet_index]['preprocessor'] = preprocessor_name
                 app_instance.runtime_controlnet_config['controlnets'][controlnet_index]['preprocessor_params'] = {}
         
-        logging.info(f"switch_preprocessor: Switched ControlNet {controlnet_index} preprocessor from {old_preprocessor} to {preprocessor_name}")
         
         return create_success_response(f"Switched ControlNet {controlnet_index} preprocessor to {preprocessor_name}")
         
@@ -535,8 +512,6 @@ async def switch_preprocessor(request: Request, app_instance=Depends(get_app_ins
 async def update_preprocessor_params(request: Request, app_instance=Depends(get_app_instance)):
     """Update preprocessor parameters for a specific ControlNet"""
     try:
-        logging.info(f"update_preprocessor_params: ===== STARTING REQUEST =====")
-        
         # Parse JSON directly
         try:
             data = await request.json()
@@ -544,47 +519,33 @@ async def update_preprocessor_params(request: Request, app_instance=Depends(get_
             logging.error(f"update_preprocessor_params: JSON parsing failed: {json_error}")
             raise HTTPException(status_code=400, detail=f"Invalid JSON: {json_error}")
             
-        logging.info(f"update_preprocessor_params: Parsed data: {data}")
-        logging.info(f"update_preprocessor_params: Data type: {type(data)}")
-        logging.info(f"update_preprocessor_params: Data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-        
         controlnet_index = data.get("controlnet_index")
         params = data.get("params", {})
-        logging.info(f"update_preprocessor_params: Extracted - controlnet_index={controlnet_index} (type: {type(controlnet_index)}), params={params} (type: {type(params)})")
         
         if controlnet_index is None:
             logging.error(f"update_preprocessor_params: Missing controlnet_index parameter")
             raise HTTPException(status_code=400, detail="Missing controlnet_index parameter")
         
-        logging.info(f"update_preprocessor_params: Validating pipeline")
         validate_pipeline(app_instance.pipeline, "update_preprocessor_params")
-        logging.info(f"update_preprocessor_params: Validating config mode")
         validate_config_mode(app_instance.pipeline, "controlnets")
         
         # Get current ControlNet configuration
-        logging.info(f"update_preprocessor_params: Getting current ControlNet config")
         current_config = app_instance._get_current_controlnet_config()
-        logging.info(f"update_preprocessor_params: Current config length: {len(current_config)}")
         
         if controlnet_index >= len(current_config):
             logging.error(f"update_preprocessor_params: ControlNet index {controlnet_index} out of range (max: {len(current_config)-1})")
             raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
         
         # Update preprocessor parameters
-        logging.info(f"update_preprocessor_params: Current controlnet config before update: {current_config[controlnet_index]}")
         if 'preprocessor_params' not in current_config[controlnet_index]:
             current_config[controlnet_index]['preprocessor_params'] = {}
         
         current_config[controlnet_index]['preprocessor_params'].update(params)
-        logging.info(f"update_preprocessor_params: Updated controlnet config: {current_config[controlnet_index]}")
         
         # Update pipeline
-        logging.info(f"update_preprocessor_params: Calling update_stream_params")
         app_instance.pipeline.update_stream_params(controlnet_config=current_config)
-        logging.info(f"update_preprocessor_params: update_stream_params completed successfully")
         
         # Update runtime config to keep in sync
-        logging.info(f"update_preprocessor_params: Updating runtime config")
         if app_instance.runtime_controlnet_config and 'controlnets' in app_instance.runtime_controlnet_config:
             if controlnet_index < len(app_instance.runtime_controlnet_config['controlnets']):
                 if 'preprocessor_params' not in app_instance.runtime_controlnet_config['controlnets'][controlnet_index]:
@@ -592,13 +553,11 @@ async def update_preprocessor_params(request: Request, app_instance=Depends(get_
                 app_instance.runtime_controlnet_config['controlnets'][controlnet_index]['preprocessor_params'].update(params)
         
         logging.info(f"update_preprocessor_params: Updated ControlNet {controlnet_index} preprocessor params: {params}")
-        logging.info(f"update_preprocessor_params: Success - returning response")
         
         return create_success_response(f"Updated ControlNet {controlnet_index} preprocessor parameters", updated_params=params)
         
     except Exception as e:
         logging.exception(f"update_preprocessor_params: Exception occurred: {str(e)}")
-        logging.error(f"update_preprocessor_params: Exception type: {type(e).__name__}")
         raise handle_api_error(e, "update_preprocessor_params")
 
 @router.get("/preprocessors/current-params/{controlnet_index}")
