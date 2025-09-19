@@ -8,14 +8,9 @@ import uuid
 import markdown2
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
-from .common.dependencies import get_app_instance, get_pipeline_class
+from .common.dependencies import get_app_instance, get_pipeline_class, get_default_settings
 
 router = APIRouter(prefix="/api", tags=["inference"])
-
-def get_default_settings():
-    """Dependency to get the DEFAULT_SETTINGS - will be injected during router registration"""
-    # This will be overridden when the router is included in main.py
-    pass
 
 @router.get("/queue")
 async def get_queue_size(app_instance=Depends(get_app_instance)):
