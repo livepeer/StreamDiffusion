@@ -227,7 +227,8 @@ class Pipeline:
             if self.has_controlnet:
                 # txt2img with ControlNets: push control image via direct method
                 try:
-                    current_cfg = self.stream.stream._param_updater._get_current_controlnet_config() if hasattr(self.stream, 'stream') else []
+                    stream_state = self.stream.get_stream_state()
+                    current_cfg = stream_state.get('controlnet_config', [])
                 except Exception:
                     current_cfg = []
                 if current_cfg:
@@ -246,7 +247,8 @@ class Pipeline:
             if self.has_controlnet:
                 # ControlNet mode: push control image via direct method and use PIL image
                 try:
-                    current_cfg = self.stream.stream._param_updater._get_current_controlnet_config() if hasattr(self.stream, 'stream') else []
+                    stream_state = self.stream.get_stream_state()
+                    current_cfg = stream_state.get('controlnet_config', [])
                 except Exception:
                     current_cfg = []
                 if current_cfg:
