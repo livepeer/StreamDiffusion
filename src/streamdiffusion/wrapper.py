@@ -1307,7 +1307,7 @@ class StreamDiffusionWrapper:
                 # If using TensorRT with IP-Adapter, ensure processors and weights are installed BEFORE export
                 if use_ipadapter_trt and has_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
                     try:
-                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
                         cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
                         ip_cfg = IPAdapterConfig(
                             style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
@@ -1316,7 +1316,7 @@ class StreamDiffusionWrapper:
                             image_encoder_path=cfg['image_encoder_path'],
                             style_image=cfg.get('style_image'),
                             scale=cfg.get('scale', 1.0),
-                            adapter_type=IPAdapterType(cfg['type']),
+                            adapter_type=IPAdapterType(cfg.get('type', "regular")),
                             insightface_model_name=cfg.get('insightface_model_name'),
                         )
                         ip_module_for_export = IPAdapterModule(ip_cfg)
