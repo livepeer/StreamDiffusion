@@ -10,7 +10,7 @@ from pathlib import Path
 import copy
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline, validate_feature_enabled, validate_config_mode
-from .common.dependencies import get_app_instance
+from .common.dependencies import get_app_instance, get_available_controlnets
 
 router = APIRouter(prefix="/api", tags=["controlnet"])
 
@@ -38,11 +38,6 @@ def _update_pipeline_controlnet_config(app_instance, operation_name: str):
         logging.exception(f"{operation_name}: Failed to update ControlNet: {e}")
         # Mark for reload as fallback
         app_instance.config_needs_reload = True
-
-def get_available_controlnets():
-    """Dependency to get the AVAILABLE_CONTROLNETS - will be injected during router registration"""
-    # This will be overridden when the router is included in main.py
-    pass
 
 @router.post("/controlnet/upload-config")
 async def upload_controlnet_config(file: UploadFile = File(...), app_instance=Depends(get_app_instance)):
