@@ -10,8 +10,16 @@ from types import SimpleNamespace
 from util import bytes_to_pt
 from connection_manager import ServerFullException
 from .common.dependencies import get_app_instance, get_pipeline_class
+from input_sources import InputSourceManager
 
 router = APIRouter(prefix="/api", tags=["websocket"])
+
+
+def _get_input_source_manager(app_instance) -> InputSourceManager:
+    """Get or create the input source manager for the app instance."""
+    if not hasattr(app_instance, 'input_source_manager'):
+        app_instance.input_source_manager = InputSourceManager()
+    return app_instance.input_source_manager
 
 @router.websocket("/ws/{user_id}")
 async def websocket_endpoint(user_id: uuid.UUID, websocket: WebSocket, app_instance=Depends(get_app_instance), pipeline_class=Depends(get_pipeline_class)):
@@ -66,7 +74,11 @@ async def handle_websocket_data(user_id: uuid.UUID, app_instance, pipeline_class
                     has_controlnets = 'controlnets' in app_instance.uploaded_controlnet_config
                     need_image = app_instance.uploaded_controlnet_config['mode'] == "img2img" or has_controlnets
                 
+                # Get input source manager
+                input_manager = _get_input_source_manager(app_instance)
+                
                 if need_image:
+                    # Receive main webcam stream (fallback)
                     image_data = await app_instance.conn_manager.receive_bytes(user_id)
                     if len(image_data) == 0:
                         await app_instance.conn_manager.send_json(
@@ -74,14 +86,21 @@ async def handle_websocket_data(user_id: uuid.UUID, app_instance, pipeline_class
                         )
                         continue
                     
+                    # Update webcam frame in input manager for all webcam sources
+                    input_manager.update_webcam_frame(image_data)
+                    
                     # Always use direct bytes-to-tensor conversion for efficiency
                     params.image = bytes_to_pt(image_data)
                 else:
                     params.image = None
+                
+                # Store the input manager reference in params for later use by img2img.py
+                params.input_manager = input_manager
                 
                 await app_instance.conn_manager.update_data(user_id, params)
 
     except Exception as e:
         logging.exception(f"handle_websocket_data: Websocket Error: {e}, {user_id} ")
         await app_instance.conn_manager.disconnect(user_id)
+
 

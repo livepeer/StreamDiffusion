@@ -327,31 +327,3 @@ async def reset_component_source(
         
     except Exception as e:
         return handle_api_error(e, "reset_component_source")
-
-
-@router.post("/reset-all")
-async def reset_all_input_sources(app_instance=Depends(get_app_instance)):
-    """
-    Reset all input sources to their default states.
-    This is typically called when a new config is uploaded.
-    """
-    try:
-        # Get input source manager
-        manager = _get_input_source_manager(app_instance)
-        
-        # Reset all sources to defaults
-        manager.reset_to_defaults()
-        
-        logger.info("reset_all_input_sources: Reset all input sources to defaults")
-        
-        return create_success_response({
-            'message': 'All input sources reset to defaults',
-            'defaults': {
-                'base': 'webcam',
-                'ipadapter': 'uploaded_image (default image)',
-                'controlnet': 'fallback to base pipeline'
-            }
-        })
-        
-    except Exception as e:
-        return handle_api_error(e, "reset_all_input_sources")
