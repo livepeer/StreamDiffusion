@@ -126,7 +126,7 @@
   }
 
   // Create reactive parameter values for template binding - depends on currentParams for reactivity
-  $: parameterValues = processorInfo?.parameters && currentParams ? 
+  $: parameterValues = processorInfo?.parameters ? 
     Object.fromEntries(
       Object.entries(processorInfo.parameters).map(([paramName, paramInfo]) => {
         // Explicitly reference currentParams to ensure reactivity
@@ -146,47 +146,45 @@
   async function initializeParams() {
     if (!processorInfo || !processorInfo.parameters || initialized) return;
     
-    console.log(`ProcessorParams: Initializing parameters for processor ${processorIndex}...`);
+    console.log(`ProcessorParams: Initializing parameters...`);
     
-    // Always try to fetch current values from server first (config is source of truth)
-    let serverParams: { [key: string]: any } = {};
-    try {
-      const response = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.parameters && Object.keys(data.parameters).length > 0) {
-          serverParams = { ...data.parameters };
-          console.log(`ProcessorParams: Loaded current params from server:`, serverParams);
+    // Check if currentParams is empty or missing values
+    const hasCurrentValues = Object.keys(currentParams).length > 0;
+    
+    if (!hasCurrentValues) {
+      // Try to fetch current values from server
+      try {
+        const response = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.parameters && Object.keys(data.parameters).length > 0) {
+            currentParams = { ...data.parameters };
+            console.log(`ProcessorParams: Loaded current params from server:`, currentParams);
+          }
         }
+      } catch (err) {
+        console.warn(`ProcessorParams: Failed to fetch current params:`, err);
       }
-    } catch (err) {
-      console.warn(`ProcessorParams: Failed to fetch current params:`, err);
     }
     
-    // Build complete parameter set: server params take priority, then defaults
-    const completeParams: { [key: string]: any } = {};
+    // Fill in any missing parameters with defaults
+    const updatedParams = { ...currentParams };
+    let hasUpdates = false;
     
     for (const [paramName, paramInfo] of Object.entries(processorInfo.parameters)) {
-      const paramData = paramInfo as any;
-      
-      // Priority: server value > current value > default value > type default
-      if (serverParams[paramName] !== undefined) {
-        completeParams[paramName] = serverParams[paramName];
-        console.log(`ProcessorParams: Using server value for ${paramName}:`, serverParams[paramName]);
-      } else if (currentParams[paramName] !== undefined) {
-        completeParams[paramName] = currentParams[paramName];
-      } else if (paramData.default !== undefined) {
-        completeParams[paramName] = paramData.default;
-        console.log(`ProcessorParams: Using default value for ${paramName}:`, paramData.default);
-      } else {
-        // Fallback to type-based defaults
-        completeParams[paramName] = getDefaultValue(paramData);
+      if (!(paramName in updatedParams)) {
+        const paramData = paramInfo as any;
+        if (paramData.default !== undefined) {
+          updatedParams[paramName] = paramData.default;
+          hasUpdates = true;
+        }
       }
     }
     
-    // Update currentParams completely
-    currentParams = { ...completeParams };
-    console.log(`ProcessorParams: Final initialized params:`, currentParams);
+    if (hasUpdates) {
+      currentParams = updatedParams;
+      console.log(`ProcessorParams: Added default values:`, updatedParams);
+    }
     
     initialized = true;
   }
@@ -202,12 +200,6 @@
       initialized = false;
       initializeParams();
     }
-  }
-  
-  // Also trigger initialization when component is mounted fresh (config upload scenario)
-  $: if (processorInfo && processorInfo.parameters && !initialized) {
-    console.log(`ProcessorParams: Fresh initialization triggered for processor ${processorIndex}`);
-    initializeParams();
   }
 
   function getDefaultValue(paramInfo: any): any {
@@ -235,7 +227,7 @@
               <input
                 type="checkbox"
                 id="param-{processorIndex}-{paramName}"
-                checked={(parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)) || false}
+                checked={getDisplayValue(paramName, paramInfo as any) || false}
                 on:change={(e) => handleParameterChange(paramName, (e.target as HTMLInputElement).checked)}
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
@@ -252,7 +244,7 @@
               </label>
               <select
                 id="param-{processorIndex}-{paramName}"
-                value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
+                value={getDisplayValue(paramName, paramInfo as any)}
                 on:change={(e) => handleParameterChange(paramName, (e.target as HTMLSelectElement).value)}
                 class="w-full rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white cursor-pointer"
               >
@@ -274,7 +266,7 @@
                 <input
                   type="number"
                   step={getStepValue(paramInfo as any)}
-                  value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
+                  value={getDisplayValue(paramName, paramInfo as any)}
                   on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                   class="w-20 rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-center text-xs bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   min={getMinValue(paramInfo as any)}
@@ -283,7 +275,7 @@
               </div>
               <input
                 class="w-full h-2 cursor-pointer appearance-none rounded-lg bg-gray-200 dark:bg-gray-600"
-                value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
+                value={getDisplayValue(paramName, paramInfo as any)}
                 on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                 type="range"
                 id="param-{processorIndex}-{paramName}"
@@ -302,7 +294,7 @@
               <input
                 type="text"
                 id="param-{processorIndex}-{paramName}"
-                value={(parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)) || ''}
+                value={getDisplayValue(paramName, paramInfo as any) || ''}
                 on:input={(e) => handleParameterChange(paramName, (e.target as HTMLInputElement).value)}
                 class="w-full rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                 placeholder={(paramInfo as any).default || ''}

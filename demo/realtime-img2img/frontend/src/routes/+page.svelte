@@ -20,7 +20,6 @@
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
   import InputControl from '$lib/components/InputControl.svelte';
-  import InputSourceSelector from '$lib/components/InputSourceSelector.svelte';
 
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
@@ -51,7 +50,6 @@
   let successMessage: string = '';
   let selectedModelId: string = '';
   let pipelineActive: boolean = false;
-  let configRefreshKey: number = 0; // Used to force component refresh when config is uploaded
 
   let currentResolution: ResolutionInfo;
   let apiError: string = '';
@@ -558,14 +556,7 @@
         console.log('uploadConfig: Full response received:', result);
         console.log('uploadConfig: controls_updated flag:', result.controls_updated);
         
-        // If pipeline is running, stop it first
-        if (isLCMRunning) {
-          console.log('uploadConfig: Stopping active pipeline before applying config...');
-          await toggleLcmLive(); // Stop the current pipeline
-          successMessage = 'Configuration uploaded successfully! Pipeline stopped and reset to config.';
-        } else {
-          successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
-        }
+        successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
         fileInput.value = '';
         
         // Update ControlNet info
@@ -665,10 +656,7 @@
           console.log('uploadConfig: Updated resolution to:', result.current_resolution);
         }
         
-        // Force complete refresh of all pipeline hook components by generating new keys
-        const configUploadTimestamp = Date.now();
-        
-        // Update pipeline hooks info with forced refresh
+        // Update pipeline hooks info
         if (result.image_preprocessing) {
           imagePreprocessingInfo = result.image_preprocessing;
           console.log('uploadConfig: Updated image preprocessing info:', imagePreprocessingInfo);
@@ -685,12 +673,6 @@
           latentPostprocessingInfo = result.latent_postprocessing;
           console.log('uploadConfig: Updated latent postprocessing info:', latentPostprocessingInfo);
         }
-        
-        // Trigger complete re-initialization of all components by updating the config refresh key
-        configRefreshKey = configUploadTimestamp;
-        
-        // Reset all input source selectors to defaults
-        await resetAllInputSourceSelectors();
         
         // Success toast will auto-dismiss
       } else {
@@ -789,42 +771,6 @@
     document.removeEventListener('mousemove', handleVideoDrag);
     document.removeEventListener('mouseup', stopVideoDrag);
     document.body.style.userSelect = '';
-  }
-
-  function handleBaseInputSourceChanged(event: CustomEvent) {
-    const { componentType, sourceType, sourceData } = event.detail;
-    console.log('Main page: Base input source changed:', event.detail);
-  }
-
-  // Component references for resetting input sources
-  let baseInputSourceSelector: any;
-  let controlNetConfigComponent: any;
-  let ipAdapterConfigComponent: any;
-
-  // Function to reset all input source selectors
-  async function resetAllInputSourceSelectors() {
-    console.log('resetAllInputSourceSelectors: Resetting all input source selectors');
-    
-    try {
-      // Reset base input source selector
-      if (baseInputSourceSelector && baseInputSourceSelector.resetToDefaults) {
-        baseInputSourceSelector.resetToDefaults();
-      }
-      
-      // Reset ControlNet input source selectors (handled by ControlNetConfig component)
-      if (controlNetConfigComponent && controlNetConfigComponent.resetInputSources) {
-        controlNetConfigComponent.resetInputSources();
-      }
-      
-      // Reset IPAdapter input source selector (handled by IPAdapterConfig component)
-      if (ipAdapterConfigComponent && ipAdapterConfigComponent.resetInputSource) {
-        ipAdapterConfigComponent.resetInputSource();
-      }
-      
-      console.log('resetAllInputSourceSelectors: All input source selectors reset');
-    } catch (error) {
-      console.error('resetAllInputSourceSelectors: Error resetting input source selectors:', error);
-    }
   }
 </script>
 
@@ -951,21 +897,6 @@
               {/if}
             </div>
 
-            <!-- Base Pipeline Input Source -->
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-              <div class="p-4">
-                <h3 class="text-md font-medium mb-3">Base Input Source</h3>
-                <InputSourceSelector
-                  bind:this={baseInputSourceSelector}
-                  componentType="base"
-                  on:sourceChanged={handleBaseInputSourceChanged}
-                />
-                <p class="text-xs text-gray-500 mt-3">
-                  Select the input source for the main pipeline. This affects the base image that gets processed through the diffusion model.
-                </p>
-              </div>
-            </div>
-
             <!-- Unified Blending Control -->
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
               <button 
@@ -1087,7 +1018,6 @@
           </div>
           
           <ControlNetConfig 
-            bind:this={controlNetConfigComponent}
             {controlnetInfo} 
             {tIndexList} 
             {guidanceScale}
@@ -1099,40 +1029,37 @@
           ></ControlNetConfig>
 
           <IPAdapterConfig 
-            bind:this={ipAdapterConfigComponent}
             {ipadapterInfo} 
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}
             currentEnabled={ipadapterInfo?.enabled ?? true}
           ></IPAdapterConfig>
 
-          {#key configRefreshKey}
-            <PipelineHooksConfig 
-              hookType="image_preprocessing"
-              hookInfo={imagePreprocessingInfo}
-              {skipDiffusion}
-              on:refresh={handleImagePreprocessingRefresh}
-              on:skipDiffusionChanged={(e) => handleSkipDiffusionUpdate(e.detail)}
-            ></PipelineHooksConfig>
+          <PipelineHooksConfig 
+            hookType="image_preprocessing"
+            hookInfo={imagePreprocessingInfo}
+            {skipDiffusion}
+            on:refresh={handleImagePreprocessingRefresh}
+            on:skipDiffusionChanged={(e) => handleSkipDiffusionUpdate(e.detail)}
+          ></PipelineHooksConfig>
 
-            <PipelineHooksConfig 
-              hookType="image_postprocessing"
-              hookInfo={imagePostprocessingInfo}
-              on:refresh={handleImagePostprocessingRefresh}
-            ></PipelineHooksConfig>
+          <PipelineHooksConfig 
+            hookType="image_postprocessing"
+            hookInfo={imagePostprocessingInfo}
+            on:refresh={handleImagePostprocessingRefresh}
+          ></PipelineHooksConfig>
 
-            <PipelineHooksConfig 
-              hookType="latent_preprocessing"
-              hookInfo={latentPreprocessingInfo}
-              on:refresh={handleLatentPreprocessingRefresh}
-            ></PipelineHooksConfig>
+          <PipelineHooksConfig 
+            hookType="latent_preprocessing"
+            hookInfo={latentPreprocessingInfo}
+            on:refresh={handleLatentPreprocessingRefresh}
+          ></PipelineHooksConfig>
 
-            <PipelineHooksConfig 
-              hookType="latent_postprocessing"
-              hookInfo={latentPostprocessingInfo}
-              on:refresh={handleLatentPostprocessingRefresh}
-            ></PipelineHooksConfig>
-          {/key}
+          <PipelineHooksConfig 
+            hookType="latent_postprocessing"
+            hookInfo={latentPostprocessingInfo}
+            on:refresh={handleLatentPostprocessingRefresh}
+          ></PipelineHooksConfig>
         </div>
       {:else}
         <!-- Collapsed Right Panel Toggle -->

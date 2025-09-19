@@ -85,24 +85,24 @@
     }
   }
 
-  async function updateProcessorEnabled(index: number, enabled: boolean) {
+  async function toggleProcessorEnabled(index: number, enabled: boolean) {
     try {
-      const response = await fetch(`/api/pipeline-hooks/${hookType}/update-params`, {
+      const response = await fetch(`/api/pipeline-hooks/${hookType}/toggle`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           processor_index: index,
-          processor_params: { enabled: enabled }
+          enabled: enabled
         }),
       });
 
       if (!response.ok) {
         const result = await response.json();
-        console.error(`updateProcessorEnabled: Failed to update processor enabled state:`, result.detail);
+        console.error(`toggleProcessorEnabled: Failed to toggle processor:`, result.detail);
       } else {
-        console.log(`updateProcessorEnabled: Successfully updated processor enabled state`);
+        console.log(`toggleProcessorEnabled: Successfully toggled processor`);
         
         // Update local state immediately for UI responsiveness
         if (hookInfo && hookInfo.processors && hookInfo.processors[index]) {
@@ -110,9 +110,12 @@
           // Force reactivity
           hookInfo = { ...hookInfo };
         }
+        
+        // Also refresh the hook info to ensure consistency
+        dispatch('refresh');
       }
     } catch (error) {
-      console.error(`updateProcessorEnabled: Update failed:`, error);
+      console.error(`toggleProcessorEnabled: Toggle failed:`, error);
     }
   }
 
@@ -189,17 +192,31 @@
       processorParams = {};
       lastHookSignature = currentSignature;
       
-      // Initialize all processors from config (synchronously)
-      hookInfo.processors.forEach((processor: any, index: number) => {
+      // Initialize all processors from config
+      hookInfo.processors.forEach(async (processor: any, index: number) => {
         if (processor.name) {
           currentProcessors[index] = processor.name;
-          console.log(`PipelineHooksConfig: Initialized processor ${index} with name:`, processor.name);
+          
+          // Also initialize parameters by fetching current values
+          try {
+            const response = await fetch(`/api/pipeline-hooks/${hookType}/current-params/${index}`);
+            if (response.ok) {
+              const data = await response.json();
+              if (data.parameters && Object.keys(data.parameters).length > 0) {
+                processorParams[index] = { ...data.parameters };
+                // Force reactivity
+                processorParams = { ...processorParams };
+                console.log(`PipelineHooksConfig: Loaded initial params for processor`, index, ':', data.parameters);
+              }
+            }
+          } catch (err) {
+            console.warn(`PipelineHooksConfig: Failed to load initial params for processor`, index, ':', err);
+          }
+          
+          // Force reactivity for processors
+          currentProcessors = { ...currentProcessors };
         }
       });
-      
-      // Force reactivity for processors after all are set
-      currentProcessors = { ...currentProcessors };
-      console.log(`PipelineHooksConfig: Final currentProcessors state:`, currentProcessors);
     }
   }
 </script>
@@ -258,7 +275,7 @@
                     <input
                       type="checkbox"
                       checked={processor.enabled}
-                      on:change={(e) => updateProcessorEnabled(index, (e.target as HTMLInputElement).checked)}
+                      on:change={(e) => toggleProcessorEnabled(index, (e.target as HTMLInputElement).checked)}
                       class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     />
                     Enabled
@@ -278,8 +295,8 @@
               <div class="mb-4">
                 <ProcessorSelector
                   processorIndex={index}
-                  currentProcessor={processor.name || processor.type}
-                  apiEndpoint={`/api/pipeline-hooks/${hookType}`}
+                  currentProcessor={currentProcessors[index] || processor.name || 'passthrough'}
+                  apiEndpoint="/api/pipeline-hooks/{hookType}"
                   processorType="{getHookDisplayName(hookType)} processor"
                   on:processorChanged={handleProcessorChanged}
                 />
