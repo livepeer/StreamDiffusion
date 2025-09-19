@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 
 sys.path.append(
     os.path.join(
@@ -123,10 +124,11 @@ class Pipeline:
                 self.use_config = False
 
         # Update input_mode based on pipeline mode
+        self.info = self.Info()
         if self.pipeline_mode == "txt2img":
-            self.Info.input_mode = "text"
+            self.info.input_mode = "text"
         else:
-            self.Info.input_mode = "image"
+            self.info.input_mode = "image"
 
         params = self.InputParams()
 
@@ -213,8 +215,8 @@ class Pipeline:
         self.num_inference_steps = 50
         self.negative_prompt = default_negative_prompt
         
-        # Store output type for frame conversion
-        self.output_type = "pt" if not self.use_config else self.config.get('output_type', 'pt')
+        # Store output type for frame conversion - always force "pt" for optimal performance
+        self.output_type = "pt"
 
         # Model and acceleration setup
 
