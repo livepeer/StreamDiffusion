@@ -197,36 +197,29 @@ class App:
             return stream._controlnet_module
         return None
 
-    def _get_current_controlnet_config(self):
-        """Get the current ControlNet configuration state from the pipeline using public API"""
+    def _get_current_config(self, config_type: str):
+        """Get the current configuration state from the pipeline using public API"""
         if not self.pipeline or not self.pipeline.stream:
-            logging.warning("_get_current_controlnet_config: No pipeline or stream wrapper")
+            logging.warning(f"_get_current_config: No pipeline or stream wrapper for {config_type}")
             return []
         
         try:
             # Use the public get_stream_state API from the wrapper
             stream_state = self.pipeline.stream.get_stream_state()
-            controlnet_config = stream_state.get('controlnet_config', [])
-            return controlnet_config
+            config_key = f"{config_type}_config"
+            config = stream_state.get(config_key, [])
+            return config
         except Exception as e:
-            logging.warning(f"_get_current_controlnet_config: Failed to get ControlNet config via get_stream_state: {e}")
+            logging.warning(f"_get_current_config: Failed to get {config_type} config via get_stream_state: {e}")
             return []
+
+    def _get_current_controlnet_config(self):
+        """Get the current ControlNet configuration state from the pipeline using public API"""
+        return self._get_current_config("controlnet")
 
     def _get_current_hook_config(self, hook_type: str):
         """Get the current hook configuration state from the pipeline using public API"""
-        if not self.pipeline or not self.pipeline.stream:
-            logging.warning(f"_get_current_hook_config: No pipeline or stream wrapper for {hook_type}")
-            return []
-        
-        try:
-            # Use the public get_stream_state API from the wrapper
-            stream_state = self.pipeline.stream.get_stream_state()
-            config_key = f"{hook_type}_config"
-            hook_config = stream_state.get(config_key, [])
-            return hook_config
-        except Exception as e:
-            logging.warning(f"_get_current_hook_config: Failed to get hook config for {hook_type} via get_stream_state: {e}")
-            return []
+        return self._get_current_config(hook_type)
 
     def init_app(self):
         # Enhanced CORS for API-only development mode
