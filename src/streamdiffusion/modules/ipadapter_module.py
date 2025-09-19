@@ -7,6 +7,9 @@ import torch
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -99,7 +102,6 @@ class IPAdapterModule(OrchestratorUser):
         - Registers the embedding hook onto stream.embedding_hooks
         - Sets the initial scale and mirrors it onto stream.ipadapter_scale
         """
-        logger = __import__('logging').getLogger(__name__)
         style_key = self.config.style_image_key or "ipadapter_main"
 
         # Attach shared orchestrator to ensure consistent reuse across modules
@@ -141,7 +143,7 @@ class IPAdapterModule(OrchestratorUser):
         ipadapter = IPAdapter(**ip_kwargs)
         self.ipadapter = ipadapter
 
-        # Register embedding preprocessor for this style key 
+        # Register embedding preprocessor for this style key
         # Use FaceID preprocessor if applicable
         try:
             use_faceid_preproc = hasattr(ipadapter, 'is_faceid') and bool(getattr(ipadapter, 'is_faceid'))
@@ -157,7 +159,7 @@ class IPAdapterModule(OrchestratorUser):
                 )
                 print("IPAdapterModule.install: Using FaceIDEmbeddingPreprocessor for FaceID model")
             except Exception as e:
-                logger.error(f"IPAdapterModule.install: Failed to initialize FaceIDEmbeddingPreprocessor: {e}")
+                logger.error(f"IPAdapterModule.install: Failed to initialize FaceIDEmbeddingPreprocessor: {e}", extra={"report_error": True})
                 raise
         else:
             embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
@@ -241,7 +243,7 @@ class IPAdapterModule(OrchestratorUser):
             return local_path
         else:
             # Directory download
-            repo_root = snapshot_download(repo_id=repo_id, allow_patterns=[f"{subpath}/*"]) 
+            repo_root = snapshot_download(repo_id=repo_id, allow_patterns=[f"{subpath}/*"])
             full_path = os.path.join(repo_root, subpath)
             if not os.path.exists(full_path):
                 raise FileNotFoundError(f"IPAdapterModule._resolve_model_path: Downloaded path not found: {full_path}")
@@ -260,7 +262,8 @@ class IPAdapterModule(OrchestratorUser):
 
             # Read base weight and weight type from stream
             try:
-                base_weight = float(getattr(stream, 'ipadapter_scale', getattr(self, 'config', None).scale if hasattr(self, 'config') else 1.0))
+                cfg = getattr(self, 'config', None)
+                base_weight = float(getattr(stream, 'ipadapter_scale', (cfg.scale if cfg is not None else 1.0)))
             except Exception:
                 base_weight = 1.0
             weight_type = getattr(stream, 'ipadapter_weight_type', None)
