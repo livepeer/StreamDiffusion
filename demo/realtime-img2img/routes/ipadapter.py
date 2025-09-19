@@ -9,9 +9,13 @@ import os
 import io
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline, validate_feature_enabled, validate_config_mode
-from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["ipadapter"])
+
+def get_app_instance():
+    """Dependency to get the app instance - will be injected during router registration"""
+    # This will be overridden when the router is included in main.py
+    pass
 
 @router.post("/ipadapter/upload-style-image")
 async def upload_style_image(file: UploadFile = File(...), app_instance=Depends(get_app_instance)):

@@ -7,15 +7,14 @@ from fastapi.responses import JSONResponse
 import logging
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
-from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["pipeline-hooks"])
 
-def _update_pipeline_hook_config(app_instance, hook_type: str, current_hooks: list, operation_name: str):
-    """Update pipeline with current hook config"""
-    update_kwargs = {f"{hook_type}_config": current_hooks}
-    app_instance.pipeline.update_stream_params(**update_kwargs)
-    logging.info(f"{operation_name}: Successfully updated {hook_type} config")
+def get_app_instance():
+    """Dependency to get the app instance - will be injected during router registration"""
+    # This will be overridden when the router is included in main.py
+    pass
+
 
 # Pipeline Hooks API Endpoints
 @router.get("/pipeline-hooks/info-config")
@@ -146,7 +145,8 @@ async def add_hook_processor(hook_type: str, request: Request, app_instance=Depe
         current_hooks.append(new_processor)
         
         # Update using the standard parameter update mechanism
-        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "add_hook_processor")
+        update_kwargs = {f"{hook_type}_config": current_hooks}
+        app_instance.pipeline.update_stream_params(**update_kwargs)
         
         logging.info(f"add_hook_processor: Successfully added {processor_type} to {hook_type}")
         
@@ -172,7 +172,8 @@ async def remove_hook_processor(hook_type: str, processor_index: int, app_instan
         removed_processor = current_hooks.pop(processor_index)
         
         # Update using the standard parameter update mechanism
-        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "remove_hook_processor")
+        update_kwargs = {f"{hook_type}_config": current_hooks}
+        app_instance.pipeline.update_stream_params(**update_kwargs)
         
         logging.info(f"remove_hook_processor: Successfully removed processor {processor_index} ({removed_processor.get('type', 'unknown')}) from {hook_type}")
         
@@ -205,7 +206,8 @@ async def toggle_hook_processor(hook_type: str, request: Request, app_instance=D
         current_hooks[processor_index]['enabled'] = bool(enabled)
         
         # Update using the standard parameter update mechanism
-        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "toggle_hook_processor")
+        update_kwargs = {f"{hook_type}_config": current_hooks}
+        app_instance.pipeline.update_stream_params(**update_kwargs)
         
         logging.info(f"toggle_hook_processor: Successfully toggled processor {processor_index} in {hook_type}")
         
@@ -258,7 +260,8 @@ async def switch_hook_processor(hook_type: str, request: Request, app_instance=D
             current_hooks[processor_index]['params'] = {}
             
             # Update using the standard parameter update mechanism
-            _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "switch_hook_processor")
+            update_kwargs = {f"{hook_type}_hooks": current_hooks}
+            app_instance.pipeline.update_stream_params(**update_kwargs)
         
         logging.info(f"switch_hook_processor: Successfully switched processor {processor_index} in {hook_type} to {new_processor_type}")
         
@@ -301,17 +304,7 @@ async def update_hook_processor_params(hook_type: str, request: Request, app_ins
         
         # Update the processor parameters
         logging.info(f"update_hook_processor_params: Current processor config: {current_hooks[processor_index]}")
-        
-        # Handle 'enabled' field separately as it's a top-level processor field, not a parameter
-        if 'enabled' in processor_params:
-            enabled_value = processor_params.pop('enabled')  # Remove from params dict
-            current_hooks[processor_index]['enabled'] = bool(enabled_value)
-            logging.info(f"update_hook_processor_params: Updated enabled field to: {enabled_value}")
-        
-        # Update remaining parameters in the params field
-        if processor_params:  # Only update if there are remaining params
-            current_hooks[processor_index]['params'].update(processor_params)
-        
+        current_hooks[processor_index]['params'].update(processor_params)
         logging.info(f"update_hook_processor_params: Updated processor config: {current_hooks[processor_index]}")
         
         # Update using the standard parameter update mechanism
