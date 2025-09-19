@@ -249,6 +249,8 @@ class IPAdapterModule(OrchestratorUser):
         - For TensorRT UNet engines compiled with IP-Adapter, pass a per-layer vector in extra kwargs
         - For PyTorch UNet with installed IP processors, modulate per-layer processor scale by time factor
         """
+        _last_enabled_state = None  # Track previous enabled state to avoid redundant updates
+        
         def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
             # If no IP-Adapter installed, do nothing
             if not hasattr(stream, 'ipadapter') or stream.ipadapter is None:
@@ -315,7 +317,11 @@ class IPAdapterModule(OrchestratorUser):
 
             # PyTorch UNet path: modulate installed processor scales by time factor and enabled state
             try:
-                if (time_factor != 1.0 or not enabled) and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                nonlocal _last_enabled_state
+                # Only process if we need to make changes (time scaling or state transition)
+                needs_update = (time_factor != 1.0 or enabled != _last_enabled_state)
+                if needs_update and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                    _last_enabled_state = enabled
                     for proc in stream.pipe.unet.attn_processors.values():
                         if hasattr(proc, 'scale') and hasattr(proc, '_ip_layer_index'):
                             base_val = getattr(proc, '_base_scale', proc.scale)
