@@ -76,8 +76,11 @@
   }, 100); // Reduced to 100ms for better responsiveness
 
   function handleParameterChange(paramName: string, value: any) {
+    console.log(`ProcessorParams: handleParameterChange called for ${paramName} with value:`, value, typeof value);
+    
     // Update UI immediately
     currentParams = { ...currentParams, [paramName]: value };
+    console.log(`ProcessorParams: Updated currentParams:`, currentParams);
     
     // Notify parent immediately for UI updates
     dispatch('parametersUpdated', {
@@ -126,7 +129,7 @@
   }
 
   // Create reactive parameter values for template binding - depends on currentParams for reactivity
-  $: parameterValues = processorInfo?.parameters ? 
+  $: parameterValues = processorInfo?.parameters && currentParams ? 
     Object.fromEntries(
       Object.entries(processorInfo.parameters).map(([paramName, paramInfo]) => {
         // Explicitly reference currentParams to ensure reactivity
@@ -138,6 +141,14 @@
         return [paramName, value];
       })
     ) : {};
+    
+  // Debug reactive values
+  $: {
+    if (parameterValues && Object.keys(parameterValues).length > 0) {
+      console.log(`ProcessorParams: parameterValues updated:`, parameterValues);
+      console.log(`ProcessorParams: currentParams:`, currentParams);
+    }
+  }
   
   // Initialize parameters when component mounts or processorInfo changes
   let lastProcessorName = '';
@@ -227,7 +238,7 @@
               <input
                 type="checkbox"
                 id="param-{processorIndex}-{paramName}"
-                checked={getDisplayValue(paramName, paramInfo as any) || false}
+                checked={(parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)) || false}
                 on:change={(e) => handleParameterChange(paramName, (e.target as HTMLInputElement).checked)}
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
@@ -244,7 +255,7 @@
               </label>
               <select
                 id="param-{processorIndex}-{paramName}"
-                value={getDisplayValue(paramName, paramInfo as any)}
+                value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
                 on:change={(e) => handleParameterChange(paramName, (e.target as HTMLSelectElement).value)}
                 class="w-full rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white cursor-pointer"
               >
@@ -266,7 +277,7 @@
                 <input
                   type="number"
                   step={getStepValue(paramInfo as any)}
-                  value={getDisplayValue(paramName, paramInfo as any)}
+                  value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
                   on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                   class="w-20 rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-center text-xs bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   min={getMinValue(paramInfo as any)}
@@ -275,7 +286,7 @@
               </div>
               <input
                 class="w-full h-2 cursor-pointer appearance-none rounded-lg bg-gray-200 dark:bg-gray-600"
-                value={getDisplayValue(paramName, paramInfo as any)}
+                value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
                 on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                 type="range"
                 id="param-{processorIndex}-{paramName}"
@@ -294,7 +305,7 @@
               <input
                 type="text"
                 id="param-{processorIndex}-{paramName}"
-                value={getDisplayValue(paramName, paramInfo as any) || ''}
+                value={(parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)) || ''}
                 on:input={(e) => handleParameterChange(paramName, (e.target as HTMLInputElement).value)}
                 class="w-full rounded-md border border-gray-300 dark:border-gray-600 px-2 py-1 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                 placeholder={(paramInfo as any).default || ''}
