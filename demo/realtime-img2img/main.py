@@ -251,7 +251,7 @@ class App:
     def _register_routes(self):
         """Register all route modules with dependency injection"""
         from routes import parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket
-        from routes.common.dependencies import get_app_instance as shared_get_app_instance, get_pipeline_class as shared_get_pipeline_class, get_default_settings as shared_get_default_settings
+        from routes.common.dependencies import get_app_instance as shared_get_app_instance, get_pipeline_class as shared_get_pipeline_class, get_default_settings as shared_get_default_settings, get_available_controlnets as shared_get_available_controlnets
         
         # Create dependency overrides to inject app instance and other dependencies
         def get_app_instance():
@@ -275,10 +275,7 @@ class App:
         self.app.dependency_overrides[shared_get_app_instance] = get_app_instance
         self.app.dependency_overrides[shared_get_pipeline_class] = get_pipeline_class
         self.app.dependency_overrides[shared_get_default_settings] = get_default_settings
-        
-        # Set up other dependencies where needed
-        if hasattr(controlnet, 'get_available_controlnets'):
-            self.app.dependency_overrides[controlnet.get_available_controlnets] = get_available_controlnets
+        self.app.dependency_overrides[shared_get_available_controlnets] = get_available_controlnets
         
         # Set up static files if not in API-only mode
         if not self.args.api_only:
