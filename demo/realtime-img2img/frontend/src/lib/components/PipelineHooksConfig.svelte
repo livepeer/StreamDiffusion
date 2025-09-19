@@ -85,24 +85,24 @@
     }
   }
 
-  async function toggleProcessorEnabled(index: number, enabled: boolean) {
+  async function updateProcessorEnabled(index: number, enabled: boolean) {
     try {
-      const response = await fetch(`/api/pipeline-hooks/${hookType}/toggle`, {
+      const response = await fetch(`/api/pipeline-hooks/${hookType}/update-params`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           processor_index: index,
-          enabled: enabled
+          processor_params: { enabled: enabled }
         }),
       });
 
       if (!response.ok) {
         const result = await response.json();
-        console.error(`toggleProcessorEnabled: Failed to toggle processor:`, result.detail);
+        console.error(`updateProcessorEnabled: Failed to update processor enabled state:`, result.detail);
       } else {
-        console.log(`toggleProcessorEnabled: Successfully toggled processor`);
+        console.log(`updateProcessorEnabled: Successfully updated processor enabled state`);
         
         // Update local state immediately for UI responsiveness
         if (hookInfo && hookInfo.processors && hookInfo.processors[index]) {
@@ -110,12 +110,9 @@
           // Force reactivity
           hookInfo = { ...hookInfo };
         }
-        
-        // Also refresh the hook info to ensure consistency
-        dispatch('refresh');
       }
     } catch (error) {
-      console.error(`toggleProcessorEnabled: Toggle failed:`, error);
+      console.error(`updateProcessorEnabled: Update failed:`, error);
     }
   }
 
@@ -275,7 +272,7 @@
                     <input
                       type="checkbox"
                       checked={processor.enabled}
-                      on:change={(e) => toggleProcessorEnabled(index, (e.target as HTMLInputElement).checked)}
+                      on:change={(e) => updateProcessorEnabled(index, (e.target as HTMLInputElement).checked)}
                       class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     />
                     Enabled
