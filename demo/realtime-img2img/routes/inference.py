@@ -31,25 +31,6 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
                 logging.info("stream: Creating default pipeline...")
                 app_instance.pipeline = app_instance._create_default_pipeline()
             logging.info("stream: Pipeline created successfully")
-            try:
-                acc = getattr(app_instance.args, 'acceleration', None)
-                logging.debug(f"stream: acceleration={acc}, use_config={getattr(app_instance.pipeline, 'use_config', False)}")
-                stream_obj = getattr(app_instance.pipeline, 'stream', None)
-                unet_obj = getattr(stream_obj, 'unet', None)
-                is_trt = unet_obj is not None and hasattr(unet_obj, 'engine') and hasattr(unet_obj, 'stream')
-                logging.debug(f"stream: unet_is_trt={is_trt}, has_ipadapter={getattr(app_instance.pipeline, 'has_ipadapter', False)}")
-                if is_trt:
-                    logging.debug(f"stream: unet.use_ipadapter={getattr(unet_obj, 'use_ipadapter', None)}, num_ip_layers={getattr(unet_obj, 'num_ip_layers', None)}")
-                try:
-                    stream_state = app_instance.pipeline.get_stream_state()
-                    ipadapter_config = stream_state.get('ipadapter_config', {})
-                    if ipadapter_config:
-                        logging.debug(f"stream: ipadapter_scale={ipadapter_config.get('scale')}")
-                        logging.debug(f"stream: ipadapter_weight_type={ipadapter_config.get('weight_type')}")
-                except Exception:
-                    pass
-            except Exception:
-                logging.exception("stream: failed to log pipeline state after creation")
         
         # Recreate pipeline if config changed (but not resolution - that's handled separately)
         elif app_instance.config_needs_reload or (app_instance.uploaded_controlnet_config and not (app_instance.pipeline.use_config and app_instance.pipeline.config and 'controlnets' in app_instance.pipeline.config)) or (app_instance.uploaded_controlnet_config and not app_instance.pipeline.use_config):
@@ -205,44 +186,33 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
 @router.get("/settings")
 async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depends(get_pipeline_class), default_settings=Depends(get_default_settings)):
     """Get pipeline settings and configuration info"""
-    logging.info("settings: Starting settings endpoint")
-    
     # Use Pipeline class directly for schema info (doesn't require instance)
     info_schema = pipeline_class.Info.schema()
-    logging.info(f"settings: Got info_schema: {type(info_schema)}")
     
     # Get info from pipeline instance if available to get correct input_mode
     if app_instance.pipeline and hasattr(app_instance.pipeline, 'info'):
         info = app_instance.pipeline.info
-        logging.info("settings: Using pipeline info")
     else:
         info = pipeline_class.Info()
-        logging.info("settings: Using default pipeline Info")
     
     page_content = ""
     if info.page_content:
         page_content = markdown2.markdown(info.page_content)
-        logging.info(f"settings: Got page_content length: {len(page_content)}")
 
     input_params = pipeline_class.InputParams.schema()
-    logging.info(f"settings: Got input_params: {type(input_params)}")
     
     # Add ControlNet information 
     controlnet_info = app_instance._get_controlnet_info()
-    logging.info(f"settings: Got controlnet_info: {controlnet_info}")
     
     # Add IPAdapter information
     ipadapter_info = app_instance._get_ipadapter_info()
-    logging.info(f"settings: Got ipadapter_info: {ipadapter_info}")
     
     # Include config prompt if available, otherwise use default
     config_prompt = None
     if app_instance.uploaded_controlnet_config and 'prompt' in app_instance.uploaded_controlnet_config:
         config_prompt = app_instance.uploaded_controlnet_config['prompt']
-        logging.info(f"settings: Got config_prompt from uploaded config: {config_prompt[:100]}...")
     elif not config_prompt:
         config_prompt = default_settings.get('prompt')
-        logging.info(f"settings: Using default config_prompt: {config_prompt[:100] if config_prompt else 'None'}...")
     
     # Get current t_index_list from pipeline or config
     current_t_index_list = None
@@ -361,11 +331,6 @@ async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depend
         "model_id": model_id_for_ui,
         "config_values": config_values,
     }
-    
-    logging.info(f"settings: Returning response with keys: {list(response_data.keys())}")
-    logging.info(f"settings: pipeline_active = {pipeline_active}")
-    logging.info(f"settings: t_index_list = {current_t_index_list}")
-    logging.info(f"settings: guidance_scale = {current_guidance_scale}")
     
     return JSONResponse(response_data)
 
