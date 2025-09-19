@@ -6,9 +6,13 @@ from fastapi.responses import JSONResponse
 import logging
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
-from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["parameters"])
+
+def get_app_instance():
+    """Dependency to get the app instance - will be injected during router registration"""
+    # This will be overridden when the router is included in main.py
+    pass
 
 @router.post("/params")
 async def update_params(request: Request, app_instance=Depends(get_app_instance)):
@@ -78,53 +82,65 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
         logging.exception(f"update_params: Failed to update parameters: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update parameters: {str(e)}")
 
-async def _update_single_parameter(
-    request: Request, 
-    app_instance, 
-    parameter_name: str, 
-    value_converter: callable,
-    operation_name: str
-):
-    """Generic function to update a single parameter"""
-    try:
-        data = await handle_api_request(request, operation_name, [parameter_name])
-        validate_pipeline(app_instance.pipeline, operation_name)
-        
-        value = value_converter(data[parameter_name])
-        app_instance.pipeline.update_stream_params(**{parameter_name: value})
-        
-        return create_success_response(f"Updated {parameter_name} to {value}", **{parameter_name: value})
-        
-    except Exception as e:
-        raise handle_api_error(e, operation_name)
-
 @router.post("/update-guidance-scale")
 async def update_guidance_scale(request: Request, app_instance=Depends(get_app_instance)):
     """Update guidance scale parameter"""
-    return await _update_single_parameter(
-        request, app_instance, "guidance_scale", float, "update_guidance_scale"
-    )
+    try:
+        data = await handle_api_request(request, "update_guidance_scale", ["guidance_scale"])
+        validate_pipeline(app_instance.pipeline, "update_guidance_scale")
+        
+        guidance_scale = float(data["guidance_scale"])
+        app_instance.pipeline.update_stream_params(guidance_scale=guidance_scale)
+        
+        return create_success_response(f"Updated guidance_scale to {guidance_scale}", guidance_scale=guidance_scale)
+        
+    except Exception as e:
+        raise handle_api_error(e, "update_guidance_scale")
 
 @router.post("/update-delta")
 async def update_delta(request: Request, app_instance=Depends(get_app_instance)):
     """Update delta parameter"""
-    return await _update_single_parameter(
-        request, app_instance, "delta", float, "update_delta"
-    )
+    try:
+        data = await handle_api_request(request, "update_delta", ["delta"])
+        validate_pipeline(app_instance.pipeline, "update_delta")
+        
+        delta = float(data["delta"])
+        app_instance.pipeline.update_stream_params(delta=delta)
+        
+        return create_success_response(f"Updated delta to {delta}", delta=delta)
+        
+    except Exception as e:
+        raise handle_api_error(e, "update_delta")
 
 @router.post("/update-num-inference-steps")
 async def update_num_inference_steps(request: Request, app_instance=Depends(get_app_instance)):
     """Update number of inference steps parameter"""
-    return await _update_single_parameter(
-        request, app_instance, "num_inference_steps", int, "update_num_inference_steps"
-    )
+    try:
+        data = await handle_api_request(request, "update_num_inference_steps", ["num_inference_steps"])
+        validate_pipeline(app_instance.pipeline, "update_num_inference_steps")
+        
+        num_inference_steps = int(data["num_inference_steps"])
+        app_instance.pipeline.update_stream_params(num_inference_steps=num_inference_steps)
+        
+        return create_success_response(f"Updated num_inference_steps to {num_inference_steps}", num_inference_steps=num_inference_steps)
+        
+    except Exception as e:
+        raise handle_api_error(e, "update_num_inference_steps")
 
 @router.post("/update-seed")
 async def update_seed(request: Request, app_instance=Depends(get_app_instance)):
     """Update seed parameter"""
-    return await _update_single_parameter(
-        request, app_instance, "seed", int, "update_seed"
-    )
+    try:
+        data = await handle_api_request(request, "update_seed", ["seed"])
+        validate_pipeline(app_instance.pipeline, "update_seed")
+        
+        seed = int(data["seed"])
+        app_instance.pipeline.update_stream_params(seed=seed)
+        
+        return create_success_response(f"Updated seed to {seed}", seed=seed)
+        
+    except Exception as e:
+        raise handle_api_error(e, "update_seed")
 
 @router.post("/blending")
 async def update_blending(request: Request, app_instance=Depends(get_app_instance)):
