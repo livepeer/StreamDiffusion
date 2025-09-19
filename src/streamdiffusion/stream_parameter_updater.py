@@ -1236,7 +1236,9 @@ class StreamParameterUpdater(OrchestratorUser):
                 else:
                     # Simple uniform scale
                     if hasattr(self.stream, 'ipadapter'):
+                        # Tell diffusers_ipadapter to set the scale
                         self.stream.ipadapter.set_scale(desired_scale)
+                        # Update our tracking attribute
                         setattr(self.stream.ipadapter, 'scale', desired_scale)
         
 
