@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import Button from './Button.svelte';
+  import InputSourceSelector from './InputSourceSelector.svelte';
 
   export let ipadapterInfo: any = null;
   export let currentScale: number = 1.0;
@@ -9,11 +10,6 @@
 
   const dispatch = createEventDispatcher();
 
-  // Style image upload state
-  let styleImageFile: HTMLInputElement;
-  let uploadingImage = false;
-  let uploadStatus = '';
-  let currentStyleImage: string | null = null;
 
   // Collapsible toggle handled internally for consistency
   let showIPAdapter: boolean = true;
@@ -119,61 +115,15 @@
     updateIPAdapterEnabled(enabled);
   }
 
-  async function uploadStyleImage() {
-    if (!styleImageFile.files || styleImageFile.files.length === 0) {
-      uploadStatus = 'Please select an image file';
-      return;
-    }
-
-    const file = styleImageFile.files[0];
-    if (!file.type.startsWith('image/')) {
-      uploadStatus = 'Please select a valid image file';
-      return;
-    }
-
-    uploadingImage = true;
-    uploadStatus = 'Uploading style image...';
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch('/api/ipadapter/upload-style-image', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const result = await response.json();
-
-      if (response.ok) {
-        uploadStatus = 'Style image uploaded successfully!';
-        
-        // Create preview URL for the uploaded image and keep it for display
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          currentStyleImage = e.target?.result as string;
-        };
-        reader.readAsDataURL(file);
-        
-        // Clear file input
-        styleImageFile.value = '';
-        
-        setTimeout(() => {
-          uploadStatus = '';
-        }, 3000);
-      } else {
-        uploadStatus = `Error: ${result.detail || 'Failed to upload style image'}`;
-      }
-    } catch (error) {
-      console.error('uploadStyleImage: Upload failed:', error);
-      uploadStatus = 'Upload failed. Please try again.';
-    } finally {
-      uploadingImage = false;
-    }
-  }
-
-  function selectStyleImage() {
-    styleImageFile.click();
+  function handleInputSourceChanged(event: CustomEvent) {
+    const { componentType, sourceType, sourceData } = event.detail;
+    console.log('IPAdapterConfig: Input source changed:', event.detail);
+    
+    // The InputSourceSelector handles all input routing
+    // The backend will automatically handle:
+    // - Image mode: uses config image or default demo image
+    // - Webcam mode: uses live camera feed
+    // - Video mode: cycles through video frames
   }
 
   // Update current scale, weight type, and enabled state when props change
@@ -235,70 +185,17 @@
           </div>
         {/if}
 
-        <!-- Style Image Upload -->
+        <!-- Style Input Source -->
         <div class="space-y-3">
           <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
-            <h5 class="text-sm font-medium mb-2">Style Image</h5>
+            <h5 class="text-sm font-medium mb-3">Style Input Source</h5>
             
-            <!-- Style Image Preview -->
-            {#if currentStyleImage}
-              <div class="mb-3">
-                <img 
-                  src={currentStyleImage} 
-                  alt="Uploaded style image" 
-                  class="w-full max-w-32 h-32 object-cover rounded border border-gray-200 dark:border-gray-600"
-                />
-                <p class="text-xs text-gray-500 mt-1">Uploaded style image</p>
-              </div>
-            {:else if ipadapterInfo?.style_image_path}
-              <div class="mb-3">
-                <img 
-                  src={ipadapterInfo.style_image_path} 
-                  alt="Style image" 
-                  class="w-full max-w-32 h-32 object-cover rounded border border-gray-200 dark:border-gray-600"
-                />
-                <!-- Show different text for uploaded vs config vs default style images -->
-                <p class="text-xs text-gray-500 mt-1">
-                  {#if ipadapterInfo.style_image_path.includes('/api/ipadapter/uploaded-style-image')}
-                    Uploaded style image
-                  {:else if ipadapterInfo.style_image_path.includes('/api/default-image')}
-                    Default style image (input.png)
-                  {:else}
-                    From config: {ipadapterInfo.style_image_path}
-                  {/if}
-                </p>
-              </div>
-            {/if}
-            
-            <!-- Upload Button -->
-            <div class="flex items-center gap-2">
-              <Button 
-                on:click={selectStyleImage} 
-                disabled={uploadingImage} 
-                classList="text-sm px-3 py-2"
-              >
-                {uploadingImage ? 'Uploading...' : 'Upload Style Image'}
-              </Button>
-            </div>
-            
-            <!-- Hidden file input -->
-            <input
-              bind:this={styleImageFile}
-              type="file"
-              accept="image/*"
-              class="hidden"
-              on:change={uploadStyleImage}
+            <InputSourceSelector
+              componentType="ipadapter"
+              on:sourceChanged={handleInputSourceChanged}
             />
-            
-            <!-- Upload Status -->
-            {#if uploadStatus}
-              <p class="text-xs mt-2 {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
-                {uploadStatus}
-              </p>
-            {/if}
-            
-            <p class="text-xs text-gray-500 mt-2">
-              Upload an image to use as style reference for IPAdapter conditioning. If no image is uploaded, the default input.png will be used.
+            <p class="text-xs text-gray-500 mt-3">
+              Choose the input source for IPAdapter style conditioning. Upload images/videos or use webcam for dynamic styling.
             </p>
           </div>
 

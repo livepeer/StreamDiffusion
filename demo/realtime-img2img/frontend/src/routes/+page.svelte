@@ -20,6 +20,7 @@
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
   import InputControl from '$lib/components/InputControl.svelte';
+  import InputSourceSelector from '$lib/components/InputSourceSelector.svelte';
 
   let pipelineParams: Fields;
   let pipelineInfo: PipelineInfo;
@@ -786,6 +787,11 @@
     document.removeEventListener('mouseup', stopVideoDrag);
     document.body.style.userSelect = '';
   }
+
+  function handleBaseInputSourceChanged(event: CustomEvent) {
+    const { componentType, sourceType, sourceData } = event.detail;
+    console.log('Main page: Base input source changed:', event.detail);
+  }
 </script>
 
 <svelte:head>
@@ -909,6 +915,20 @@
                   <ResolutionPicker {currentResolution} {pipelineParams} />
                 </div>
               {/if}
+            </div>
+
+            <!-- Base Pipeline Input Source -->
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+              <div class="p-4">
+                <h3 class="text-md font-medium mb-3">Base Input Source</h3>
+                <InputSourceSelector
+                  componentType="base"
+                  on:sourceChanged={handleBaseInputSourceChanged}
+                />
+                <p class="text-xs text-gray-500 mt-3">
+                  Select the input source for the main pipeline. This affects the base image that gets processed through the diffusion model.
+                </p>
+              </div>
             </div>
 
             <!-- Unified Blending Control -->

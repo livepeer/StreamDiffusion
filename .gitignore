@@ -219,3 +219,6 @@ configs/*.yml
 images/outputs/*
 images/inputs/*
 controlnet_test_*
+
+# Demo uploads directory
+demo/realtime-img2img/uploads/

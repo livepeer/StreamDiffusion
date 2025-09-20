@@ -108,16 +108,8 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
             acceleration_changed = True
             logging.info(f"stream: Pipeline recreated with new acceleration")
 
-        # Apply uploaded style image if we have one and pipeline supports IPAdapter
-        if app_instance.uploaded_style_image and getattr(app_instance.pipeline, 'has_ipadapter', False):
-            try:
-                success = app_instance.pipeline.update_ipadapter_style_image(app_instance.uploaded_style_image)
-                if success:
-                    logging.info("stream: Applied uploaded style image to pipeline")
-                else:
-                    logging.warning("stream: Failed to apply uploaded style image to pipeline")
-            except Exception as e:
-                logging.exception(f"stream: Error applying uploaded style image: {e}")
+        # IPAdapter style images are now handled dynamically in pipeline.predict()
+        # No static application needed here
 
         # Generate and stream frames
         if app_instance.pipeline is None:
@@ -140,6 +132,10 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
                         params = await app_instance.conn_manager.get_latest_data(user_id)
                         if params is None:
                             continue
+                        
+                        # Attach InputSourceManager to params for modular input routing
+                        if hasattr(app_instance, 'input_source_manager'):
+                            params.input_manager = app_instance.input_source_manager
                         
                         # Generate frame using pipeline.predict()
                         image = app_instance.pipeline.predict(params)

@@ -156,6 +156,9 @@ class InputSourceManager:
         
         # Default to webcam for base pipeline
         self.sources['base'] = InputSource(InputSourceType.WEBCAM)
+        
+        # Default IPAdapter to uploaded_image with default image
+        self._init_default_ipadapter_source()
     
     def set_source(self, component: str, source: InputSource, index: Optional[int] = None):
         """
@@ -274,24 +277,77 @@ class InputSourceManager:
         try:
             if component == 'controlnet':
                 if index is None or index not in self.sources['controlnet']:
-                    return {'type': 'fallback', 'source_type': 'base_pipeline'}
+                    return {'source_type': 'fallback', 'source_data': 'base_pipeline', 'is_stream': False, 'has_data': True}
                 source = self.sources['controlnet'][index]
             elif component in ['ipadapter', 'base']:
                 source = self.sources[component]
                 if not source:
-                    return {'type': 'none'}
+                    return {'source_type': 'none', 'source_data': None, 'is_stream': False, 'has_data': False}
             else:
-                return {'type': 'unknown'}
+                return {'source_type': 'unknown', 'source_data': None, 'is_stream': False, 'has_data': False}
             
             return {
-                'type': source.source_type.value,
+                'source_type': source.source_type.value,
+                'source_data': source.source_data,
                 'is_stream': source.is_stream,
                 'has_data': source.source_data is not None
             }
             
         except Exception as e:
             self._logger.error(f"Error getting source info for {component}: {e}")
-            return {'type': 'error', 'error': str(e)}
+            return {'source_type': 'error', 'source_data': None, 'is_stream': False, 'has_data': False, 'error': str(e)}
+    
+    def _init_default_ipadapter_source(self):
+        """Initialize IPAdapter with default image source."""
+        try:
+            import os
+            from PIL import Image
+            
+            # Try to load default image
+            default_image_path = os.path.join(os.path.dirname(__file__), "..", "..", "images", "inputs", "input.png")
+            if os.path.exists(default_image_path):
+                default_image = Image.open(default_image_path).convert("RGB")
+                self.sources['ipadapter'] = InputSource(InputSourceType.UPLOADED_IMAGE, default_image)
+                self._logger.info("_init_default_ipadapter_source: Initialized IPAdapter with default image")
+            else:
+                self._logger.warning("_init_default_ipadapter_source: Default image not found, IPAdapter will have no source")
+        except Exception as e:
+            self._logger.error(f"_init_default_ipadapter_source: Error loading default image: {e}")
+    
+    def load_config_style_image(self, style_image_path: str, base_config_path: str = None):
+        """
+        Load IPAdapter style image from config file path.
+        
+        Args:
+            style_image_path: Path to style image (can be relative)
+            base_config_path: Base path for resolving relative paths
+        """
+        try:
+            import os
+            from PIL import Image
+            
+            # Handle relative paths
+            if not os.path.isabs(style_image_path):
+                if base_config_path:
+                    config_dir = os.path.dirname(os.path.abspath(base_config_path))
+                    full_path = os.path.join(config_dir, style_image_path)
+                    if os.path.exists(full_path):
+                        style_image_path = full_path
+                else:
+                    # Try relative to current directory
+                    if not os.path.exists(style_image_path):
+                        self._logger.warning(f"load_config_style_image: Style image not found: {style_image_path}")
+                        return
+            
+            if os.path.exists(style_image_path):
+                style_image = Image.open(style_image_path).convert("RGB")
+                input_source = InputSource(InputSourceType.UPLOADED_IMAGE, style_image)
+                self.set_source('ipadapter', input_source)
+                self._logger.info(f"load_config_style_image: Loaded IPAdapter style image from config: {style_image_path}")
+            else:
+                self._logger.warning(f"load_config_style_image: IPAdapter style image not found: {style_image_path}")
+        except Exception as e:
+            self._logger.exception(f"load_config_style_image: Error loading config style image: {e}")
     
     def cleanup(self):
         """Clean up all sources."""
