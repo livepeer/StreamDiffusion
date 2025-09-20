@@ -220,10 +220,11 @@ async def switch_hook_processor(hook_type: str, request: Request, app_instance=D
     try:
         data = await request.json()
         processor_index = data.get("processor_index")
-        new_processor_type = data.get("processor_type")
+        # Support both parameter naming conventions for compatibility
+        new_processor_type = data.get("processor_type") or data.get("processor")
         
         if processor_index is None or not new_processor_type:
-            raise HTTPException(status_code=400, detail="Missing processor_index or processor_type parameter")
+            raise HTTPException(status_code=400, detail="Missing processor_index or processor_type/processor parameter")
         
         # Handle config-only mode when no pipeline is active
         if not app_instance.pipeline:
