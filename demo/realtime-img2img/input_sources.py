@@ -211,14 +211,16 @@ class InputSourceManager:
                 if index is None:
                     raise ValueError("Index is required for ControlNet components")
                 
-                source = self.sources['controlnet'].get(index)
-                if source:
-                    frame = source.get_frame()
-                    if frame is not None:
-                        return frame
+                # Ensure ControlNet is initialized with default webcam source
+                self._ensure_controlnet_initialized(index)
+                source = self.sources['controlnet'][index]
                 
-                # Fallback to base pipeline input
-                self._logger.debug(f"ControlNet {index} has no input, falling back to base")
+                frame = source.get_frame()
+                if frame is not None:
+                    return frame
+                
+                # If webcam source has no frame yet, fallback to base pipeline input
+                self._logger.debug(f"ControlNet {index} webcam has no frame yet, falling back to base")
                 return self._get_fallback_frame()
                 
             elif component in ['ipadapter', 'base']:
@@ -267,6 +269,17 @@ class InputSourceManager:
             self.sources['ipadapter'].source_type == InputSourceType.WEBCAM):
             self.sources['ipadapter'].update_webcam_frame(frame_data)
     
+    def _ensure_controlnet_initialized(self, index: int):
+        """
+        Ensure a ControlNet has a default webcam source if not already set.
+        
+        Args:
+            index: ControlNet index
+        """
+        if index not in self.sources['controlnet']:
+            self.sources['controlnet'][index] = InputSource(InputSourceType.WEBCAM)
+            self._logger.info(f"_ensure_controlnet_initialized: Initialized ControlNet {index} with webcam source")
+
     def get_source_info(self, component: str, index: Optional[int] = None) -> Dict[str, Any]:
         """
         Get information about a component's input source.
@@ -276,9 +289,13 @@ class InputSourceManager:
         """
         try:
             if component == 'controlnet':
-                if index is None or index not in self.sources['controlnet']:
-                    return {'source_type': 'fallback', 'source_data': 'base_pipeline', 'is_stream': False, 'has_data': True}
+                if index is None:
+                    return {'source_type': 'error', 'source_data': 'index_required', 'is_stream': False, 'has_data': False}
+                
+                # Ensure ControlNet is initialized with default webcam source
+                self._ensure_controlnet_initialized(index)
                 source = self.sources['controlnet'][index]
+                
             elif component in ['ipadapter', 'base']:
                 source = self.sources[component]
                 if not source:

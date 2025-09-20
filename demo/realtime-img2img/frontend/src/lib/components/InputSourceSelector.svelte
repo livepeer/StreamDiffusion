@@ -257,11 +257,14 @@
         const result = await response.json();
         const sourceInfo = result.source_info;
         
-        if (sourceInfo && sourceInfo.type !== 'fallback' && sourceInfo.type !== 'none') {
-          currentSource = sourceInfo.type as any;
+        if (sourceInfo && sourceInfo.source_type !== 'fallback' && sourceInfo.source_type !== 'none') {
+          currentSource = sourceInfo.source_type as any;
         } else if (componentType === 'ipadapter') {
           // For IPAdapter, default to uploaded_image mode to maintain existing behavior
           currentSource = 'uploaded_image';
+        } else if (componentType === 'controlnet') {
+          // For ControlNet, default to webcam mode
+          currentSource = 'webcam';
         }
       } else if (componentType === 'ipadapter') {
         // If no source info exists for IPAdapter, default to uploaded_image
@@ -278,6 +281,9 @@
       if (componentType === 'ipadapter') {
         currentSource = 'uploaded_image';
         await loadCurrentImagePreview();
+      } else if (componentType === 'controlnet') {
+        // For ControlNet, default to webcam even if API fails
+        currentSource = 'webcam';
       }
     }
   }
