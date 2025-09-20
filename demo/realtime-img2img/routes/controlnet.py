@@ -16,17 +16,17 @@ router = APIRouter(prefix="/api", tags=["controlnet"])
 
 def _ensure_runtime_controlnet_config(app_instance):
     """Ensure runtime controlnet config is initialized from uploaded config or create minimal config"""
-    if app_instance.runtime_controlnet_config is None:
-        if app_instance.uploaded_controlnet_config:
+    if app_instance.app_state.runtime_config is None:
+        if app_instance.app_state.uploaded_config:
             # Copy from YAML (deep copy to avoid modifying original)
-            app_instance.runtime_controlnet_config = copy.deepcopy(app_instance.uploaded_controlnet_config)
+            app_instance.app_state.runtime_config = copy.deepcopy(app_instance.app_state.uploaded_config)
         else:
             # Create minimal config if no YAML exists
-            app_instance.runtime_controlnet_config = {'controlnets': []}
+            app_instance.app_state.runtime_config = {'controlnets': []}
     
     # Ensure controlnets key exists in runtime config
-    if 'controlnets' not in app_instance.runtime_controlnet_config:
-        app_instance.runtime_controlnet_config['controlnets'] = []
+    if 'controlnets' not in app_instance.app_state.runtime_config:
+        app_instance.app_state.runtime_config['controlnets'] = []
 
 def _update_pipeline_controlnet_config(app_instance, operation_name: str):
     """Update pipeline with current controlnet config, with fallback to reload"""
@@ -38,6 +38,7 @@ def _update_pipeline_controlnet_config(app_instance, operation_name: str):
         logging.exception(f"{operation_name}: Failed to update ControlNet: {e}")
         # Mark for reload as fallback
         app_instance.config_needs_reload = True
+        app_instance.app_state.config_needs_reload = True
 
 @router.post("/controlnet/upload-config")
 async def upload_controlnet_config(file: UploadFile = File(...), app_instance=Depends(get_app_instance)):
@@ -59,6 +60,11 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         app_instance.uploaded_controlnet_config = config_data
         app_instance.runtime_controlnet_config = None  # Clear any runtime additions
         app_instance.config_needs_reload = True  # Mark that pipeline needs recreation
+        
+        # Sync to centralized app_state
+        app_instance.app_state.uploaded_config = config_data
+        app_instance.app_state.runtime_config = None
+        app_instance.app_state.config_needs_reload = True
         
         # RESET ALL INPUT SOURCES TO DEFAULTS WHEN NEW CONFIG IS UPLOADED
         if hasattr(app_instance, 'input_source_manager'):
@@ -103,6 +109,13 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
                 
                 app_instance.new_width = int(config_width)
                 app_instance.new_height = int(config_height)
+                
+                # Sync to centralized app_state
+                app_instance.app_state.current_resolution = {
+                    "width": int(config_width),
+                    "height": int(config_height)
+                }
+                
                 logging.info(f"upload_controlnet_config: Updated resolution from config to {config_width}x{config_height}")
                 
             except (ValueError, TypeError):

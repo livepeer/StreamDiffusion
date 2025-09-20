@@ -179,6 +179,56 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
         logging.exception(f"stream: Error in streaming endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Streaming failed: {str(e)}")
 
+@router.get("/state")
+async def get_app_state(app_instance=Depends(get_app_instance), pipeline_class=Depends(get_pipeline_class), default_settings=Depends(get_default_settings)):
+    """Get complete application state - replaces /api/settings with centralized state management"""
+    try:
+        # Sync from legacy state variables (temporary during migration)
+        app_instance.app_state.sync_from_legacy_state(app_instance)
+        
+        # Update app_state with current dynamic values
+        app_instance.app_state.pipeline_active = app_instance.pipeline is not None
+        app_instance.app_state.controlnet_info = app_instance._get_controlnet_info()
+        app_instance.app_state.ipadapter_info = app_instance._get_ipadapter_info()
+        
+        # Update pipeline parameters schema
+        app_instance.app_state.pipeline_params = pipeline_class.InputParams.schema()
+        
+        # Update page content
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'info'):
+            info = app_instance.pipeline.info
+        else:
+            info = pipeline_class.Info()
+        
+        if info.page_content:
+            app_instance.app_state.page_content = markdown2.markdown(info.page_content)
+        
+        # Get complete state
+        state_data = app_instance.app_state.get_complete_state()
+        
+        # Add additional fields expected by frontend for backward compatibility
+        state_data.update({
+            "info": pipeline_class.Info.schema(),
+            "input_params": app_instance.app_state.pipeline_params,
+            "max_queue_size": app_instance.args.max_queue_size,
+            "acceleration": app_instance.args.acceleration,
+            # Add config prompt for backward compatibility
+            "config_prompt": app_instance.app_state.uploaded_config.get('prompt') if app_instance.app_state.uploaded_config else None,
+            # Add resolution in expected format
+            "resolution": f"{app_instance.app_state.current_resolution['width']}x{app_instance.app_state.current_resolution['height']}",
+            # Add pipeline hooks info
+            "image_preprocessing": app_instance._get_hook_info("image_preprocessing"),
+            "image_postprocessing": app_instance._get_hook_info("image_postprocessing"), 
+            "latent_preprocessing": app_instance._get_hook_info("latent_preprocessing"),
+            "latent_postprocessing": app_instance._get_hook_info("latent_postprocessing"),
+        })
+        
+        return JSONResponse(state_data)
+        
+    except Exception as e:
+        logging.error(f"get_app_state: Error getting application state: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get application state: {str(e)}")
+
 @router.get("/settings")
 async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depends(get_pipeline_class), default_settings=Depends(get_default_settings)):
     """Get pipeline settings and configuration info"""

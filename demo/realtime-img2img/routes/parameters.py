@@ -24,6 +24,8 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                 width, height = int(resolution["width"]), int(resolution["height"])
                 app_instance.new_width = width
                 app_instance.new_height = height
+                # Sync to centralized app_state
+                app_instance.app_state.current_resolution = {"width": width, "height": height}
             elif isinstance(resolution, str):
                 # Handle string format like "512x768 (2:3)" or "512x768"
                 resolution_part = resolution.split(' ')[0]
@@ -31,6 +33,8 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                     width, height = map(int, resolution_part.split('x'))
                     app_instance.new_width = width
                     app_instance.new_height = height
+                    # Sync to centralized app_state
+                    app_instance.app_state.current_resolution = {"width": width, "height": height}
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid resolution format")
             else:

@@ -60,6 +60,135 @@ def setup_logging(log_level: str = "INFO"):
 logger = setup_logging(config.log_level)
 
 
+class AppState:
+    """Centralized application state management"""
+    
+    def __init__(self):
+        # Pipeline state
+        self.pipeline_lifecycle = "stopped"  # stopped, starting, running, error
+        self.pipeline_active = False
+        
+        # Configuration state  
+        self.uploaded_config = None  # Replaces uploaded_controlnet_config
+        self.runtime_config = None   # Replaces runtime_controlnet_config
+        self.config_needs_reload = False
+        
+        # Resolution state
+        self.current_resolution = {"width": 512, "height": 512}
+        
+        # Parameter state (consolidates scattered vars from frontend)
+        self.pipeline_params = {}
+        self.controlnet_info = None
+        self.ipadapter_info = None
+        self.blending_configs = {"prompt": None, "seed": None}
+        self.normalize_prompt_weights = True
+        self.normalize_seed_weights = True
+        
+        # Core pipeline parameters
+        self.guidance_scale = 1.1
+        self.delta = 0.7
+        self.num_inference_steps = 50
+        self.seed = 2
+        self.t_index_list = [35, 45]
+        self.negative_prompt = ""
+        self.skip_diffusion = False
+        
+        # UI state
+        self.fps = 0
+        self.queue_size = 0
+        self.model_id = ""
+        self.page_content = ""
+        
+        # Input source state
+        self.input_sources = {
+            'controlnet': {},  # {index: source_info}
+            'ipadapter': None,
+            'base': None
+        }
+        
+    def get_complete_state(self):
+        """Return unified state object for frontend consumption"""
+        return {
+            # Pipeline state
+            "pipeline_active": self.pipeline_active,
+            "pipeline_lifecycle": self.pipeline_lifecycle,
+            
+            # Configuration
+            "config_needs_reload": self.config_needs_reload,
+            
+            # Resolution
+            "current_resolution": self.current_resolution,
+            
+            # Parameters
+            "pipeline_params": self.pipeline_params,
+            "controlnet": self.controlnet_info,
+            "ipadapter": self.ipadapter_info,
+            "prompt_blending": self.blending_configs.get("prompt"),
+            "seed_blending": self.blending_configs.get("seed"),
+            "normalize_prompt_weights": self.normalize_prompt_weights,
+            "normalize_seed_weights": self.normalize_seed_weights,
+            
+            # Core parameters
+            "guidance_scale": self.guidance_scale,
+            "delta": self.delta,
+            "num_inference_steps": self.num_inference_steps,
+            "seed": self.seed,
+            "t_index_list": self.t_index_list,
+            "negative_prompt": self.negative_prompt,
+            "skip_diffusion": self.skip_diffusion,
+            
+            # UI state
+            "fps": self.fps,
+            "queue_size": self.queue_size,
+            "model_id": self.model_id,
+            "page_content": self.page_content,
+            
+            # Input sources
+            "input_sources": self.input_sources,
+        }
+    
+    def update_state(self, updates):
+        """Atomic state updates with validation"""
+        for key, value in updates.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+                logger.debug(f"AppState update_state: Updated {key} = {value}")
+            else:
+                logger.warning(f"AppState update_state: Unknown state key: {key}")
+    
+    def sync_from_legacy_state(self, app_instance):
+        """Sync state from legacy scattered variables - temporary migration helper"""
+        # Sync resolution from old variables if they exist
+        if hasattr(app_instance, 'new_width') and hasattr(app_instance, 'new_height'):
+            self.current_resolution = {
+                "width": app_instance.new_width,
+                "height": app_instance.new_height
+            }
+        
+        # Sync config from old variables if they exist
+        if hasattr(app_instance, 'uploaded_controlnet_config'):
+            self.uploaded_config = app_instance.uploaded_controlnet_config
+            
+            # Extract parameters from uploaded config if available
+            if self.uploaded_config:
+                self.guidance_scale = self.uploaded_config.get('guidance_scale', self.guidance_scale)
+                self.delta = self.uploaded_config.get('delta', self.delta)
+                self.num_inference_steps = self.uploaded_config.get('num_inference_steps', self.num_inference_steps)
+                self.seed = self.uploaded_config.get('seed', self.seed)
+                self.t_index_list = self.uploaded_config.get('t_index_list', self.t_index_list)
+                self.negative_prompt = self.uploaded_config.get('negative_prompt', self.negative_prompt)
+                self.skip_diffusion = self.uploaded_config.get('skip_diffusion', self.skip_diffusion)
+                self.normalize_prompt_weights = self.uploaded_config.get('normalize_weights', self.normalize_prompt_weights)
+                self.normalize_seed_weights = self.uploaded_config.get('normalize_weights', self.normalize_seed_weights)
+                self.model_id = self.uploaded_config.get('model_id_or_path', self.model_id)
+        
+        if hasattr(app_instance, 'runtime_controlnet_config'):
+            self.runtime_config = app_instance.runtime_controlnet_config
+            
+        if hasattr(app_instance, 'config_needs_reload'):
+            self.config_needs_reload = app_instance.config_needs_reload
+
+
 class App:
     def __init__(self, config: Args):
         self.args = config
@@ -68,13 +197,17 @@ class App:
         self.conn_manager = ConnectionManager()
         self.fps_counter = []
         self.last_fps_update = time.time()
-        # Store uploaded ControlNet config separately
+        
+        # Centralized state management
+        self.app_state = AppState()
+        
+        # Legacy state variables (temporary - will be removed in later phases)
         self.uploaded_controlnet_config = None
-        self.runtime_controlnet_config = None  # Active runtime config (starts from YAML)
-        self.config_needs_reload = False  # Track when pipeline needs recreation
-        # Store current resolution for pipeline recreation
+        self.runtime_controlnet_config = None
+        self.config_needs_reload = False
         self.new_width = 512
         self.new_height = 512
+        
         # Initialize input manager for controller support
         self.input_manager = InputManager()
         # Initialize input source manager for modular input routing
@@ -360,7 +493,7 @@ class App:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch_dtype = torch.float16
         
-        return Pipeline(self.args, device, torch_dtype, width=self.new_width, height=self.new_height)
+        return Pipeline(self.args, device, torch_dtype, width=self.app_state.current_resolution["width"], height=self.app_state.current_resolution["height"])
 
     def _create_pipeline_with_config(self, controlnet_config_path=None):
         """Create a new pipeline with optional ControlNet configuration"""
@@ -368,7 +501,7 @@ class App:
         torch_dtype = torch.float16
         
         # Use uploaded config if available
-        if self.uploaded_controlnet_config:
+        if self.app_state.uploaded_config:
             # Create a temporary config file for the pipeline to use
             import tempfile
             import yaml
@@ -382,7 +515,7 @@ class App:
             
             try:
                 # Create enhanced config that includes runtime parameters from args
-                enhanced_config = dict(self.uploaded_controlnet_config)
+                enhanced_config = dict(self.app_state.uploaded_config)
                 
                 # Ensure critical args parameters are included in the config
                 # These are needed for proper wrapper creation
@@ -397,9 +530,9 @@ class App:
                 
                 # Include resolution if not already specified
                 if 'width' not in enhanced_config:
-                    enhanced_config['width'] = self.new_width
+                    enhanced_config['width'] = self.app_state.current_resolution["width"]
                 if 'height' not in enhanced_config:
-                    enhanced_config['height'] = self.new_height
+                    enhanced_config['height'] = self.app_state.current_resolution["height"]
                 
                 # Force output_type to "pt" for optimal tensor performance
                 enhanced_config['output_type'] = 'pt'
@@ -417,7 +550,7 @@ class App:
                 self._load_config_style_images()
                 
                 # Create pipeline
-                pipeline = Pipeline(modified_args, device, torch_dtype, width=self.new_width, height=self.new_height)
+                pipeline = Pipeline(modified_args, device, torch_dtype, width=self.app_state.current_resolution["width"], height=self.app_state.current_resolution["height"])
                 
                 # Store temp file path for cleanup later
                 if not hasattr(self, '_temp_config_files'):
@@ -438,16 +571,16 @@ class App:
                     pass
                 raise e
         
-        return Pipeline(self.args, device, torch_dtype, width=self.new_width, height=self.new_height)
+        return Pipeline(self.args, device, torch_dtype, width=self.app_state.current_resolution["width"], height=self.app_state.current_resolution["height"])
 
     def _load_config_style_images(self):
         """Load style images from config into InputSourceManager"""
-        if not self.uploaded_controlnet_config:
+        if not self.app_state.uploaded_config:
             return
             
         try:
             # Load IPAdapter style images from config
-            ipadapters = self.uploaded_controlnet_config.get('ipadapters', [])
+            ipadapters = self.app_state.uploaded_config.get('ipadapters', [])
             if ipadapters:
                 first_ipadapter = ipadapters[0]
                 style_image_path = first_ipadapter.get('style_image')
@@ -482,9 +615,9 @@ class App:
             if self.pipeline.config and 'controlnets' in self.pipeline.config:
                 controlnet_info["enabled"] = True
                 raw_controlnets = self.pipeline.config['controlnets']
-        elif self.uploaded_controlnet_config and 'controlnets' in self.uploaded_controlnet_config:
+        elif self.app_state.uploaded_config and 'controlnets' in self.app_state.uploaded_config:
             controlnet_info["enabled"] = True  
-            raw_controlnets = self.uploaded_controlnet_config['controlnets']
+            raw_controlnets = self.app_state.uploaded_config['controlnets']
         
         # Map conditioning_scale to strength for frontend compatibility
         processed_controlnets = []
@@ -506,11 +639,11 @@ class App:
         }
         
         # Get config values
-        if self.uploaded_controlnet_config:
-            if self.uploaded_controlnet_config.get('use_ipadapter', False):
+        if self.app_state.uploaded_config:
+            if self.app_state.uploaded_config.get('use_ipadapter', False):
                 ipadapter_info["enabled"] = True
             
-            ipadapters = self.uploaded_controlnet_config.get('ipadapters', [])
+            ipadapters = self.app_state.uploaded_config.get('ipadapters', [])
             if ipadapters:
                 first = ipadapters[0]
                 ipadapter_info["scale"] = first.get('scale', 1.0)
@@ -558,9 +691,9 @@ class App:
                         processed_processors.append(processed_processor)
                 
                 hook_info["processors"] = processed_processors
-        elif self.uploaded_controlnet_config and hook_type in self.uploaded_controlnet_config:
+        elif self.app_state.uploaded_config and hook_type in self.app_state.uploaded_config:
             # Fallback to config when no pipeline
-            config = self.uploaded_controlnet_config[hook_type]
+            config = self.app_state.uploaded_config[hook_type]
             if isinstance(config, dict):
                 hook_info["enabled"] = config.get("enabled", False)
                 raw_processors = config.get("processors", [])
