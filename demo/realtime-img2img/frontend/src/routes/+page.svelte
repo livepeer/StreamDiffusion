@@ -689,6 +689,9 @@
         // Trigger complete re-initialization of all components by updating the config refresh key
         configRefreshKey = configUploadTimestamp;
         
+        // Reset all input source selectors to defaults
+        await resetAllInputSourceSelectors();
+        
         // Success toast will auto-dismiss
       } else {
         warningMessage = `Error: ${result.detail || 'Failed to load configuration'}`;
@@ -791,6 +794,37 @@
   function handleBaseInputSourceChanged(event: CustomEvent) {
     const { componentType, sourceType, sourceData } = event.detail;
     console.log('Main page: Base input source changed:', event.detail);
+  }
+
+  // Component references for resetting input sources
+  let baseInputSourceSelector: any;
+  let controlNetConfigComponent: any;
+  let ipAdapterConfigComponent: any;
+
+  // Function to reset all input source selectors
+  async function resetAllInputSourceSelectors() {
+    console.log('resetAllInputSourceSelectors: Resetting all input source selectors');
+    
+    try {
+      // Reset base input source selector
+      if (baseInputSourceSelector && baseInputSourceSelector.resetToDefaults) {
+        baseInputSourceSelector.resetToDefaults();
+      }
+      
+      // Reset ControlNet input source selectors (handled by ControlNetConfig component)
+      if (controlNetConfigComponent && controlNetConfigComponent.resetInputSources) {
+        controlNetConfigComponent.resetInputSources();
+      }
+      
+      // Reset IPAdapter input source selector (handled by IPAdapterConfig component)
+      if (ipAdapterConfigComponent && ipAdapterConfigComponent.resetInputSource) {
+        ipAdapterConfigComponent.resetInputSource();
+      }
+      
+      console.log('resetAllInputSourceSelectors: All input source selectors reset');
+    } catch (error) {
+      console.error('resetAllInputSourceSelectors: Error resetting input source selectors:', error);
+    }
   }
 </script>
 
@@ -922,6 +956,7 @@
               <div class="p-4">
                 <h3 class="text-md font-medium mb-3">Base Input Source</h3>
                 <InputSourceSelector
+                  bind:this={baseInputSourceSelector}
                   componentType="base"
                   on:sourceChanged={handleBaseInputSourceChanged}
                 />
@@ -1052,6 +1087,7 @@
           </div>
           
           <ControlNetConfig 
+            bind:this={controlNetConfigComponent}
             {controlnetInfo} 
             {tIndexList} 
             {guidanceScale}
@@ -1063,6 +1099,7 @@
           ></ControlNetConfig>
 
           <IPAdapterConfig 
+            bind:this={ipAdapterConfigComponent}
             {ipadapterInfo} 
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}

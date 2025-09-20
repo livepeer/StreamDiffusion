@@ -310,6 +310,27 @@
     }
   }
 
+  // Expose reset function for parent components
+  export function resetToDefaults() {
+    console.log('InputSourceSelector: resetToDefaults called for', componentType, componentIndex);
+    
+    // Clear previews
+    clearPreviews();
+    
+    // Reset to default source type
+    if (componentType === 'ipadapter') {
+      currentSource = 'uploaded_image';
+    } else {
+      currentSource = 'webcam';
+    }
+    
+    // Clear upload status
+    uploadStatus = '';
+    
+    // Reload source info from backend
+    loadCurrentSourceInfo();
+  }
+
   // Load source info when component mounts or component parameters change
   $: if (componentType && (componentType !== 'controlnet' || componentIndex !== undefined)) {
     loadCurrentSourceInfo();

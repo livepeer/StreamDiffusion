@@ -126,6 +126,18 @@
     // - Video mode: cycles through video frames
   }
 
+  // Store reference to InputSourceSelector component
+  let inputSourceSelector: any;
+
+  // Expose reset function for parent components
+  export function resetInputSource() {
+    console.log('IPAdapterConfig: resetInputSource called');
+    
+    if (inputSourceSelector && inputSourceSelector.resetToDefaults) {
+      inputSourceSelector.resetToDefaults();
+    }
+  }
+
   // Update current scale, weight type, and enabled state when props change
   $: if (ipadapterInfo?.scale !== undefined) {
     currentScale = ipadapterInfo.scale;
@@ -191,6 +203,7 @@
             <h5 class="text-sm font-medium mb-3">Style Input Source</h5>
             
             <InputSourceSelector
+              bind:this={inputSourceSelector}
               componentType="ipadapter"
               on:sourceChanged={handleInputSourceChanged}
             />
