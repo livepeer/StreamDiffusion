@@ -266,8 +266,9 @@
     const { componentType, componentIndex, sourceType, sourceData } = event.detail;
     console.log('ControlNetConfig: Input source changed:', event.detail);
     
-    // Dispatch event to parent if needed for refresh
-    dispatch('controlnetConfigChanged');
+    // Input source changes are UI-only and don't affect pipeline configuration
+    // Don't dispatch controlnetConfigChanged to avoid triggering getSettings()
+    // which would reset UI state like t_index_list sliders and preprocessor selections
   }
 
   // Store references to InputSourceSelector components
