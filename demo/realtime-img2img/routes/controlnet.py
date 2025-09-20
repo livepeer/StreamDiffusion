@@ -479,11 +479,12 @@ async def switch_preprocessor(request: Request, app_instance=Depends(get_app_ins
     """Switch preprocessor for a specific ControlNet"""
     try:
         data = await request.json()
-        controlnet_index = data.get("controlnet_index")
-        preprocessor_name = data.get("preprocessor")
+        # Support both parameter naming conventions for compatibility
+        controlnet_index = data.get("controlnet_index") or data.get("processor_index")
+        preprocessor_name = data.get("preprocessor") or data.get("processor")
         
         if controlnet_index is None or not preprocessor_name:
-            raise HTTPException(status_code=400, detail="Missing controlnet_index or preprocessor parameter")
+            raise HTTPException(status_code=400, detail="Missing controlnet_index/processor_index or preprocessor/processor parameter")
         
         validate_pipeline(app_instance.pipeline, "switch_preprocessor")
         validate_config_mode(app_instance.pipeline, "controlnets")

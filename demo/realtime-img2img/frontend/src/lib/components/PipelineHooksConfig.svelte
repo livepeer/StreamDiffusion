@@ -279,7 +279,7 @@
                 <ProcessorSelector
                   processorIndex={index}
                   currentProcessor={processor.name || processor.type}
-                  apiEndpoint="/api/pipeline-hooks/{hookType}"
+                  apiEndpoint={`/api/pipeline-hooks/${hookType}`}
                   processorType="{getHookDisplayName(hookType)} processor"
                   on:processorChanged={handleProcessorChanged}
                 />
