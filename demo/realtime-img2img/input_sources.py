@@ -349,6 +349,31 @@ class InputSourceManager:
         except Exception as e:
             self._logger.exception(f"load_config_style_image: Error loading config style image: {e}")
     
+    def reset_to_defaults(self):
+        """
+        Reset all input sources to their default states.
+        This is typically called when a new config is uploaded.
+        """
+        try:
+            # Clean up existing sources first
+            self.cleanup()
+            
+            # Reset to default states
+            self.sources = {
+                'controlnet': {},  # Empty - ControlNets will use fallback to base
+                'ipadapter': None,  # Will be re-initialized
+                'base': None       # Will be re-initialized
+            }
+            
+            # Re-initialize defaults
+            self.sources['base'] = InputSource(InputSourceType.WEBCAM)
+            self._init_default_ipadapter_source()
+            
+            self._logger.info("reset_to_defaults: Reset all input sources to defaults")
+            
+        except Exception as e:
+            self._logger.error(f"reset_to_defaults: Error resetting input sources: {e}")
+    
     def cleanup(self):
         """Clean up all sources."""
         for source in self.sources['controlnet'].values():

@@ -60,6 +60,14 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
         app_instance.runtime_controlnet_config = None  # Clear any runtime additions
         app_instance.config_needs_reload = True  # Mark that pipeline needs recreation
         
+        # RESET ALL INPUT SOURCES TO DEFAULTS WHEN NEW CONFIG IS UPLOADED
+        if hasattr(app_instance, 'input_source_manager'):
+            try:
+                app_instance.input_source_manager.reset_to_defaults()
+                logging.info("upload_controlnet_config: Reset all input sources to defaults")
+            except Exception as e:
+                logging.exception(f"upload_controlnet_config: Failed to reset input sources: {e}")
+        
         # FORCE DESTROY ACTIVE PIPELINE TO MAKE CONFIG THE SOURCE OF TRUTH
         if app_instance.pipeline:
             logging.info("upload_controlnet_config: Destroying active pipeline to force config as source of truth")
