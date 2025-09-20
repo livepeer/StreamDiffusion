@@ -24,20 +24,24 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
     try:
         # Create pipeline if it doesn't exist yet
         if app_instance.pipeline is None:
-            if app_instance.uploaded_controlnet_config:
+            app_instance.app_state.pipeline_lifecycle = "starting"
+            if app_instance.app_state.uploaded_config:
                 logging.info("stream: Creating pipeline with ControlNet config...")
                 app_instance.pipeline = app_instance._create_pipeline_with_config()
             else:
                 logging.info("stream: Creating default pipeline...")
                 app_instance.pipeline = app_instance._create_default_pipeline()
+            app_instance.app_state.pipeline_lifecycle = "running"
             logging.info("stream: Pipeline created successfully")
         
         # Recreate pipeline if config changed (but not resolution - that's handled separately)
-        elif app_instance.config_needs_reload or (app_instance.uploaded_controlnet_config and not (app_instance.pipeline.use_config and app_instance.pipeline.config and 'controlnets' in app_instance.pipeline.config)) or (app_instance.uploaded_controlnet_config and not app_instance.pipeline.use_config):
-            if app_instance.config_needs_reload:
+        elif app_instance.app_state.config_needs_reload or (app_instance.app_state.uploaded_config and not (app_instance.pipeline.use_config and app_instance.pipeline.config and 'controlnets' in app_instance.pipeline.config)) or (app_instance.app_state.uploaded_config and not app_instance.pipeline.use_config):
+            if app_instance.app_state.config_needs_reload:
                 logging.info("stream: Recreating pipeline with new ControlNet config...")
             else:
                 logging.info("stream: Upgrading to ControlNet pipeline...")
+            
+            app_instance.app_state.pipeline_lifecycle = "restarting"
             
             # Properly cleanup the old pipeline before creating new one
             old_pipeline = app_instance.pipeline
@@ -48,40 +52,43 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
                 old_pipeline = None
             
             # Create new pipeline
-            if app_instance.uploaded_controlnet_config:
+            if app_instance.app_state.uploaded_config:
                 app_instance.pipeline = app_instance._create_pipeline_with_config()
             else:
                 app_instance.pipeline = app_instance._create_default_pipeline()
             
-            app_instance.config_needs_reload = False
+            app_instance.app_state.config_needs_reload = False
+            app_instance.app_state.pipeline_lifecycle = "running"
             logging.info("stream: Pipeline recreated successfully")
 
         # Check for resolution changes (without recreating the whole pipeline)
         resolution_changed = False
-        if hasattr(app_instance, 'new_width') and hasattr(app_instance, 'new_height'):
-            current_width = getattr(app_instance.pipeline, 'width', 512)
-            current_height = getattr(app_instance.pipeline, 'height', 512)
-            if app_instance.new_width != current_width or app_instance.new_height != current_height:
-                logging.info(f"stream: Resolution change detected: {current_width}x{current_height} -> {app_instance.new_width}x{app_instance.new_height}")
-                # Try to update resolution without full pipeline recreation
-                try:
-                    app_instance.pipeline.update_resolution(app_instance.new_width, app_instance.new_height)
-                    resolution_changed = True
-                    logging.info(f"stream: Resolution updated successfully")
-                except Exception as e:
-                    logging.warning(f"stream: Failed to update resolution: {e}. Will recreate pipeline.")
-                    # Fallback: recreate pipeline with new resolution
-                    old_pipeline = app_instance.pipeline
-                    app_instance.pipeline = None
-                    if old_pipeline:
-                        app_instance._cleanup_pipeline(old_pipeline)
-                    
-                    if app_instance.uploaded_controlnet_config:
-                        app_instance.pipeline = app_instance._create_pipeline_with_config()
-                    else:
-                        app_instance.pipeline = app_instance._create_default_pipeline()
-                    resolution_changed = True
-                    logging.info(f"stream: Pipeline recreated with new resolution")
+        current_width = getattr(app_instance.pipeline, 'width', 512)
+        current_height = getattr(app_instance.pipeline, 'height', 512)
+        target_width = app_instance.app_state.current_resolution["width"]
+        target_height = app_instance.app_state.current_resolution["height"]
+        
+        if target_width != current_width or target_height != current_height:
+            logging.info(f"stream: Resolution change detected: {current_width}x{current_height} -> {target_width}x{target_height}")
+            # Try to update resolution without full pipeline recreation
+            try:
+                app_instance.pipeline.update_resolution(target_width, target_height)
+                resolution_changed = True
+                logging.info(f"stream: Resolution updated successfully")
+            except Exception as e:
+                logging.warning(f"stream: Failed to update resolution: {e}. Will recreate pipeline.")
+                # Fallback: recreate pipeline with new resolution
+                old_pipeline = app_instance.pipeline
+                app_instance.pipeline = None
+                if old_pipeline:
+                    app_instance._cleanup_pipeline(old_pipeline)
+                
+                if app_instance.app_state.uploaded_config:
+                    app_instance.pipeline = app_instance._create_pipeline_with_config()
+                else:
+                    app_instance.pipeline = app_instance._create_default_pipeline()
+                resolution_changed = True
+                logging.info(f"stream: Pipeline recreated with new resolution")
 
         # Check for acceleration changes (requires pipeline recreation)
         acceleration_changed = False
@@ -101,7 +108,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
             if old_pipeline:
                 app_instance._cleanup_pipeline(old_pipeline)
             
-            if app_instance.uploaded_controlnet_config:
+            if app_instance.app_state.uploaded_config:
                 app_instance.pipeline = app_instance._create_pipeline_with_config()
             else:
                 app_instance.pipeline = app_instance._create_default_pipeline()
@@ -183,13 +190,18 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
 async def get_app_state(app_instance=Depends(get_app_instance), pipeline_class=Depends(get_pipeline_class), default_settings=Depends(get_default_settings)):
     """Get complete application state - replaces /api/settings with centralized state management"""
     try:
-        # Sync from legacy state variables (temporary during migration)
-        app_instance.app_state.sync_from_legacy_state(app_instance)
-        
-        # Update app_state with current dynamic values
+        # Update app_state with current dynamic values - SINGLE SOURCE OF TRUTH
         app_instance.app_state.pipeline_active = app_instance.pipeline is not None
-        app_instance.app_state.controlnet_info = app_instance._get_controlnet_info()
-        app_instance.app_state.ipadapter_info = app_instance._get_ipadapter_info()
+        
+        # Update FPS from fps_counter
+        if len(app_instance.fps_counter) > 0:
+            avg_frame_time = sum(app_instance.fps_counter) / len(app_instance.fps_counter)
+            app_instance.app_state.fps = round(1.0 / avg_frame_time if avg_frame_time > 0 else 0, 1)
+        else:
+            app_instance.app_state.fps = 0
+            
+        # Update queue size
+        app_instance.app_state.queue_size = app_instance.conn_manager.get_user_count()
         
         # Update pipeline parameters schema
         app_instance.app_state.pipeline_params = pipeline_class.InputParams.schema()
@@ -216,11 +228,6 @@ async def get_app_state(app_instance=Depends(get_app_instance), pipeline_class=D
             "config_prompt": app_instance.app_state.uploaded_config.get('prompt') if app_instance.app_state.uploaded_config else None,
             # Add resolution in expected format
             "resolution": f"{app_instance.app_state.current_resolution['width']}x{app_instance.app_state.current_resolution['height']}",
-            # Add pipeline hooks info
-            "image_preprocessing": app_instance._get_hook_info("image_preprocessing"),
-            "image_postprocessing": app_instance._get_hook_info("image_postprocessing"), 
-            "latent_preprocessing": app_instance._get_hook_info("latent_preprocessing"),
-            "latent_postprocessing": app_instance._get_hook_info("latent_postprocessing"),
         })
         
         return JSONResponse(state_data)
@@ -247,16 +254,16 @@ async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depend
 
     input_params = pipeline_class.InputParams.schema()
     
-    # Add ControlNet information 
-    controlnet_info = app_instance._get_controlnet_info()
+    # Add ControlNet information - SINGLE SOURCE OF TRUTH
+    controlnet_info = app_instance.app_state.controlnet_info
     
-    # Add IPAdapter information
-    ipadapter_info = app_instance._get_ipadapter_info()
+    # Add IPAdapter information - SINGLE SOURCE OF TRUTH
+    ipadapter_info = app_instance.app_state.ipadapter_info
     
     # Include config prompt if available, otherwise use default
     config_prompt = None
-    if app_instance.uploaded_controlnet_config and 'prompt' in app_instance.uploaded_controlnet_config:
-        config_prompt = app_instance.uploaded_controlnet_config['prompt']
+    if app_instance.app_state.uploaded_config and 'prompt' in app_instance.app_state.uploaded_config:
+        config_prompt = app_instance.app_state.uploaded_config['prompt']
     elif not config_prompt:
         config_prompt = default_settings.get('prompt')
     
@@ -264,8 +271,8 @@ async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depend
     current_t_index_list = None
     if app_instance.pipeline and hasattr(app_instance.pipeline.stream, 't_list'):
         current_t_index_list = app_instance.pipeline.stream.t_list
-    elif app_instance.uploaded_controlnet_config and 't_index_list' in app_instance.uploaded_controlnet_config:
-        current_t_index_list = app_instance.uploaded_controlnet_config['t_index_list']
+    elif app_instance.app_state.uploaded_config and 't_index_list' in app_instance.app_state.uploaded_config:
+        current_t_index_list = app_instance.app_state.uploaded_config['t_index_list']
     else:
         # Default values
         current_t_index_list = default_settings.get('t_index_list', [35, 45])
@@ -274,13 +281,13 @@ async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depend
     current_acceleration = app_instance.args.acceleration
     
     # Get current resolution
-    current_resolution = f"{app_instance.new_width}x{app_instance.new_height}"
+    current_resolution = f"{app_instance.app_state.current_resolution['width']}x{app_instance.app_state.current_resolution['height']}"
     # Add aspect ratio for display
-    aspect_ratio = app_instance._calculate_aspect_ratio(app_instance.new_width, app_instance.new_height)
+    aspect_ratio = app_instance._calculate_aspect_ratio(app_instance.app_state.current_resolution['width'], app_instance.app_state.current_resolution['height'])
     if aspect_ratio:
         current_resolution += f" ({aspect_ratio})"
-    if app_instance.uploaded_controlnet_config and 'acceleration' in app_instance.uploaded_controlnet_config:
-        current_acceleration = app_instance.uploaded_controlnet_config['acceleration']
+    if app_instance.app_state.uploaded_config and 'acceleration' in app_instance.app_state.uploaded_config:
+        current_acceleration = app_instance.app_state.uploaded_config['acceleration']
     
     # Get current streaming parameters (default values or from pipeline if available)
     current_guidance_scale = default_settings.get('guidance_scale', 1.1)
@@ -300,8 +307,8 @@ async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depend
     
     # Get negative prompt if available
     current_negative_prompt = default_settings.get('negative_prompt', '')
-    if app_instance.uploaded_controlnet_config and 'negative_prompt' in app_instance.uploaded_controlnet_config:
-        current_negative_prompt = app_instance.uploaded_controlnet_config['negative_prompt']
+    if app_instance.app_state.uploaded_config and 'negative_prompt' in app_instance.app_state.uploaded_config:
+        current_negative_prompt = app_instance.app_state.uploaded_config['negative_prompt']
     elif app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
         try:
             state = app_instance.pipeline.stream.get_stream_state()
@@ -309,48 +316,33 @@ async def settings(app_instance=Depends(get_app_instance), pipeline_class=Depend
         except Exception:
             pass
     
-    # Get prompt and seed blending configuration from uploaded config or pipeline
-    prompt_blending_config = app_instance._normalize_prompt_config(app_instance.uploaded_controlnet_config)
-    seed_blending_config = app_instance._normalize_seed_config(app_instance.uploaded_controlnet_config)
+    # Get prompt and seed blending configuration - SINGLE SOURCE OF TRUTH
+    prompt_blending_config = app_instance.app_state.prompt_blending
+    seed_blending_config = app_instance.app_state.seed_blending
     
-    # Get normalization settings
-    normalize_prompt_weights = True
-    normalize_seed_weights = True
-    if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream') and hasattr(app_instance.pipeline.stream, 'get_stream_state'):
-        state = app_instance.pipeline.stream.get_stream_state()
-        normalize_prompt_weights = state.get('normalize_prompt_weights', True)
-        normalize_seed_weights = state.get('normalize_seed_weights', True)
-    elif app_instance.uploaded_controlnet_config:
-        normalize_prompt_weights = app_instance.uploaded_controlnet_config.get('normalize_weights', True)
-        normalize_seed_weights = app_instance.uploaded_controlnet_config.get('normalize_weights', True)
+    # Get normalization settings - SINGLE SOURCE OF TRUTH
+    normalize_prompt_weights = app_instance.app_state.normalize_prompt_weights
+    normalize_seed_weights = app_instance.app_state.normalize_seed_weights
     
-    # Get current skip_diffusion setting
-    current_skip_diffusion = False  # default
-    if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream') and hasattr(app_instance.pipeline.stream, 'skip_diffusion'):
-        current_skip_diffusion = app_instance.pipeline.stream.skip_diffusion
-    elif app_instance.uploaded_controlnet_config:
-        current_skip_diffusion = app_instance.uploaded_controlnet_config.get('skip_diffusion', False)
+    # Get current skip_diffusion setting - SINGLE SOURCE OF TRUTH
+    current_skip_diffusion = app_instance.app_state.skip_diffusion
     
-    # Determine current model id for UI badge
-    model_id_for_ui = ''
-    if app_instance.pipeline and hasattr(app_instance.pipeline, 'config') and app_instance.pipeline.config:
-        model_id_for_ui = app_instance.pipeline.config.get('model_id_or_path', '')
-    elif app_instance.uploaded_controlnet_config:
-        model_id_for_ui = app_instance.uploaded_controlnet_config.get('model_id_or_path', '')
+    # Determine current model id for UI badge - SINGLE SOURCE OF TRUTH
+    model_id_for_ui = app_instance.app_state.model_id
     
     # Check if pipeline is active
     pipeline_active = app_instance.pipeline is not None
     
     # Build config_values for other parameters that frontend may expect
     config_values = {}
-    if app_instance.uploaded_controlnet_config:
+    if app_instance.app_state.uploaded_config:
         for key in [
             'use_taesd',
             'cfg_type', 
             'safety_checker',
         ]:
-            if key in app_instance.uploaded_controlnet_config:
-                config_values[key] = app_instance.uploaded_controlnet_config[key]
+            if key in app_instance.app_state.uploaded_config:
+                config_values[key] = app_instance.app_state.uploaded_config[key]
 
     response_data = {
         "info": info_schema,

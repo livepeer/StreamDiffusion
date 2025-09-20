@@ -22,18 +22,12 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
             resolution = data["resolution"]
             if isinstance(resolution, dict) and "width" in resolution and "height" in resolution:
                 width, height = int(resolution["width"]), int(resolution["height"])
-                app_instance.new_width = width
-                app_instance.new_height = height
-                # Sync to centralized app_state
                 app_instance.app_state.current_resolution = {"width": width, "height": height}
             elif isinstance(resolution, str):
                 # Handle string format like "512x768 (2:3)" or "512x768"
                 resolution_part = resolution.split(' ')[0]
                 try:
                     width, height = map(int, resolution_part.split('x'))
-                    app_instance.new_width = width
-                    app_instance.new_height = height
-                    # Sync to centralized app_state
                     app_instance.app_state.current_resolution = {"width": width, "height": height}
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid resolution format")
@@ -41,7 +35,7 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                 raise HTTPException(status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string")
             return JSONResponse({
                 "status": "success",
-                "message": f"Updated resolution to {app_instance.new_width}x{app_instance.new_height} (will apply on next stream start)"
+                "message": f"Updated resolution to {app_instance.app_state.current_resolution['width']}x{app_instance.app_state.current_resolution['height']} (will apply on next stream start)"
             })
 
         if not app_instance.pipeline:
@@ -211,7 +205,7 @@ async def update_prompt_weight(request: Request, app_instance=Depends(get_app_in
         
         # Get current prompt blending configuration via unified getter, fallback to uploaded config
         state = app_instance.pipeline.stream.get_stream_state()
-        current_prompts = state.get('prompt_list') or app_instance._normalize_prompt_config(app_instance.uploaded_controlnet_config)
+        current_prompts = state.get('prompt_list') or app_instance._normalize_prompt_config(app_instance.app_state.uploaded_config)
             
         if current_prompts and index < len(current_prompts):
             # Create updated prompt list with new weight
@@ -249,7 +243,7 @@ async def update_seed_weight(request: Request, app_instance=Depends(get_app_inst
         
         # Get current seed blending configuration via unified getter, fallback to uploaded config
         state = app_instance.pipeline.stream.get_stream_state()
-        current_seeds = state.get('seed_list') or app_instance._normalize_seed_config(app_instance.uploaded_controlnet_config)
+        current_seeds = state.get('seed_list') or app_instance._normalize_seed_config(app_instance.app_state.uploaded_config)
             
         if current_seeds and index < len(current_seeds):
             # Create updated seed list with new weight

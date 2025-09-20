@@ -69,10 +69,10 @@ async def handle_websocket_data(user_id: uuid.UUID, app_instance, pipeline_class
                     # Need image for img2img OR for txt2img with ControlNets
                     has_controlnets = app_instance.pipeline.use_config and app_instance.pipeline.config and 'controlnets' in app_instance.pipeline.config
                     need_image = app_instance.pipeline.pipeline_mode == "img2img" or has_controlnets
-                elif app_instance.uploaded_controlnet_config and 'mode' in app_instance.uploaded_controlnet_config:
+                elif app_instance.app_state.uploaded_config and 'mode' in app_instance.app_state.uploaded_config:
                     # Need image for img2img OR for txt2img with ControlNets
-                    has_controlnets = 'controlnets' in app_instance.uploaded_controlnet_config
-                    need_image = app_instance.uploaded_controlnet_config['mode'] == "img2img" or has_controlnets
+                    has_controlnets = 'controlnets' in app_instance.app_state.uploaded_config
+                    need_image = app_instance.app_state.uploaded_config['mode'] == "img2img" or has_controlnets
                 
                 # Get input source manager
                 input_manager = _get_input_source_manager(app_instance)

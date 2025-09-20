@@ -3,6 +3,7 @@
   import Button from './Button.svelte';
   import HandTracking from './HandTracking.svelte';
   import GamepadControl from './GamepadControl.svelte';
+  import { appState } from '$lib/store';
 
   // Toggle moved to parent page
   
@@ -60,11 +61,8 @@
   onMount(() => {
     fetchAllParameterInfo();
     checkGamepadAccess();
-    const interval = setInterval(() => {
-      fetchAllParameterInfo();
-    }, 3000); // Check for updates
-    
-    return () => clearInterval(interval);
+    // Parameter info is now updated via centralized state polling
+    // Remove local 3s polling interval
   });
 
   onDestroy(() => {
@@ -81,23 +79,39 @@
 
   async function fetchAllParameterInfo() {
     try {
-      // Fetch main settings (includes pipeline params, controlnet, ipadapter, current blending configs)
-      const settingsResponse = await fetch('/api/settings');
-      if (settingsResponse.ok) {
-        const settings = await settingsResponse.json();
-        
-        // Also fetch latest blending configs
-        const blendingResponse = await fetch('/api/blending/current');
-        let blendingData = null;
-        if (blendingResponse.ok) {
-          blendingData = await blendingResponse.json();
+      // Use centralized state if available, fallback to individual API calls
+      if ($appState) {
+        await updateParameterOptions($appState, {
+          prompt_blending: $appState.prompt_blending,
+          seed_blending: $appState.seed_blending
+        });
+      } else {
+        // Fallback to legacy API calls
+        const settingsResponse = await fetch('/api/settings');
+        if (settingsResponse.ok) {
+          const settings = await settingsResponse.json();
+          
+          // Also fetch latest blending configs
+          const blendingResponse = await fetch('/api/blending/current');
+          let blendingData = null;
+          if (blendingResponse.ok) {
+            blendingData = await blendingResponse.json();
+          }
+          
+          await updateParameterOptions(settings, blendingData);
         }
-        
-        await updateParameterOptions(settings, blendingData);
       }
     } catch (error) {
       console.error('fetchAllParameterInfo: Failed to get parameter info:', error);
     }
+  }
+  
+  // Reactive update when appState changes
+  $: if ($appState) {
+    updateParameterOptions($appState, {
+      prompt_blending: $appState.prompt_blending,
+      seed_blending: $appState.seed_blending
+    });
   }
 
   async function fetchPreprocessorParameters(controlnetIndex: number): Promise<any> {

@@ -11,22 +11,18 @@ from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["pipeline-hooks"])
 
-def _update_pipeline_hook_config(app_instance, hook_type: str, current_hooks: list, operation_name: str):
-    """Update pipeline with current hook config"""
-    update_kwargs = {f"{hook_type}_config": current_hooks}
-    app_instance.pipeline.update_stream_params(**update_kwargs)
-    logging.info(f"{operation_name}: Successfully updated {hook_type} config")
 
 # Pipeline Hooks API Endpoints
 @router.get("/pipeline-hooks/info-config")
 async def get_pipeline_hooks_info_config(app_instance=Depends(get_app_instance)):
     """Get pipeline hooks configuration info"""
     try:
+        # SINGLE SOURCE OF TRUTH - Return hooks info from AppState
         hooks_info = {
-            "image_preprocessing": app_instance._get_hook_info("image_preprocessing"),
-            "image_postprocessing": app_instance._get_hook_info("image_postprocessing"),
-            "latent_preprocessing": app_instance._get_hook_info("latent_preprocessing"),
-            "latent_postprocessing": app_instance._get_hook_info("latent_postprocessing")
+            "image_preprocessing": app_instance.app_state.pipeline_hooks["image_preprocessing"],
+            "image_postprocessing": app_instance.app_state.pipeline_hooks["image_postprocessing"],
+            "latent_preprocessing": app_instance.app_state.pipeline_hooks["latent_preprocessing"],
+            "latent_postprocessing": app_instance.app_state.pipeline_hooks["latent_postprocessing"]
         }
         return JSONResponse(hooks_info)
     except Exception as e:
@@ -35,36 +31,36 @@ async def get_pipeline_hooks_info_config(app_instance=Depends(get_app_instance))
 # Individual hook type endpoints that frontend expects
 @router.get("/pipeline-hooks/image_preprocessing/info-config")
 async def get_image_preprocessing_info_config(app_instance=Depends(get_app_instance)):
-    """Get image preprocessing hook configuration info"""
+    """Get image preprocessing hook configuration info - SINGLE SOURCE OF TRUTH"""
     try:
-        hook_info = app_instance._get_hook_info("image_preprocessing")
+        hook_info = app_instance.app_state.pipeline_hooks["image_preprocessing"]
         return JSONResponse({"image_preprocessing": hook_info})
     except Exception as e:
         return JSONResponse({"image_preprocessing": None})
 
 @router.get("/pipeline-hooks/image_postprocessing/info-config")
 async def get_image_postprocessing_info_config(app_instance=Depends(get_app_instance)):
-    """Get image postprocessing hook configuration info"""
+    """Get image postprocessing hook configuration info - SINGLE SOURCE OF TRUTH"""
     try:
-        hook_info = app_instance._get_hook_info("image_postprocessing")
+        hook_info = app_instance.app_state.pipeline_hooks["image_postprocessing"]
         return JSONResponse({"image_postprocessing": hook_info})
     except Exception as e:
         return JSONResponse({"image_postprocessing": None})
 
 @router.get("/pipeline-hooks/latent_preprocessing/info-config")
 async def get_latent_preprocessing_info_config(app_instance=Depends(get_app_instance)):
-    """Get latent preprocessing hook configuration info"""
+    """Get latent preprocessing hook configuration info - SINGLE SOURCE OF TRUTH"""
     try:
-        hook_info = app_instance._get_hook_info("latent_preprocessing")
+        hook_info = app_instance.app_state.pipeline_hooks["latent_preprocessing"]
         return JSONResponse({"latent_preprocessing": hook_info})
     except Exception as e:
         return JSONResponse({"latent_preprocessing": None})
 
 @router.get("/pipeline-hooks/latent_postprocessing/info-config")
 async def get_latent_postprocessing_info_config(app_instance=Depends(get_app_instance)):
-    """Get latent postprocessing hook configuration info"""
+    """Get latent postprocessing hook configuration info - SINGLE SOURCE OF TRUTH"""
     try:
-        hook_info = app_instance._get_hook_info("latent_postprocessing")
+        hook_info = app_instance.app_state.pipeline_hooks["latent_postprocessing"]
         return JSONResponse({"latent_postprocessing": hook_info})
     except Exception as e:
         return JSONResponse({"latent_postprocessing": None})
@@ -141,12 +137,26 @@ async def add_hook_processor(hook_type: str, request: Request, app_instance=Depe
             "enabled": True
         }
         
-        # Use proper hook configuration access pattern (same as ControlNet)
-        current_hooks = app_instance._get_current_hook_config(hook_type)
-        current_hooks.append(new_processor)
+        # Add to AppState - SINGLE SOURCE OF TRUTH
+        app_instance.app_state.add_hook_processor(hook_type, new_processor)
         
-        # Update using the standard parameter update mechanism
-        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "add_hook_processor")
+        # Update pipeline if active
+        if app_instance.pipeline:
+            try:
+                hook_config = []
+                for processor in app_instance.app_state.pipeline_hooks[hook_type]["processors"]:
+                    config_entry = {
+                        "type": processor["type"],
+                        "params": processor["params"],
+                        "enabled": processor["enabled"]
+                    }
+                    hook_config.append(config_entry)
+                update_kwargs = {f"{hook_type}_config": hook_config}
+                app_instance.pipeline.update_stream_params(**update_kwargs)
+            except Exception as e:
+                logging.exception(f"add_hook_processor: Failed to update pipeline: {e}")
+                # Mark for reload as fallback
+                app_instance.app_state.config_needs_reload = True
         
         logging.info(f"add_hook_processor: Successfully added {processor_type} to {hook_type}")
         
@@ -163,18 +173,28 @@ async def remove_hook_processor(hook_type: str, processor_index: int, app_instan
         
         logging.info(f"remove_hook_processor: Removing processor {processor_index} from {hook_type}")
         
-        # Use proper hook configuration access pattern (same as ControlNet)
-        current_hooks = app_instance._get_current_hook_config(hook_type)
+        # Remove from AppState - SINGLE SOURCE OF TRUTH
+        app_instance.app_state.remove_hook_processor(hook_type, processor_index)
         
-        if processor_index >= len(current_hooks):
-            raise HTTPException(status_code=400, detail=f"Invalid processor index {processor_index} for {hook_type}")
+        # Update pipeline if active
+        if app_instance.pipeline:
+            try:
+                hook_config = []
+                for processor in app_instance.app_state.pipeline_hooks[hook_type]["processors"]:
+                    config_entry = {
+                        "type": processor["type"],
+                        "params": processor["params"],
+                        "enabled": processor["enabled"]
+                    }
+                    hook_config.append(config_entry)
+                update_kwargs = {f"{hook_type}_config": hook_config}
+                app_instance.pipeline.update_stream_params(**update_kwargs)
+            except Exception as e:
+                logging.exception(f"remove_hook_processor: Failed to update pipeline: {e}")
+                # Mark for reload as fallback
+                app_instance.app_state.config_needs_reload = True
         
-        removed_processor = current_hooks.pop(processor_index)
-        
-        # Update using the standard parameter update mechanism
-        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "remove_hook_processor")
-        
-        logging.info(f"remove_hook_processor: Successfully removed processor {processor_index} ({removed_processor.get('type', 'unknown')}) from {hook_type}")
+        logging.info(f"remove_hook_processor: Successfully removed processor {processor_index} from {hook_type}")
         
         return create_success_response(f"Removed processor {processor_index} from {hook_type}")
         
@@ -196,16 +216,26 @@ async def toggle_hook_processor(hook_type: str, request: Request, app_instance=D
         
         logging.info(f"toggle_hook_processor: Toggling processor {processor_index} in {hook_type} to {'enabled' if enabled else 'disabled'}")
         
-        # Use proper hook configuration access pattern (same as ControlNet)
-        current_hooks = app_instance._get_current_hook_config(hook_type)
+        # Update AppState - SINGLE SOURCE OF TRUTH
+        app_instance.app_state.update_hook_processor(hook_type, processor_index, {"enabled": bool(enabled)})
         
-        if processor_index >= len(current_hooks):
-            raise HTTPException(status_code=400, detail=f"Invalid processor index {processor_index} for {hook_type}")
-        
-        current_hooks[processor_index]['enabled'] = bool(enabled)
-        
-        # Update using the standard parameter update mechanism
-        _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "toggle_hook_processor")
+        # Update pipeline if active
+        if app_instance.pipeline:
+            try:
+                hook_config = []
+                for processor in app_instance.app_state.pipeline_hooks[hook_type]["processors"]:
+                    config_entry = {
+                        "type": processor["type"],
+                        "params": processor["params"],
+                        "enabled": processor["enabled"]
+                    }
+                    hook_config.append(config_entry)
+                update_kwargs = {f"{hook_type}_config": hook_config}
+                app_instance.pipeline.update_stream_params(**update_kwargs)
+            except Exception as e:
+                logging.exception(f"toggle_hook_processor: Failed to update pipeline: {e}")
+                # Mark for reload as fallback
+                app_instance.app_state.config_needs_reload = True
         
         logging.info(f"toggle_hook_processor: Successfully toggled processor {processor_index} in {hook_type}")
         
@@ -228,38 +258,56 @@ async def switch_hook_processor(hook_type: str, request: Request, app_instance=D
         
         # Handle config-only mode when no pipeline is active
         if not app_instance.pipeline:
-            if not app_instance.uploaded_controlnet_config:
+            if not app_instance.app_state.uploaded_config:
                 raise HTTPException(status_code=400, detail="No pipeline active and no uploaded config available")
             
             logging.info(f"switch_hook_processor: Updating config for {hook_type} processor {processor_index} to {new_processor_type}")
             
             # Update the uploaded config directly
-            hook_config = app_instance.uploaded_controlnet_config.get(hook_type, {"enabled": False, "processors": []})
+            hook_config = app_instance.app_state.uploaded_config.get(hook_type, {"enabled": False, "processors": []})
             if processor_index >= len(hook_config.get("processors", [])):
                 raise HTTPException(status_code=400, detail=f"Invalid processor index {processor_index} for {hook_type}")
             
             # Update processor type in config
             hook_config["processors"][processor_index]["type"] = new_processor_type
             hook_config["processors"][processor_index]["params"] = {}
-            app_instance.uploaded_controlnet_config[hook_type] = hook_config
+            app_instance.app_state.uploaded_config[hook_type] = hook_config
             
         else:
             validate_pipeline(app_instance.pipeline, "switch_hook_processor")
             
             logging.info(f"switch_hook_processor: Switching processor {processor_index} in {hook_type} to {new_processor_type}")
             
-            # Use proper hook configuration access pattern (same as ControlNet)
-            current_hooks = app_instance._get_current_hook_config(hook_type)
+            # Update AppState - SINGLE SOURCE OF TRUTH
+            processors = app_instance.app_state.pipeline_hooks[hook_type]["processors"]
             
-            if processor_index >= len(current_hooks):
+            if processor_index >= len(processors):
                 raise HTTPException(status_code=400, detail=f"Invalid processor index {processor_index} for {hook_type}")
             
-            # Update the processor type and reset params
-            current_hooks[processor_index]['type'] = new_processor_type
-            current_hooks[processor_index]['params'] = {}
+            # Update the processor type and reset params in AppState
+            app_instance.app_state.update_hook_processor(hook_type, processor_index, {
+                "type": new_processor_type,
+                "name": new_processor_type,
+                "params": {}
+            })
             
-            # Update using the standard parameter update mechanism
-            _update_pipeline_hook_config(app_instance, hook_type, current_hooks, "switch_hook_processor")
+            # Update pipeline if active
+            if app_instance.pipeline:
+                try:
+                    hook_config = []
+                    for processor in app_instance.app_state.pipeline_hooks[hook_type]["processors"]:
+                        config_entry = {
+                            "type": processor["type"],
+                            "params": processor["params"],
+                            "enabled": processor["enabled"]
+                        }
+                        hook_config.append(config_entry)
+                    update_kwargs = {f"{hook_type}_config": hook_config}
+                    app_instance.pipeline.update_stream_params(**update_kwargs)
+                except Exception as e:
+                    logging.exception(f"switch_hook_processor: Failed to update pipeline: {e}")
+                    # Mark for reload as fallback
+                    app_instance.app_state.config_needs_reload = True
         
         logging.info(f"switch_hook_processor: Successfully switched processor {processor_index} in {hook_type} to {new_processor_type}")
         
@@ -288,38 +336,54 @@ async def update_hook_processor_params(hook_type: str, request: Request, app_ins
         
         logging.info(f"update_hook_processor_params: Updating params for processor {processor_index} in {hook_type}")
         
-        # Use proper hook configuration access pattern (same as ControlNet)
-        current_hooks = app_instance._get_current_hook_config(hook_type)
-        logging.info(f"update_hook_processor_params: Current hooks config: {current_hooks}")
-        
-        if not current_hooks:
+        # Check if processors exist in AppState
+        processors = app_instance.app_state.pipeline_hooks[hook_type]["processors"]
+        if not processors:
             logging.error(f"update_hook_processor_params: Hook type {hook_type} not found or empty")
             raise HTTPException(status_code=400, detail=f"No processors configured for {hook_type}. Add a processor first using the 'Add {hook_type.replace('_', ' ').title()} Processor' button.")
             
-        if processor_index >= len(current_hooks):
-            logging.error(f"update_hook_processor_params: Processor index {processor_index} out of range for {hook_type} (max: {len(current_hooks)-1})")
-            raise HTTPException(status_code=400, detail=f"Processor index {processor_index} not found. Only {len(current_hooks)} processors are configured for {hook_type}.")
+        if processor_index >= len(processors):
+            logging.error(f"update_hook_processor_params: Processor index {processor_index} out of range for {hook_type} (max: {len(processors)-1})")
+            raise HTTPException(status_code=400, detail=f"Processor index {processor_index} not found. Only {len(processors)} processors are configured for {hook_type}.")
         
-        # Update the processor parameters
-        logging.info(f"update_hook_processor_params: Current processor config: {current_hooks[processor_index]}")
+        # Update the processor parameters in AppState - SINGLE SOURCE OF TRUTH
+        logging.info(f"update_hook_processor_params: Current processor config: {processors[processor_index]}")
         
         # Handle 'enabled' field separately as it's a top-level processor field, not a parameter
+        updates = {}
         if 'enabled' in processor_params:
             enabled_value = processor_params.pop('enabled')  # Remove from params dict
-            current_hooks[processor_index]['enabled'] = bool(enabled_value)
+            updates['enabled'] = bool(enabled_value)
             logging.info(f"update_hook_processor_params: Updated enabled field to: {enabled_value}")
         
         # Update remaining parameters in the params field
         if processor_params:  # Only update if there are remaining params
-            current_hooks[processor_index]['params'].update(processor_params)
+            current_params = processors[processor_index].get('params', {})
+            current_params.update(processor_params)
+            updates['params'] = current_params
         
-        logging.info(f"update_hook_processor_params: Updated processor config: {current_hooks[processor_index]}")
+        # Apply updates to AppState
+        app_instance.app_state.update_hook_processor(hook_type, processor_index, updates)
         
-        # Update using the standard parameter update mechanism
-        update_kwargs = {f"{hook_type}_config": current_hooks}
-        logging.info(f"update_hook_processor_params: Calling update_stream_params with: {update_kwargs}")
-        app_instance.pipeline.update_stream_params(**update_kwargs)
-        logging.info(f"update_hook_processor_params: update_stream_params completed successfully")
+        # Update pipeline if active
+        if app_instance.pipeline:
+            try:
+                hook_config = []
+                for processor in app_instance.app_state.pipeline_hooks[hook_type]["processors"]:
+                    config_entry = {
+                        "type": processor["type"],
+                        "params": processor["params"],
+                        "enabled": processor["enabled"]
+                    }
+                    hook_config.append(config_entry)
+                update_kwargs = {f"{hook_type}_config": hook_config}
+                logging.info(f"update_hook_processor_params: Calling update_stream_params with: {update_kwargs}")
+                app_instance.pipeline.update_stream_params(**update_kwargs)
+                logging.info(f"update_hook_processor_params: update_stream_params completed successfully")
+            except Exception as e:
+                logging.exception(f"update_hook_processor_params: Failed to update pipeline: {e}")
+                # Mark for reload as fallback
+                app_instance.app_state.config_needs_reload = True
         
         logging.info(f"update_hook_processor_params: Successfully updated params for processor {processor_index} in {hook_type}")
         
@@ -335,8 +399,8 @@ async def get_current_hook_processor_params(hook_type: str, processor_index: int
     """Get current parameters for a specific processor"""
     try:
         # First try to get from uploaded config if no pipeline
-        if not app_instance.pipeline and app_instance.uploaded_controlnet_config:
-            hook_config = app_instance.uploaded_controlnet_config.get(hook_type, {})
+        if not app_instance.pipeline and app_instance.app_state.uploaded_config:
+            hook_config = app_instance.app_state.uploaded_config.get(hook_type, {})
             processors = hook_config.get("processors", [])
             if processor_index < len(processors):
                 processor = processors[processor_index]
@@ -362,15 +426,13 @@ async def get_current_hook_processor_params(hook_type: str, processor_index: int
                 "note": "Pipeline not initialized - no config available"
             })
         
-        validate_pipeline(app_instance.pipeline, "get_current_hook_processor_params")
+        # Use AppState - SINGLE SOURCE OF TRUTH
+        processors = app_instance.app_state.pipeline_hooks[hook_type]["processors"]
         
-        # Use proper hook configuration access pattern (same as ControlNet)
-        current_hooks = app_instance._get_current_hook_config(hook_type)
-        
-        if processor_index >= len(current_hooks):
+        if processor_index >= len(processors):
             raise HTTPException(status_code=400, detail=f"Invalid processor index {processor_index} for {hook_type}")
         
-        processor = current_hooks[processor_index]
+        processor = processors[processor_index]
         
         return JSONResponse({
             "status": "success",

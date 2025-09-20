@@ -61,7 +61,7 @@ logger = setup_logging(config.log_level)
 
 
 class AppState:
-    """Centralized application state management"""
+    """Centralized application state management - SINGLE SOURCE OF TRUTH"""
     
     def __init__(self):
         # Pipeline state
@@ -69,8 +69,8 @@ class AppState:
         self.pipeline_active = False
         
         # Configuration state  
-        self.uploaded_config = None  # Replaces uploaded_controlnet_config
-        self.runtime_config = None   # Replaces runtime_controlnet_config
+        self.uploaded_config = None  # Raw uploaded config
+        self.runtime_config = None   # Runtime modifications to config
         self.config_needs_reload = False
         
         # Resolution state
@@ -78,9 +78,32 @@ class AppState:
         
         # Parameter state (consolidates scattered vars from frontend)
         self.pipeline_params = {}
-        self.controlnet_info = None
-        self.ipadapter_info = None
-        self.blending_configs = {"prompt": None, "seed": None}
+        
+        # ControlNet state - AUTHORITATIVE SOURCE
+        self.controlnet_info = {
+            "enabled": False,
+            "controlnets": []
+        }
+        
+        # IPAdapter state - AUTHORITATIVE SOURCE  
+        self.ipadapter_info = {
+            "enabled": False,
+            "has_style_image": False,
+            "scale": 1.0,
+            "weight_type": "linear"
+        }
+        
+        # Pipeline hooks state - AUTHORITATIVE SOURCE
+        self.pipeline_hooks = {
+            "image_preprocessing": {"enabled": False, "processors": []},
+            "image_postprocessing": {"enabled": False, "processors": []},
+            "latent_preprocessing": {"enabled": False, "processors": []},
+            "latent_postprocessing": {"enabled": False, "processors": []}
+        }
+        
+        # Blending configurations
+        self.prompt_blending = None
+        self.seed_blending = None
         self.normalize_prompt_weights = True
         self.normalize_seed_weights = True
         
@@ -106,8 +129,146 @@ class AppState:
             'base': None
         }
         
+    def populate_from_config(self, config_data):
+        """Populate AppState from uploaded config - SINGLE SOURCE OF TRUTH"""
+        if not config_data:
+            return
+            
+        logger.info("populate_from_config: Populating AppState from config as single source of truth")
+        
+        # Core parameters
+        self.guidance_scale = config_data.get('guidance_scale', self.guidance_scale)
+        self.delta = config_data.get('delta', self.delta)
+        self.num_inference_steps = config_data.get('num_inference_steps', self.num_inference_steps)
+        self.seed = config_data.get('seed', self.seed)
+        self.t_index_list = config_data.get('t_index_list', self.t_index_list)
+        self.negative_prompt = config_data.get('negative_prompt', self.negative_prompt)
+        self.skip_diffusion = config_data.get('skip_diffusion', self.skip_diffusion)
+        self.model_id = config_data.get('model_id_or_path', self.model_id)
+        
+        # Normalization settings
+        self.normalize_prompt_weights = config_data.get('normalize_weights', self.normalize_prompt_weights)
+        self.normalize_seed_weights = config_data.get('normalize_weights', self.normalize_seed_weights)
+        
+        # ControlNet configuration
+        if 'controlnets' in config_data:
+            self.controlnet_info = {
+                "enabled": True,
+                "controlnets": []
+            }
+            for i, controlnet in enumerate(config_data['controlnets']):
+                processed = dict(controlnet)
+                processed['index'] = i
+                processed['name'] = controlnet.get('model_id', '')
+                processed['strength'] = controlnet.get('conditioning_scale', 0.0)
+                self.controlnet_info["controlnets"].append(processed)
+        else:
+            self.controlnet_info = {"enabled": False, "controlnets": []}
+            
+        # IPAdapter configuration
+        if config_data.get('use_ipadapter', False):
+            self.ipadapter_info["enabled"] = True
+            ipadapters = config_data.get('ipadapters', [])
+            if ipadapters:
+                first = ipadapters[0]
+                self.ipadapter_info["scale"] = first.get('scale', 1.0)
+                self.ipadapter_info["weight_type"] = first.get('weight_type', 'linear')
+                if first.get('style_image'):
+                    self.ipadapter_info["has_style_image"] = True
+                    self.ipadapter_info["style_image_path"] = first['style_image']
+        else:
+            self.ipadapter_info = {"enabled": False, "has_style_image": False, "scale": 1.0, "weight_type": "linear"}
+            
+        # Pipeline hooks configuration
+        for hook_type in self.pipeline_hooks.keys():
+            if hook_type in config_data:
+                hook_config = config_data[hook_type]
+                if isinstance(hook_config, dict):
+                    self.pipeline_hooks[hook_type] = {
+                        "enabled": hook_config.get("enabled", False),
+                        "processors": []
+                    }
+                    # Process processors with proper indexing
+                    for index, processor in enumerate(hook_config.get("processors", [])):
+                        if isinstance(processor, dict):
+                            processed_processor = {
+                                "index": index,
+                                "name": processor.get("type", "unknown"),
+                                "type": processor.get("type", "unknown"),
+                                "enabled": processor.get("enabled", False),
+                                "order": processor.get("order", index + 1),
+                                "params": processor.get("params", {})
+                            }
+                            self.pipeline_hooks[hook_type]["processors"].append(processed_processor)
+            else:
+                self.pipeline_hooks[hook_type] = {"enabled": False, "processors": []}
+        
+        # Blending configurations
+        self.prompt_blending = self._normalize_prompt_config(config_data)
+        self.seed_blending = self._normalize_seed_config(config_data)
+        
+        logger.info("populate_from_config: AppState populated successfully from config")
+
+    def _normalize_prompt_config(self, config_data):
+        """Normalize prompt configuration to always return a list format"""
+        if not config_data:
+            return None
+            
+        # Check for explicit prompt_blending first
+        if 'prompt_blending' in config_data:
+            prompt_blending = config_data['prompt_blending']
+            if isinstance(prompt_blending, dict) and 'prompt_list' in prompt_blending:
+                prompt_list = prompt_blending['prompt_list']
+                if isinstance(prompt_list, list) and len(prompt_list) > 0:
+                    return prompt_list
+            elif isinstance(prompt_blending, list) and len(prompt_blending) > 0:
+                return prompt_blending
+        
+        # Check for direct prompt_list key  
+        if 'prompt_list' in config_data:
+            prompt_list = config_data['prompt_list']
+            if isinstance(prompt_list, list) and len(prompt_list) > 0:
+                return prompt_list
+        
+        # Check for simple prompt key and convert to list format
+        if 'prompt' in config_data:
+            prompt = config_data['prompt']
+            if prompt and isinstance(prompt, str):
+                return [(prompt, 1.0)]
+        
+        return None
+
+    def _normalize_seed_config(self, config_data):
+        """Normalize seed configuration to always return a list format"""
+        if not config_data:
+            return None
+            
+        # Check for explicit seed_blending first
+        if 'seed_blending' in config_data:
+            seed_blending = config_data['seed_blending']
+            if isinstance(seed_blending, dict) and 'seed_list' in seed_blending:
+                seed_list = seed_blending['seed_list']
+                if isinstance(seed_list, list) and len(seed_list) > 0:
+                    return seed_list
+            elif isinstance(seed_blending, list) and len(seed_blending) > 0:
+                return seed_blending
+        
+        # Check for direct seed_list key  
+        if 'seed_list' in config_data:
+            seed_list = config_data['seed_list']
+            if isinstance(seed_list, list) and len(seed_list) > 0:
+                return seed_list
+        
+        # Check for simple seed key and convert to list format
+        if 'seed' in config_data:
+            seed = config_data['seed']
+            if seed is not None and isinstance(seed, (int, float)):
+                return [(int(seed), 1.0)]
+        
+        return None
+
     def get_complete_state(self):
-        """Return unified state object for frontend consumption"""
+        """Return unified state object for frontend consumption - SINGLE SOURCE OF TRUTH"""
         return {
             # Pipeline state
             "pipeline_active": self.pipeline_active,
@@ -123,8 +284,8 @@ class AppState:
             "pipeline_params": self.pipeline_params,
             "controlnet": self.controlnet_info,
             "ipadapter": self.ipadapter_info,
-            "prompt_blending": self.blending_configs.get("prompt"),
-            "seed_blending": self.blending_configs.get("seed"),
+            "prompt_blending": self.prompt_blending,
+            "seed_blending": self.seed_blending,
             "normalize_prompt_weights": self.normalize_prompt_weights,
             "normalize_seed_weights": self.normalize_seed_weights,
             
@@ -145,8 +306,95 @@ class AppState:
             
             # Input sources
             "input_sources": self.input_sources,
+            
+            # Pipeline hooks - AUTHORITATIVE SOURCE
+            "image_preprocessing": self.pipeline_hooks["image_preprocessing"],
+            "image_postprocessing": self.pipeline_hooks["image_postprocessing"],
+            "latent_preprocessing": self.pipeline_hooks["latent_preprocessing"],
+            "latent_postprocessing": self.pipeline_hooks["latent_postprocessing"],
         }
     
+    def update_controlnet_strength(self, index: int, strength: float):
+        """Update ControlNet strength in AppState - SINGLE SOURCE OF TRUTH"""
+        if index < len(self.controlnet_info["controlnets"]):
+            self.controlnet_info["controlnets"][index]["strength"] = strength
+            self.controlnet_info["controlnets"][index]["conditioning_scale"] = strength
+            logger.info(f"update_controlnet_strength: Updated ControlNet {index} strength to {strength}")
+        else:
+            logger.warning(f"update_controlnet_strength: ControlNet index {index} out of range")
+    
+    def add_controlnet(self, controlnet_config: dict):
+        """Add ControlNet to AppState - SINGLE SOURCE OF TRUTH"""
+        index = len(self.controlnet_info["controlnets"])
+        processed = dict(controlnet_config)
+        processed['index'] = index
+        processed['name'] = controlnet_config.get('model_id', '')
+        processed['strength'] = controlnet_config.get('conditioning_scale', 0.0)
+        
+        self.controlnet_info["controlnets"].append(processed)
+        self.controlnet_info["enabled"] = True
+        logger.info(f"add_controlnet: Added ControlNet at index {index}")
+        
+    def remove_controlnet(self, index: int):
+        """Remove ControlNet from AppState - SINGLE SOURCE OF TRUTH"""
+        if index < len(self.controlnet_info["controlnets"]):
+            removed = self.controlnet_info["controlnets"].pop(index)
+            # Re-index remaining controlnets
+            for i, controlnet in enumerate(self.controlnet_info["controlnets"]):
+                controlnet['index'] = i
+            if not self.controlnet_info["controlnets"]:
+                self.controlnet_info["enabled"] = False
+            logger.info(f"remove_controlnet: Removed ControlNet at index {index}")
+        else:
+            logger.warning(f"remove_controlnet: ControlNet index {index} out of range")
+    
+    def update_hook_processor(self, hook_type: str, processor_index: int, updates: dict):
+        """Update pipeline hook processor in AppState - SINGLE SOURCE OF TRUTH"""
+        if hook_type in self.pipeline_hooks:
+            processors = self.pipeline_hooks[hook_type]["processors"]
+            if processor_index < len(processors):
+                processors[processor_index].update(updates)
+                logger.info(f"update_hook_processor: Updated {hook_type} processor {processor_index}")
+            else:
+                logger.warning(f"update_hook_processor: Processor index {processor_index} out of range for {hook_type}")
+        else:
+            logger.warning(f"update_hook_processor: Unknown hook type {hook_type}")
+    
+    def add_hook_processor(self, hook_type: str, processor_config: dict):
+        """Add pipeline hook processor to AppState - SINGLE SOURCE OF TRUTH"""
+        if hook_type in self.pipeline_hooks:
+            index = len(self.pipeline_hooks[hook_type]["processors"])
+            processed = {
+                "index": index,
+                "name": processor_config.get("type", "unknown"),
+                "type": processor_config.get("type", "unknown"),
+                "enabled": processor_config.get("enabled", True),
+                "order": processor_config.get("order", index + 1),
+                "params": processor_config.get("params", {})
+            }
+            self.pipeline_hooks[hook_type]["processors"].append(processed)
+            self.pipeline_hooks[hook_type]["enabled"] = True
+            logger.info(f"add_hook_processor: Added {hook_type} processor at index {index}")
+        else:
+            logger.warning(f"add_hook_processor: Unknown hook type {hook_type}")
+    
+    def remove_hook_processor(self, hook_type: str, processor_index: int):
+        """Remove pipeline hook processor from AppState - SINGLE SOURCE OF TRUTH"""
+        if hook_type in self.pipeline_hooks:
+            processors = self.pipeline_hooks[hook_type]["processors"]
+            if processor_index < len(processors):
+                removed = processors.pop(processor_index)
+                # Re-index remaining processors
+                for i, processor in enumerate(processors):
+                    processor['index'] = i
+                if not processors:
+                    self.pipeline_hooks[hook_type]["enabled"] = False
+                logger.info(f"remove_hook_processor: Removed {hook_type} processor at index {processor_index}")
+            else:
+                logger.warning(f"remove_hook_processor: Processor index {processor_index} out of range for {hook_type}")
+        else:
+            logger.warning(f"remove_hook_processor: Unknown hook type {hook_type}")
+
     def update_state(self, updates):
         """Atomic state updates with validation"""
         for key, value in updates.items():
@@ -156,37 +404,6 @@ class AppState:
             else:
                 logger.warning(f"AppState update_state: Unknown state key: {key}")
     
-    def sync_from_legacy_state(self, app_instance):
-        """Sync state from legacy scattered variables - temporary migration helper"""
-        # Sync resolution from old variables if they exist
-        if hasattr(app_instance, 'new_width') and hasattr(app_instance, 'new_height'):
-            self.current_resolution = {
-                "width": app_instance.new_width,
-                "height": app_instance.new_height
-            }
-        
-        # Sync config from old variables if they exist
-        if hasattr(app_instance, 'uploaded_controlnet_config'):
-            self.uploaded_config = app_instance.uploaded_controlnet_config
-            
-            # Extract parameters from uploaded config if available
-            if self.uploaded_config:
-                self.guidance_scale = self.uploaded_config.get('guidance_scale', self.guidance_scale)
-                self.delta = self.uploaded_config.get('delta', self.delta)
-                self.num_inference_steps = self.uploaded_config.get('num_inference_steps', self.num_inference_steps)
-                self.seed = self.uploaded_config.get('seed', self.seed)
-                self.t_index_list = self.uploaded_config.get('t_index_list', self.t_index_list)
-                self.negative_prompt = self.uploaded_config.get('negative_prompt', self.negative_prompt)
-                self.skip_diffusion = self.uploaded_config.get('skip_diffusion', self.skip_diffusion)
-                self.normalize_prompt_weights = self.uploaded_config.get('normalize_weights', self.normalize_prompt_weights)
-                self.normalize_seed_weights = self.uploaded_config.get('normalize_weights', self.normalize_seed_weights)
-                self.model_id = self.uploaded_config.get('model_id_or_path', self.model_id)
-        
-        if hasattr(app_instance, 'runtime_controlnet_config'):
-            self.runtime_config = app_instance.runtime_controlnet_config
-            
-        if hasattr(app_instance, 'config_needs_reload'):
-            self.config_needs_reload = app_instance.config_needs_reload
 
 
 class App:
@@ -201,13 +418,6 @@ class App:
         # Centralized state management
         self.app_state = AppState()
         
-        # Legacy state variables (temporary - will be removed in later phases)
-        self.uploaded_controlnet_config = None
-        self.runtime_controlnet_config = None
-        self.config_needs_reload = False
-        self.new_width = 512
-        self.new_height = 512
-        
         # Initialize input manager for controller support
         self.input_manager = InputManager()
         # Initialize input source manager for modular input routing
@@ -219,8 +429,10 @@ class App:
         """Cleanup resources when app is shutting down"""
         logger.info("App cleanup: Starting application cleanup...")
         if self.pipeline:
+            self.app_state.pipeline_lifecycle = "stopping"
             self._cleanup_pipeline(self.pipeline)
             self.pipeline = None
+            self.app_state.pipeline_lifecycle = "stopped"
         if hasattr(self, 'input_source_manager'):
             self.input_source_manager.cleanup()
         self._cleanup_temp_files()
@@ -258,26 +470,42 @@ class App:
                 match = re.match(r'controlnet_(\d+)_strength', parameter_name)
                 if match:
                     index = int(match.group(1))
-                    # Use existing ControlNet strength update logic
-                    current_config = self._get_current_controlnet_config()
-                    if current_config and index < len(current_config):
-                        current_config[index]['conditioning_scale'] = float(value)
-                        # Apply the updated config via unified API
-                        self.pipeline.update_stream_params(controlnet_config=current_config)
+                    # Update AppState - SINGLE SOURCE OF TRUTH
+                    self.app_state.update_controlnet_strength(index, float(value))
+                    # Update pipeline if active
+                    if self.pipeline:
+                        try:
+                            controlnet_config = []
+                            for cn in self.app_state.controlnet_info["controlnets"]:
+                                config_entry = dict(cn)
+                                config_entry['conditioning_scale'] = cn['strength']
+                                controlnet_config.append(config_entry)
+                            self.pipeline.update_stream_params(controlnet_config=controlnet_config)
+                        except Exception as e:
+                            logging.exception(f"_handle_input_parameter_update: Failed to update ControlNet strength: {e}")
             elif parameter_name.startswith('controlnet_') and '_preprocessor_' in parameter_name:
                 # Handle ControlNet preprocessor parameters
                 match = re.match(r'controlnet_(\d+)_preprocessor_(.+)', parameter_name)
                 if match:
                     controlnet_index = int(match.group(1))
                     param_name = match.group(2)
-                    # Use the same approach as the API endpoint
-                    current_config = self._get_current_controlnet_config()
-                    if current_config and controlnet_index < len(current_config):
-                        # Update preprocessor_params for the specified controlnet
-                        if 'preprocessor_params' not in current_config[controlnet_index]:
-                            current_config[controlnet_index]['preprocessor_params'] = {}
-                        current_config[controlnet_index]['preprocessor_params'][param_name] = value
-                        self.pipeline.update_stream_params(controlnet_config=current_config)
+                    # Update AppState - SINGLE SOURCE OF TRUTH
+                    if controlnet_index < len(self.app_state.controlnet_info["controlnets"]):
+                        controlnet = self.app_state.controlnet_info["controlnets"][controlnet_index]
+                        if 'preprocessor_params' not in controlnet:
+                            controlnet['preprocessor_params'] = {}
+                        controlnet['preprocessor_params'][param_name] = value
+                        # Update pipeline if active
+                        if self.pipeline:
+                            try:
+                                controlnet_config = []
+                                for cn in self.app_state.controlnet_info["controlnets"]:
+                                    config_entry = dict(cn)
+                                    config_entry['conditioning_scale'] = cn['strength']
+                                    controlnet_config.append(config_entry)
+                                self.pipeline.update_stream_params(controlnet_config=controlnet_config)
+                            except Exception as e:
+                                logging.exception(f"_handle_input_parameter_update: Failed to update ControlNet preprocessor: {e}")
             elif parameter_name.startswith('prompt_weight_'):
                 # Handle prompt blending weights
                 match = re.match(r'prompt_weight_(\d+)', parameter_name)
@@ -332,29 +560,6 @@ class App:
             return stream._controlnet_module
         return None
 
-    def _get_current_config(self, config_type: str):
-        """Get the current configuration state from the pipeline using public API"""
-        if not self.pipeline or not self.pipeline.stream:
-            logging.warning(f"_get_current_config: No pipeline or stream wrapper for {config_type}")
-            return []
-        
-        try:
-            # Use the public get_stream_state API from the wrapper
-            stream_state = self.pipeline.stream.get_stream_state()
-            config_key = f"{config_type}_config"
-            config = stream_state.get(config_key, [])
-            return config
-        except Exception as e:
-            logging.warning(f"_get_current_config: Failed to get {config_type} config via get_stream_state: {e}")
-            return []
-
-    def _get_current_controlnet_config(self):
-        """Get the current ControlNet configuration state from the pipeline using public API"""
-        return self._get_current_config("controlnet")
-
-    def _get_current_hook_config(self, hook_type: str):
-        """Get the current hook configuration state from the pipeline using public API"""
-        return self._get_current_config(hook_type)
 
     def init_app(self):
         # Enhanced CORS for API-only development mode
@@ -416,77 +621,6 @@ class App:
         if not self.args.api_only:
             self.app.mount("/", StaticFiles(directory="frontend/public", html=True), name="public")
 
-    def _normalize_prompt_config(self, config_data):
-        """
-        Normalize prompt configuration to always return a list format.
-        Priority: prompt_blending.prompt_list > prompt_blending (direct list) > prompt (converted to single-item list) > default
-        """
-        if not config_data:
-            return None
-            
-        # Check for explicit prompt_blending first (highest priority)
-        if 'prompt_blending' in config_data:
-            prompt_blending = config_data['prompt_blending']
-            
-            # Handle nested structure: prompt_blending.prompt_list
-            if isinstance(prompt_blending, dict) and 'prompt_list' in prompt_blending:
-                prompt_list = prompt_blending['prompt_list']
-                if isinstance(prompt_list, list) and len(prompt_list) > 0:
-                    return prompt_list
-            
-            # Handle flat structure: prompt_blending as direct list
-            elif isinstance(prompt_blending, list) and len(prompt_blending) > 0:
-                return prompt_blending
-        
-        # Check for direct prompt_list key  
-        if 'prompt_list' in config_data:
-            prompt_list = config_data['prompt_list']
-            if isinstance(prompt_list, list) and len(prompt_list) > 0:
-                return prompt_list
-        
-        # Check for simple prompt key and convert to list format
-        if 'prompt' in config_data:
-            prompt = config_data['prompt']
-            if prompt and isinstance(prompt, str):
-                return [(prompt, 1.0)]  # Convert to list format with weight 1.0
-        
-        return None
-
-    def _normalize_seed_config(self, config_data):
-        """
-        Normalize seed configuration to always return a list format.
-        Priority: seed_blending.seed_list > seed_blending (direct list) > seed (converted to single-item list) > default
-        """
-        if not config_data:
-            return None
-            
-        # Check for explicit seed_blending first (highest priority)
-        if 'seed_blending' in config_data:
-            seed_blending = config_data['seed_blending']
-            
-            # Handle nested structure: seed_blending.seed_list
-            if isinstance(seed_blending, dict) and 'seed_list' in seed_blending:
-                seed_list = seed_blending['seed_list']
-                if isinstance(seed_list, list) and len(seed_list) > 0:
-                    return seed_list
-            
-            # Handle flat structure: seed_blending as direct list
-            elif isinstance(seed_blending, list) and len(seed_blending) > 0:
-                return seed_blending
-        
-        # Check for direct seed_list key  
-        if 'seed_list' in config_data:
-            seed_list = config_data['seed_list']
-            if isinstance(seed_list, list) and len(seed_list) > 0:
-                return seed_list
-        
-        # Check for simple seed key and convert to list format
-        if 'seed' in config_data:
-            seed = config_data['seed']
-            if seed is not None and isinstance(seed, (int, float)):
-                return [(int(seed), 1.0)]  # Convert to list format with weight 1.0
-        
-        return None
 
     def _create_default_pipeline(self):
         """Create the default pipeline (standard mode)"""
@@ -603,118 +737,6 @@ class App:
                     pass
             self._temp_config_files.clear()
 
-    def _get_controlnet_info(self):
-        """Get ControlNet information from uploaded config or active pipeline"""
-        controlnet_info = {
-            "enabled": False,
-            "controlnets": []
-        }
-        
-        raw_controlnets = []
-        if self.pipeline and hasattr(self.pipeline, 'use_config') and self.pipeline.use_config:
-            if self.pipeline.config and 'controlnets' in self.pipeline.config:
-                controlnet_info["enabled"] = True
-                raw_controlnets = self.pipeline.config['controlnets']
-        elif self.app_state.uploaded_config and 'controlnets' in self.app_state.uploaded_config:
-            controlnet_info["enabled"] = True  
-            raw_controlnets = self.app_state.uploaded_config['controlnets']
-        
-        # Map conditioning_scale to strength for frontend compatibility
-        processed_controlnets = []
-        for i, controlnet in enumerate(raw_controlnets):
-            processed = dict(controlnet)
-            processed['index'] = i
-            processed['name'] = controlnet.get('model_id', '')
-            processed['strength'] = controlnet.get('conditioning_scale', 0.0)
-            processed_controlnets.append(processed)
-        
-        controlnet_info["controlnets"] = processed_controlnets
-        return controlnet_info
-
-    def _get_ipadapter_info(self):
-        """Get IPAdapter information from uploaded config or active pipeline"""
-        ipadapter_info = {
-            "enabled": False,
-            "has_style_image": False
-        }
-        
-        # Get config values
-        if self.app_state.uploaded_config:
-            if self.app_state.uploaded_config.get('use_ipadapter', False):
-                ipadapter_info["enabled"] = True
-            
-            ipadapters = self.app_state.uploaded_config.get('ipadapters', [])
-            if ipadapters:
-                first = ipadapters[0]
-                ipadapter_info["scale"] = first.get('scale', 1.0)
-                ipadapter_info["weight_type"] = first.get('weight_type', 'linear')
-                if first.get('style_image'):
-                    ipadapter_info["has_style_image"] = True
-                    ipadapter_info["style_image_path"] = first['style_image']
-        
-        if self.pipeline and hasattr(self.pipeline, 'has_ipadapter'):
-            ipadapter_info["enabled"] = self.pipeline.has_ipadapter
-        
-        # Check if IPAdapter has a style image from InputSourceManager
-        if hasattr(self, 'input_source_manager'):
-            ipadapter_source_info = self.input_source_manager.get_source_info('ipadapter')
-            if ipadapter_source_info.get('has_data', False):
-                ipadapter_info["has_style_image"] = True
-            
-        return ipadapter_info
-
-    def _get_hook_info(self, hook_type: str):
-        """Get hook information for a specific hook type"""
-        hook_info = {
-            "enabled": False,
-            "processors": []
-        }
-        
-        if self.pipeline and hasattr(self.pipeline, 'stream'):
-            # Use the proper method to get current hook configuration
-            hooks_config = self._get_current_hook_config(hook_type)
-            if hooks_config:
-                hook_info["enabled"] = True
-                
-                # Process raw processors to add frontend-expected fields
-                processed_processors = []
-                for index, processor in enumerate(hooks_config):
-                    if isinstance(processor, dict):
-                        processed_processor = {
-                            "index": index,
-                            "name": processor.get("type", "unknown"),  # Map type to name
-                            "type": processor.get("type", "unknown"),
-                            "enabled": processor.get("enabled", False),
-                            "order": processor.get("order", index + 1),
-                            "params": processor.get("params", {})
-                        }
-                        processed_processors.append(processed_processor)
-                
-                hook_info["processors"] = processed_processors
-        elif self.app_state.uploaded_config and hook_type in self.app_state.uploaded_config:
-            # Fallback to config when no pipeline
-            config = self.app_state.uploaded_config[hook_type]
-            if isinstance(config, dict):
-                hook_info["enabled"] = config.get("enabled", False)
-                raw_processors = config.get("processors", [])
-                
-                # Process raw processors to add frontend-expected fields
-                processed_processors = []
-                for index, processor in enumerate(raw_processors):
-                    if isinstance(processor, dict):
-                        processed_processor = {
-                            "index": index,
-                            "name": processor.get("type", "unknown"),  # Map type to name
-                            "type": processor.get("type", "unknown"),
-                            "enabled": processor.get("enabled", False),
-                            "order": processor.get("order", index + 1),
-                            "params": processor.get("params", {})
-                        }
-                        processed_processors.append(processed_processor)
-                
-                hook_info["processors"] = processed_processors
-        
-        return hook_info
 
     def _calculate_aspect_ratio(self, width: int, height: int) -> str:
         """Calculate and return aspect ratio as a string"""
