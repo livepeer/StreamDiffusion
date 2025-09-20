@@ -257,14 +257,11 @@
         const result = await response.json();
         const sourceInfo = result.source_info;
         
-        if (sourceInfo && sourceInfo.source_type !== 'fallback' && sourceInfo.source_type !== 'none') {
-          currentSource = sourceInfo.source_type as any;
+        if (sourceInfo && sourceInfo.type !== 'fallback' && sourceInfo.type !== 'none') {
+          currentSource = sourceInfo.type as any;
         } else if (componentType === 'ipadapter') {
           // For IPAdapter, default to uploaded_image mode to maintain existing behavior
           currentSource = 'uploaded_image';
-        } else if (componentType === 'controlnet') {
-          // For ControlNet, default to webcam mode
-          currentSource = 'webcam';
         }
       } else if (componentType === 'ipadapter') {
         // If no source info exists for IPAdapter, default to uploaded_image
@@ -281,9 +278,6 @@
       if (componentType === 'ipadapter') {
         currentSource = 'uploaded_image';
         await loadCurrentImagePreview();
-      } else if (componentType === 'controlnet') {
-        // For ControlNet, default to webcam even if API fails
-        currentSource = 'webcam';
       }
     }
   }
@@ -314,27 +308,6 @@
     } catch (error) {
       console.warn('loadCurrentImagePreview: Failed to load image preview:', error);
     }
-  }
-
-  // Expose reset function for parent components
-  export function resetToDefaults() {
-    console.log('InputSourceSelector: resetToDefaults called for', componentType, componentIndex);
-    
-    // Clear previews
-    clearPreviews();
-    
-    // Reset to default source type
-    if (componentType === 'ipadapter') {
-      currentSource = 'uploaded_image';
-    } else {
-      currentSource = 'webcam';
-    }
-    
-    // Clear upload status
-    uploadStatus = '';
-    
-    // Reload source info from backend
-    loadCurrentSourceInfo();
   }
 
   // Load source info when component mounts or component parameters change

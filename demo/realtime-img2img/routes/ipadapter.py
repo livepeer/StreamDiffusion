@@ -1,109 +1,19 @@
 """
 IPAdapter-related endpoints for realtime-img2img
 """
-from fastapi import APIRouter, Request, HTTPException, Depends, UploadFile, File, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi.responses import JSONResponse, Response
 import logging
-import tempfile
 import os
-import io
 
 from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline, validate_feature_enabled, validate_config_mode
 from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["ipadapter"])
 
-@router.post("/ipadapter/upload-style-image")
-async def upload_style_image(file: UploadFile = File(...), app_instance=Depends(get_app_instance)):
-    """Upload a style image for IPAdapter"""
-    try:
-        # Validate file type
-        if not file.content_type or not file.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Read file content
-        content = await file.read()
-        
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
-                tmp.write(content)
-                tmp_path = tmp.name
+# Legacy upload endpoint removed - use /api/input-sources/upload-image/ipadapter instead
 
-            # Load and validate image
-            from PIL import Image
-            style_image = Image.open(tmp_path).convert("RGB")
-
-            # Store the uploaded style image persistently FIRST
-            app_instance.uploaded_style_image = style_image
-            logging.info(f"upload_style_image: Stored style image with size: {style_image.size}")
-
-            # If pipeline exists and has IPAdapter, update it immediately
-            pipeline_updated = False
-            if app_instance.pipeline and getattr(app_instance.pipeline, 'has_ipadapter', False):
-                logging.info("upload_style_image: Applying to existing pipeline")
-                success = app_instance.pipeline.update_ipadapter_style_image(style_image)
-                if success:
-                    pipeline_updated = True
-                    logging.info("upload_style_image: Successfully applied to existing pipeline")
-
-                    # Force prompt re-encoding to apply new style image embeddings
-                    try:
-                        state = app_instance.pipeline.stream.get_stream_state()
-                        current_prompts = state.get('prompt_list', [])
-                        if current_prompts:
-                            logging.info("upload_style_image: Forcing prompt re-encoding to apply new style image")
-                            app_instance.pipeline.stream.update_prompt(current_prompts, prompt_interpolation_method="slerp")
-                            logging.info("upload_style_image: Prompt re-encoding completed")
-                    except Exception as e:
-                        logging.exception(f"upload_style_image: Failed to force prompt re-encoding: {e}")
-                else:
-                    logging.error("upload_style_image: Failed to apply to existing pipeline")
-            elif app_instance.pipeline:
-                logging.info(f"upload_style_image: Pipeline exists but has_ipadapter={getattr(app_instance.pipeline, 'has_ipadapter', False)}")
-            else:
-                logging.info("upload_style_image: No pipeline exists yet")
-
-            # Return success
-            message = "Style image uploaded successfully"
-            if pipeline_updated:
-                message += " and applied to active pipeline"
-            else:
-                message += " and will be applied when pipeline starts"
-            
-            return create_success_response(message)
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise handle_api_error(e, "upload_style_image")
-
-@router.get("/ipadapter/uploaded-style-image")
-async def get_uploaded_style_image(app_instance=Depends(get_app_instance)):
-    """Get the currently uploaded style image"""
-    try:
-        if not app_instance.uploaded_style_image:
-            raise HTTPException(status_code=404, detail="No style image uploaded")
-        
-        # Convert PIL image to bytes for streaming
-        img_buffer = io.BytesIO()
-        app_instance.uploaded_style_image.save(img_buffer, format='JPEG', quality=95)
-        img_buffer.seek(0)
-        
-        return StreamingResponse(
-            io.BytesIO(img_buffer.read()),
-            media_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=3600"}
-        )
-        
-    except Exception as e:
-        raise handle_api_error(e, "get_uploaded_style_image")
+# Legacy get uploaded image endpoint removed - use InputSourceManager instead
 
 @router.get("/default-image")
 async def get_default_image():
