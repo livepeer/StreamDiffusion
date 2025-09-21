@@ -539,10 +539,12 @@ async def update_preprocessor_params(request: Request, app_instance=Depends(get_
             logging.error(f"update_preprocessor_params: Missing controlnet_index parameter")
             raise HTTPException(status_code=400, detail="Missing controlnet_index parameter")
         
-        validate_pipeline(app_instance.pipeline, "update_preprocessor_params")
-        validate_config_mode(app_instance.pipeline, "controlnets")
+        # Validate AppState has ControlNet configuration (pipeline not required)
+        if not app_instance.app_state.controlnet_info["enabled"] or not app_instance.app_state.controlnet_info["controlnets"]:
+            logging.error(f"update_preprocessor_params: No ControlNet configuration available in AppState")
+            raise HTTPException(status_code=400, detail="No ControlNet configuration available. Please upload a config first.")
         
-        # Update AppState - SINGLE SOURCE OF TRUTH
+        # Update AppState - SINGLE SOURCE OF TRUTH (works before pipeline creation)
         if controlnet_index >= len(app_instance.app_state.controlnet_info["controlnets"]):
             logging.error(f"update_preprocessor_params: ControlNet index {controlnet_index} out of range (max: {len(app_instance.app_state.controlnet_info['controlnets'])-1})")
             raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")

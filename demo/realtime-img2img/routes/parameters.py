@@ -38,9 +38,8 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                 "message": f"Updated resolution to {app_instance.app_state.current_resolution['width']}x{app_instance.app_state.current_resolution['height']} (will apply on next stream start)"
             })
 
-        if not app_instance.pipeline:
-            raise HTTPException(status_code=400, detail="Pipeline is not initialized")
-
+        # No pipeline validation needed - AppState updates work before pipeline creation
+        
         # Update parameters that exist in the data
         params = {}
         
@@ -60,11 +59,11 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                 raise HTTPException(status_code=400, detail="t_index_list must be a list of integers")
 
         if params:
-            # Update AppState as single source of truth
+            # Update AppState as single source of truth (works before pipeline creation)
             for param_name, param_value in params.items():
                 app_instance.app_state.update_parameter(param_name, param_value)
             
-            # Sync to pipeline if active
+            # Sync to pipeline if active (for real-time updates)
             if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
                 app_instance._sync_appstate_to_pipeline()
             
@@ -93,14 +92,14 @@ async def _update_single_parameter(
     """Generic function to update a single parameter"""
     try:
         data = await handle_api_request(request, operation_name, [parameter_name])
-        validate_pipeline(app_instance.pipeline, operation_name)
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
         value = value_converter(data[parameter_name])
         
-        # Update AppState as single source of truth
+        # Update AppState as single source of truth (works before pipeline creation)
         app_instance.app_state.update_parameter(parameter_name, value)
         
-        # Sync to pipeline if active
+        # Sync to pipeline if active (for real-time updates)
         if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
             app_instance._sync_appstate_to_pipeline()
         
@@ -143,7 +142,7 @@ async def update_blending(request: Request, app_instance=Depends(get_app_instanc
     try:
         data = await request.json()
         
-        validate_pipeline(app_instance.pipeline, "update_blending")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
         params = {}
         updated_types = []
@@ -221,7 +220,7 @@ async def update_prompt_weight(request: Request, app_instance=Depends(get_app_in
         if index is None or weight is None:
             raise HTTPException(status_code=400, detail="Missing index or weight parameter")
         
-        validate_pipeline(app_instance.pipeline, "update_prompt_weight")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
         # Update AppState as single source of truth
         app_instance.app_state.update_parameter(f"prompt_weight_{index}", float(weight))
@@ -246,7 +245,7 @@ async def update_seed_weight(request: Request, app_instance=Depends(get_app_inst
         if index is None or weight is None:
             raise HTTPException(status_code=400, detail="Missing index or weight parameter")
         
-        validate_pipeline(app_instance.pipeline, "update_seed_weight")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
         # Update AppState as single source of truth
         app_instance.app_state.update_parameter(f"seed_weight_{index}", float(weight))

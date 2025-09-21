@@ -40,10 +40,11 @@ async def update_ipadapter_scale(request: Request, app_instance=Depends(get_app_
         data = await handle_api_request(request, "update_ipadapter_scale", ["scale"])
         scale = data.get("scale")
         
-        validate_pipeline(app_instance.pipeline, "update_ipadapter_scale")
-        validate_config_mode(app_instance.pipeline, "ipadapters")
+        # Validate AppState has IPAdapter configuration (pipeline not required)
+        if not app_instance.app_state.ipadapter_info["enabled"]:
+            raise HTTPException(status_code=400, detail="IPAdapter is not enabled. Please upload a config with IPAdapter first.")
         
-        # Update AppState as single source of truth
+        # Update AppState as single source of truth (works before pipeline creation)
         app_instance.app_state.update_parameter("ipadapter_scale", float(scale))
         
         # Sync to pipeline if active
@@ -62,10 +63,11 @@ async def update_ipadapter_weight_type(request: Request, app_instance=Depends(ge
         data = await handle_api_request(request, "update_ipadapter_weight_type", ["weight_type"])
         weight_type = data.get("weight_type")
         
-        validate_pipeline(app_instance.pipeline, "update_ipadapter_weight_type")
-        validate_config_mode(app_instance.pipeline, "ipadapters")
+        # Validate AppState has IPAdapter configuration (pipeline not required)
+        if not app_instance.app_state.ipadapter_info["enabled"]:
+            raise HTTPException(status_code=400, detail="IPAdapter is not enabled. Please upload a config with IPAdapter first.")
         
-        # Update AppState as single source of truth
+        # Update AppState as single source of truth (works before pipeline creation)
         app_instance.app_state.ipadapter_info["weight_type"] = weight_type
         
         # Sync to pipeline if active
