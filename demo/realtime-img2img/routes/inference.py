@@ -54,31 +54,8 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
             app_instance.app_state.pipeline_lifecycle = "running"
             logging.info("stream: Pipeline recreated successfully")
 
-        # Check for resolution changes (without recreating the whole pipeline)
-        resolution_changed = False
-        current_width = getattr(app_instance.pipeline, 'width', 512)
-        current_height = getattr(app_instance.pipeline, 'height', 512)
-        target_width = app_instance.app_state.current_resolution["width"]
-        target_height = app_instance.app_state.current_resolution["height"]
-        
-        if target_width != current_width or target_height != current_height:
-            logging.info(f"stream: Resolution change detected: {current_width}x{current_height} -> {target_width}x{target_height}")
-            # Try to update resolution without full pipeline recreation
-            try:
-                app_instance.pipeline.update_resolution(target_width, target_height)
-                resolution_changed = True
-                logging.info(f"stream: Resolution updated successfully")
-            except Exception as e:
-                logging.warning(f"stream: Failed to update resolution: {e}. Will recreate pipeline.")
-                # Fallback: recreate pipeline with new resolution
-                old_pipeline = app_instance.pipeline
-                app_instance.pipeline = None
-                if old_pipeline:
-                    app_instance._cleanup_pipeline(old_pipeline)
-                
-                app_instance.pipeline = app_instance._create_pipeline()
-                resolution_changed = True
-                logging.info(f"stream: Pipeline recreated with new resolution")
+        # Resolution changes are now handled immediately in _update_resolution()
+        # No need to check for resolution mismatches here
 
         # Check for acceleration changes (requires pipeline recreation)
         acceleration_changed = False

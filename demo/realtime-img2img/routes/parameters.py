@@ -15,28 +15,52 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
     """Update multiple streaming parameters in a single unified call"""
     try:
         data = await request.json()
+        logging.info(f"update_params: Received data: {data}")
+        logging.info(f"update_params: Pipeline exists: {app_instance.pipeline is not None}")
         
         # Allow updating resolution even when pipeline is not initialized.
         # We save the new values so they take effect on the next stream start.
-        if "resolution" in data and not app_instance.pipeline:
+        if "resolution" in data:
+            if not app_instance.pipeline:
+                logging.info("update_params: No pipeline exists, updating resolution directly")
+            else:
+                logging.info("update_params: Pipeline exists, resolution update may be handled differently")
+        
+        if "resolution" in data:
             resolution = data["resolution"]
             if isinstance(resolution, dict) and "width" in resolution and "height" in resolution:
                 width, height = int(resolution["width"]), int(resolution["height"])
-                app_instance.app_state.current_resolution = {"width": width, "height": height}
+                
+                # Call the proper pipeline recreation method
+                app_instance._update_resolution(width, height)
+                
+                message = f"Resolution updated to {width}x{height} and pipeline recreated successfully"
+                logging.info(f"update_params: {message}")
+                return JSONResponse({
+                    "status": "success", 
+                    "message": message
+                })
             elif isinstance(resolution, str):
                 # Handle string format like "512x768 (2:3)" or "512x768"
                 resolution_part = resolution.split(' ')[0]
+                logging.info(f"update_params: Parsing resolution string: {resolution} -> {resolution_part}")
                 try:
                     width, height = map(int, resolution_part.split('x'))
-                    app_instance.app_state.current_resolution = {"width": width, "height": height}
+                    logging.info(f"update_params: Parsed width={width}, height={height}")
+                    
+                    # Call the proper pipeline recreation method
+                    app_instance._update_resolution(width, height)
+                    
+                    message = f"Resolution updated to {width}x{height} and pipeline recreated successfully"
+                    logging.info(f"update_params: {message}")
+                    return JSONResponse({
+                        "status": "success", 
+                        "message": message
+                    })
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid resolution format")
             else:
                 raise HTTPException(status_code=400, detail="Resolution must be {width: int, height: int} or 'widthxheight' string")
-            return JSONResponse({
-                "status": "success",
-                "message": f"Updated resolution to {app_instance.app_state.current_resolution['width']}x{app_instance.app_state.current_resolution['height']} (will apply on next stream start)"
-            })
 
         # No pipeline validation needed - AppState updates work before pipeline creation
         

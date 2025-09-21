@@ -1,15 +1,7 @@
 
 import { derived, writable, get, type Writable, type Readable } from 'svelte/store';
 
-// Legacy pipeline values store for backward compatibility
-export const pipelineValues: Writable<Record<string, any>> = writable({});
-export const deboucedPipelineValues: Readable<Record<string, any>>
-    = derived(pipelineValues, ($pipelineValues, set) => {
-        const debounced = setTimeout(() => {
-            set($pipelineValues);
-        }, 100);
-        return () => clearTimeout(debounced);
-    });
+// Centralized application state management
 
 // Comprehensive application state store
 export interface AppState {
@@ -53,7 +45,7 @@ export interface AppState {
     // Input sources
     input_sources: Record<string, any>;
     
-    // Additional fields for backward compatibility
+    // Additional dynamic fields from backend
     info?: any;
     input_params?: any;
     max_queue_size?: number;
@@ -70,7 +62,7 @@ export interface AppState {
 // Create the comprehensive app state store
 export const appState: Writable<AppState | null> = writable(null);
 
-// Derived store for debounced pipeline values (maintains backward compatibility)
+// Derived store for debounced app state updates
 export const debouncedAppState: Readable<AppState | null> = derived(
     appState, 
     ($appState, set) => {
@@ -93,17 +85,8 @@ export async function fetchAppState(): Promise<AppState | null> {
         
         const state = await response.json();
         
-        // Update both stores for backward compatibility
+        // Update centralized app state
         appState.set(state);
-        
-        // Update legacy pipelineValues store with relevant values
-        pipelineValues.update(values => ({
-            ...values,
-            prompt: state.config_prompt || values.prompt,
-            negative_prompt: state.negative_prompt,
-            resolution: state.resolution,
-            ...state.config_values
-        }));
         
         return state;
     } catch (error) {
@@ -133,8 +116,5 @@ export function stopStatePolling() {
     }
 }
 
-// Legacy function for backward compatibility
-export const getPipelineValues = () => get(pipelineValues);
-
-// New function to get current app state
+// Function to get current app state
 export const getAppState = () => get(appState);

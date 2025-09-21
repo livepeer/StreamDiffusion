@@ -53,7 +53,7 @@
           promptList = [...promptBlendingConfig.prompt_list];
           promptInterpolationMethod = promptBlendingConfig.interpolation_method || 'slerp';
           promptInitialized = true;
-          console.log('BlendingControl: Initialized prompt list from legacy config:', promptList);
+          console.log('BlendingControl: Initialized prompt list from config:', promptList);
         } else {
           const initPrompt = currentPrompt && currentPrompt.trim() ? currentPrompt : 'a beautiful landscape';
           promptList = [[initPrompt, 1.0]];
@@ -110,7 +110,7 @@
           seedList = [...seedBlendingConfig.seed_list];
           seedInterpolationMethod = seedBlendingConfig.seed_interpolation_method || 'linear';
           seedInitialized = true;
-          console.log('BlendingControl: Initialized seed list from legacy config:', seedList);
+          console.log('BlendingControl: Initialized seed list from config:', seedList);
         } else {
           seedList = [[2, 1.0]];
           seedInitialized = true;

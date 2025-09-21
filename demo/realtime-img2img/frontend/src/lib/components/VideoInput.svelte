@@ -9,7 +9,7 @@
     mediaStream,
     mediaDevices
   } from '$lib/mediaStream';
-  import { pipelineValues } from '$lib/store';
+  import { appState } from '$lib/store';
   import { parseResolution, calculateCropRegion, type ResolutionInfo } from '$lib/utils';
   import MediaListSwitcher from './MediaListSwitcher.svelte';
   
@@ -33,9 +33,6 @@
     if (currentResolution) {
       // Use prop if provided
       localResolution = currentResolution;
-    } else if ($pipelineValues.resolution) {
-      // Fallback to pipeline values
-      localResolution = parseResolution($pipelineValues.resolution);
     } else {
       // Fallback to props
       localResolution = {

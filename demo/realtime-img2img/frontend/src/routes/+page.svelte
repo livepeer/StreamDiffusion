@@ -16,7 +16,7 @@
   import Success from '$lib/components/Success.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
-  import { getPipelineValues, deboucedPipelineValues, pipelineValues, appState, startStatePolling, stopStatePolling, type AppState } from '$lib/store';
+  import { appState, startStatePolling, stopStatePolling, type AppState } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
   import InputControl from '$lib/components/InputControl.svelte';
@@ -75,8 +75,6 @@
         aspectRatio: $appState.current_resolution.width / $appState.current_resolution.height,
         aspectRatioString: "1:1"
       };
-    } else if ($pipelineValues.resolution) {
-      currentResolution = parseResolution($pipelineValues.resolution);
     } else if (pipelineParams?.width?.default && pipelineParams?.height?.default) {
       // Fallback to pipeline params
       currentResolution = {
@@ -132,13 +130,8 @@
       // Use centralized state fetching
       const state = await fetch('/api/state').then(r => r.json());
       
-      // Initialize prompt value in store if not already set
-      if (!($pipelineValues.prompt)) {
-        pipelineValues.update(values => ({
-          ...values,
-          prompt: state.config_prompt || state.input_params?.properties?.prompt?.default || "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
-        }));
-      }
+      // Prompt initialization is now handled by centralized state management
+      console.log('getSettings: Prompt from centralized state:', state.config_prompt);
       
       console.log('getSettings: Legacy function called - using centralized state');
       toggleQueueChecker(true);
@@ -157,12 +150,9 @@
   function handleControlNetUpdate(event: CustomEvent) {
     controlnetInfo = event.detail.controlnet;
     
-    // Update prompt if config prompt is available
+    // Prompt updates are now handled by centralized state management
     if (event.detail.config_prompt) {
-      pipelineValues.update(values => ({
-        ...values,
-        prompt: event.detail.config_prompt
-      }));
+      console.log('handleControlNetUpdate: Config prompt updated:', event.detail.config_prompt);
     }
     
     // Update t_index_list if available
@@ -275,9 +265,9 @@
 
   function getSreamdata() {
     if (isImageMode) {
-      return [getPipelineValues(), $onFrameChangeStore?.blob];
+      return [$appState, $onFrameChangeStore?.blob];
     } else {
-      return [$deboucedPipelineValues];
+      return [$appState];
     }
   }
 
@@ -288,19 +278,28 @@
   
   // Watch for resolution changes
   let previousResolution: string = '';
+  let userInitiatedResolutionChange = false;
+  
   $: {
-    if ($pipelineValues.resolution && $pipelineValues.resolution !== previousResolution && previousResolution !== '') {
-      const nextResolution = $pipelineValues.resolution;
+    const currentAppResolution = $appState?.resolution;
+    if (currentAppResolution && currentAppResolution !== previousResolution && previousResolution !== '') {
+      const nextResolution = currentAppResolution;
       previousResolution = nextResolution;
-      if (pipelineActive) {
+      
+      // Only trigger automatic resolution update if it wasn't initiated by user action
+      // This prevents double pipeline restarts when user manually updates resolution
+      if (!userInitiatedResolutionChange && pipelineActive) {
         handleResolutionUpdate(nextResolution);
-      } else {
+      } else if (!userInitiatedResolutionChange && !pipelineActive) {
         // No pipeline yet: don't call backend, just inform the user
         successMessage = 'Resolution set to ' + nextResolution.split(' ')[0] + '. It will be applied when streaming starts.';
         setTimeout(() => { successMessage = ''; }, 3000);
       }
-    } else if ($pipelineValues.resolution && previousResolution === '') {
-      previousResolution = $pipelineValues.resolution;
+      
+      // Reset the flag after processing
+      userInitiatedResolutionChange = false;
+    } else if (currentAppResolution && previousResolution === '') {
+      previousResolution = currentAppResolution;
     }
   }
   
@@ -490,12 +489,9 @@
           console.log('uploadConfig: Updated seed to:', seed);
         }
         
-        // Apply config_values (from YAML upload) into the pipelineValues store
+        // Config values are now handled by centralized state management
         if (result.config_values) {
-          pipelineValues.update(values => ({
-            ...values,
-            ...result.config_values
-          }));
+          console.log('uploadConfig: Config values updated via centralized state');
         }
 
         // Update normalization settings
@@ -520,33 +516,19 @@
           console.log('uploadConfig: Updated seed blending config:', seedBlendingConfig);
         }
         
-        // Update main prompt if config prompt is available (fallback to result.prompt)
+        // Prompt and resolution updates are now handled by centralized state management
         if (result.config_prompt) {
-          pipelineValues.update(values => ({
-            ...values,
-            prompt: result.config_prompt
-          }));
+          console.log('uploadConfig: Config prompt updated via centralized state:', result.config_prompt);
         } else if (result.prompt) {
-          pipelineValues.update(values => ({
-            ...values,
-            prompt: result.prompt
-          }));
-        }
-        // Update negative prompt if provided
-        if (result.negative_prompt !== undefined) {
-          pipelineValues.update(values => ({
-            ...values,
-            negative_prompt: result.negative_prompt
-          }));
+          console.log('uploadConfig: Prompt updated via centralized state:', result.prompt);
         }
         
-        // Update resolution if config resolution is available
+        if (result.negative_prompt !== undefined) {
+          console.log('uploadConfig: Negative prompt updated via centralized state:', result.negative_prompt);
+        }
+        
         if (result.current_resolution) {
-          pipelineValues.update(values => ({
-            ...values,
-            resolution: result.current_resolution
-          }));
-          console.log('uploadConfig: Updated resolution to:', result.current_resolution);
+          console.log('uploadConfig: Resolution updated via centralized state:', result.current_resolution);
         }
         
         // Force complete refresh of all pipeline hook components by generating new keys
@@ -830,7 +812,7 @@
               </button>
               {#if showResolutionPicker}
                 <div class="p-4 pt-1">
-                  <ResolutionPicker {currentResolution} {pipelineParams} />
+                  <ResolutionPicker {currentResolution} on:userResolutionChange={() => userInitiatedResolutionChange = true} />
                 </div>
               {/if}
             </div>
@@ -866,7 +848,7 @@
                     {seedBlendingConfig}
                     {normalizePromptWeights}
                     {normalizeSeedWeights}
-                    currentPrompt={$pipelineValues.prompt}
+                    currentPrompt={$appState?.config_prompt || ''}
                   />
                 </div>
               {/if}

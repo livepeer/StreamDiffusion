@@ -649,6 +649,44 @@ class App:
         except Exception as e:
             logger.exception(f"_handle_input_parameter_update: Failed to update {parameter_name}: {e}")
 
+    def _update_resolution(self, width: int, height: int) -> None:
+        """Update resolution by recreating pipeline with new dimensions"""
+        logger.info(f"_update_resolution: Updating resolution to {width}x{height}")
+        
+        # Update AppState first
+        self.app_state.current_resolution = {"width": width, "height": height}
+        
+        # If no pipeline exists, just update state (will be used when pipeline is created)
+        if not self.pipeline:
+            logger.info("_update_resolution: No pipeline exists, resolution will apply on next pipeline creation")
+            return
+        
+        # Set pipeline lifecycle state
+        self.app_state.pipeline_lifecycle = "restarting"
+        
+        # Store reference to old pipeline for cleanup
+        old_pipeline = self.pipeline
+        
+        # Clear current pipeline reference before cleanup
+        self.pipeline = None
+        
+        # Cleanup old pipeline and free VRAM
+        if old_pipeline:
+            self._cleanup_pipeline(old_pipeline)
+            old_pipeline = None
+        
+        # Create new pipeline with new resolution
+        # No state restoration needed - _create_pipeline() uses AppState as single source of truth
+        try:
+            self.pipeline = self._create_pipeline()
+            self.app_state.pipeline_lifecycle = "running"
+            logger.info(f"_update_resolution: Pipeline successfully recreated with resolution {width}x{height}")
+            
+        except Exception as e:
+            self.app_state.pipeline_lifecycle = "error"
+            logger.error(f"_update_resolution: Failed to recreate pipeline: {e}")
+            raise
+
     def _sync_appstate_to_pipeline(self):
         """Sync AppState parameters to active pipeline for real-time updates"""
         try:

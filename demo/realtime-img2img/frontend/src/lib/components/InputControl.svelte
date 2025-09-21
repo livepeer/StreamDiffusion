@@ -86,7 +86,7 @@
           seed_blending: $appState.seed_blending
         });
       } else {
-        // Fallback to legacy API calls
+        // Fallback to individual API calls
         const settingsResponse = await fetch('/api/settings');
         if (settingsResponse.ok) {
           const settings = await settingsResponse.json();
