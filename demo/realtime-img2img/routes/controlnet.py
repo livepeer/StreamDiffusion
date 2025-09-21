@@ -106,10 +106,6 @@ async def upload_controlnet_config(file: UploadFile = File(...), app_instance=De
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid width/height values in config")
         
-        # Store acceleration if different
-        if config_acceleration != app_instance.args.acceleration:
-            app_instance.new_acceleration = config_acceleration
-        
         # Build current resolution string
         current_resolution = None
         if config_width and config_height:

@@ -25,12 +25,8 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
         # Create pipeline if it doesn't exist yet
         if app_instance.pipeline is None:
             app_instance.app_state.pipeline_lifecycle = "starting"
-            if app_instance.app_state.uploaded_config:
-                logging.info("stream: Creating pipeline with ControlNet config...")
-                app_instance.pipeline = app_instance._create_pipeline_with_config()
-            else:
-                logging.info("stream: Creating default pipeline...")
-                app_instance.pipeline = app_instance._create_default_pipeline()
+            logging.info("stream: Creating pipeline using AppState as single source of truth...")
+            app_instance.pipeline = app_instance._create_pipeline()
             app_instance.app_state.pipeline_lifecycle = "running"
             logging.info("stream: Pipeline created successfully")
         
@@ -52,10 +48,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
                 old_pipeline = None
             
             # Create new pipeline
-            if app_instance.app_state.uploaded_config:
-                app_instance.pipeline = app_instance._create_pipeline_with_config()
-            else:
-                app_instance.pipeline = app_instance._create_default_pipeline()
+            app_instance.pipeline = app_instance._create_pipeline()
             
             app_instance.app_state.config_needs_reload = False
             app_instance.app_state.pipeline_lifecycle = "running"
@@ -83,10 +76,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
                 if old_pipeline:
                     app_instance._cleanup_pipeline(old_pipeline)
                 
-                if app_instance.app_state.uploaded_config:
-                    app_instance.pipeline = app_instance._create_pipeline_with_config()
-                else:
-                    app_instance.pipeline = app_instance._create_default_pipeline()
+                app_instance.pipeline = app_instance._create_pipeline()
                 resolution_changed = True
                 logging.info(f"stream: Pipeline recreated with new resolution")
 
@@ -108,10 +98,7 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
             if old_pipeline:
                 app_instance._cleanup_pipeline(old_pipeline)
             
-            if app_instance.app_state.uploaded_config:
-                app_instance.pipeline = app_instance._create_pipeline_with_config()
-            else:
-                app_instance.pipeline = app_instance._create_default_pipeline()
+            app_instance.pipeline = app_instance._create_pipeline()
             acceleration_changed = True
             logging.info(f"stream: Pipeline recreated with new acceleration")
 

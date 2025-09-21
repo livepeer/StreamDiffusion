@@ -60,7 +60,14 @@ async def update_params(request: Request, app_instance=Depends(get_app_instance)
                 raise HTTPException(status_code=400, detail="t_index_list must be a list of integers")
 
         if params:
-            app_instance.pipeline.update_stream_params(**params)
+            # Update AppState as single source of truth
+            for param_name, param_value in params.items():
+                app_instance.app_state.update_parameter(param_name, param_value)
+            
+            # Sync to pipeline if active
+            if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+                app_instance._sync_appstate_to_pipeline()
+            
             return JSONResponse({
                 "status": "success",
                 "message": f"Updated parameters: {list(params.keys())}",
@@ -89,7 +96,13 @@ async def _update_single_parameter(
         validate_pipeline(app_instance.pipeline, operation_name)
         
         value = value_converter(data[parameter_name])
-        app_instance.pipeline.update_stream_params(**{parameter_name: value})
+        
+        # Update AppState as single source of truth
+        app_instance.app_state.update_parameter(parameter_name, value)
+        
+        # Sync to pipeline if active
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+            app_instance._sync_appstate_to_pipeline()
         
         return create_success_response(f"Updated {parameter_name} to {value}", **{parameter_name: value})
         
@@ -182,8 +195,15 @@ async def update_blending(request: Request, app_instance=Depends(get_app_instanc
         if not params:
             raise HTTPException(status_code=400, detail="No valid blending parameters provided")
 
-        # Apply the update
-        result = app_instance.pipeline.update_stream_params(**params)
+        # Update AppState as single source of truth
+        if "prompt_list" in params:
+            app_instance.app_state.prompt_blending = params["prompt_list"]
+        if "seed_list" in params:
+            app_instance.app_state.seed_blending = params["seed_list"]
+        
+        # Sync to pipeline if active
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+            app_instance._sync_appstate_to_pipeline()
         
         return create_success_response(f"Updated {' and '.join(updated_types)} blending", updated_types=updated_types)
         
@@ -203,27 +223,14 @@ async def update_prompt_weight(request: Request, app_instance=Depends(get_app_in
         
         validate_pipeline(app_instance.pipeline, "update_prompt_weight")
         
-        # Get current prompt blending configuration via unified getter, fallback to uploaded config
-        state = app_instance.pipeline.stream.get_stream_state()
-        current_prompts = state.get('prompt_list') or app_instance._normalize_prompt_config(app_instance.app_state.uploaded_config)
-            
-        if current_prompts and index < len(current_prompts):
-            # Create updated prompt list with new weight
-            updated_prompts = list(current_prompts)  # Make a copy
-            updated_prompts[index] = (updated_prompts[index][0], float(weight))
-            
-            # Use the same update method as the main blending endpoint
-            params = {
-                "prompt_list": updated_prompts,
-                "prompt_interpolation_method": "slerp"  # Default method
-            }
-            
-            # Apply the update using the working method
-            result = app_instance.pipeline.update_stream_params(**params)
-            
-            return create_success_response(f"Updated prompt weight {index} to {weight}")
-        else:
-            raise HTTPException(status_code=400, detail=f"Invalid prompt index {index}")
+        # Update AppState as single source of truth
+        app_instance.app_state.update_parameter(f"prompt_weight_{index}", float(weight))
+        
+        # Sync to pipeline if active
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+            app_instance._sync_appstate_to_pipeline()
+        
+        return create_success_response(f"Updated prompt weight {index} to {weight}")
         
     except Exception as e:
         raise handle_api_error(e, "update_prompt_weight")
@@ -241,27 +248,14 @@ async def update_seed_weight(request: Request, app_instance=Depends(get_app_inst
         
         validate_pipeline(app_instance.pipeline, "update_seed_weight")
         
-        # Get current seed blending configuration via unified getter, fallback to uploaded config
-        state = app_instance.pipeline.stream.get_stream_state()
-        current_seeds = state.get('seed_list') or app_instance._normalize_seed_config(app_instance.app_state.uploaded_config)
-            
-        if current_seeds and index < len(current_seeds):
-            # Create updated seed list with new weight
-            updated_seeds = list(current_seeds)  # Make a copy
-            updated_seeds[index] = (updated_seeds[index][0], float(weight))
-            
-            # Use the same update method as the main blending endpoint
-            params = {
-                "seed_list": updated_seeds,
-                "seed_interpolation_method": "linear"  # Default method
-            }
-            
-            # Apply the update using the working method
-            result = app_instance.pipeline.update_stream_params(**params)
-            
-            return create_success_response(f"Updated seed weight {index} to {weight}")
-        else:
-            raise HTTPException(status_code=400, detail=f"Invalid seed index {index}")
+        # Update AppState as single source of truth
+        app_instance.app_state.update_parameter(f"seed_weight_{index}", float(weight))
+        
+        # Sync to pipeline if active
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+            app_instance._sync_appstate_to_pipeline()
+        
+        return create_success_response(f"Updated seed weight {index} to {weight}")
         
     except Exception as e:
         raise handle_api_error(e, "update_seed_weight")

@@ -136,6 +136,9 @@ class AppState:
             
         logger.info("populate_from_config: Populating AppState from config as single source of truth")
         
+        # Store the complete uploaded config to preserve ALL parameters
+        self.uploaded_config = config_data
+        
         # Core parameters
         self.guidance_scale = config_data.get('guidance_scale', self.guidance_scale)
         self.delta = config_data.get('delta', self.delta)
@@ -145,6 +148,13 @@ class AppState:
         self.negative_prompt = config_data.get('negative_prompt', self.negative_prompt)
         self.skip_diffusion = config_data.get('skip_diffusion', self.skip_diffusion)
         self.model_id = config_data.get('model_id_or_path', self.model_id)
+        
+        # Resolution parameters
+        if 'width' in config_data or 'height' in config_data:
+            self.current_resolution = {
+                "width": config_data.get('width', self.current_resolution["width"]),
+                "height": config_data.get('height', self.current_resolution["height"])
+            }
         
         # Normalization settings
         self.normalize_prompt_weights = config_data.get('normalize_weights', self.normalize_prompt_weights)
@@ -173,6 +183,11 @@ class AppState:
                 first = ipadapters[0]
                 self.ipadapter_info["scale"] = first.get('scale', 1.0)
                 self.ipadapter_info["weight_type"] = first.get('weight_type', 'linear')
+                # Store required model paths
+                self.ipadapter_info["ipadapter_model_path"] = first.get('ipadapter_model_path')
+                self.ipadapter_info["image_encoder_path"] = first.get('image_encoder_path')
+                self.ipadapter_info["type"] = first.get('type', 'regular')
+                self.ipadapter_info["insightface_model_name"] = first.get('insightface_model_name')
                 if first.get('style_image'):
                     self.ipadapter_info["has_style_image"] = True
                     self.ipadapter_info["style_image_path"] = first['style_image']
@@ -395,6 +410,191 @@ class AppState:
         else:
             logger.warning(f"remove_hook_processor: Unknown hook type {hook_type}")
 
+    def update_parameter(self, parameter_name: str, value: float):
+        """Update a single parameter in AppState - UNIFIED PARAMETER UPDATE"""
+        logger.debug(f"update_parameter: Updating {parameter_name} = {value}")
+        
+        # Core pipeline parameters
+        if parameter_name == 'guidance_scale':
+            self.guidance_scale = float(value)
+        elif parameter_name == 'delta':
+            self.delta = float(value)
+        elif parameter_name == 'num_inference_steps':
+            self.num_inference_steps = int(value)
+        elif parameter_name == 'seed':
+            self.seed = int(value)
+        elif parameter_name == 'negative_prompt':
+            self.negative_prompt = str(value)
+        elif parameter_name == 'skip_diffusion':
+            self.skip_diffusion = bool(value)
+        elif parameter_name == 't_index_list':
+            if isinstance(value, list):
+                self.t_index_list = value
+            else:
+                logger.warning(f"update_parameter: t_index_list must be a list, got {type(value)}")
+        
+        # IPAdapter parameters
+        elif parameter_name == 'ipadapter_scale':
+            self.ipadapter_info["scale"] = float(value)
+        elif parameter_name == 'ipadapter_weight_type':
+            # Convert numeric value to weight type string
+            weight_types = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
+                           "weak input", "weak output", "weak middle", "strong middle", 
+                           "style transfer", "composition", "strong style transfer", 
+                           "style and composition", "style transfer precise", "composition precise"]
+            index = int(value) % len(weight_types)
+            self.ipadapter_info["weight_type"] = weight_types[index]
+        
+        # ControlNet strength parameters
+        elif parameter_name.startswith('controlnet_') and parameter_name.endswith('_strength'):
+            import re
+            match = re.match(r'controlnet_(\d+)_strength', parameter_name)
+            if match:
+                index = int(match.group(1))
+                self.update_controlnet_strength(index, float(value))
+        
+        # ControlNet preprocessor parameters
+        elif parameter_name.startswith('controlnet_') and '_preprocessor_' in parameter_name:
+            import re
+            match = re.match(r'controlnet_(\d+)_preprocessor_(.+)', parameter_name)
+            if match:
+                controlnet_index = int(match.group(1))
+                param_name = match.group(2)
+                if controlnet_index < len(self.controlnet_info["controlnets"]):
+                    controlnet = self.controlnet_info["controlnets"][controlnet_index]
+                    if 'preprocessor_params' not in controlnet:
+                        controlnet['preprocessor_params'] = {}
+                    controlnet['preprocessor_params'][param_name] = value
+        
+        # Prompt blending weights
+        elif parameter_name.startswith('prompt_weight_'):
+            import re
+            match = re.match(r'prompt_weight_(\d+)', parameter_name)
+            if match:
+                index = int(match.group(1))
+                if self.prompt_blending and index < len(self.prompt_blending):
+                    # Update weight in prompt blending list
+                    prompt_text = self.prompt_blending[index][0]
+                    self.prompt_blending[index] = (prompt_text, float(value))
+        
+        # Seed blending weights
+        elif parameter_name.startswith('seed_weight_'):
+            import re
+            match = re.match(r'seed_weight_(\d+)', parameter_name)
+            if match:
+                index = int(match.group(1))
+                if self.seed_blending and index < len(self.seed_blending):
+                    # Update weight in seed blending list
+                    seed_value = self.seed_blending[index][0]
+                    self.seed_blending[index] = (seed_value, float(value))
+        
+        else:
+            logger.warning(f"update_parameter: Unknown parameter {parameter_name}")
+            return
+        
+        logger.debug(f"update_parameter: Successfully updated {parameter_name} in AppState")
+
+    def generate_pipeline_config(self):
+        """Generate pipeline configuration from AppState - PRESERVES ALL ORIGINAL CONFIG"""
+        logger.info("generate_pipeline_config: Generating pipeline config from AppState, preserving all original config")
+        
+        # Start with complete original config to preserve ALL parameters
+        config = {}
+        if self.uploaded_config:
+            config = dict(self.uploaded_config)
+            print(f"DEBUG generate_pipeline_config: Original config model_id: {self.uploaded_config.get('model_id', 'NOT SET')}")
+            print(f"DEBUG generate_pipeline_config: Original config model_id_or_path: {self.uploaded_config.get('model_id_or_path', 'NOT SET')}")
+        else:
+            print("DEBUG generate_pipeline_config: NO UPLOADED CONFIG!")
+        
+        # Only override runtime-changeable parameters from AppState
+        config.update({
+            'guidance_scale': self.guidance_scale,
+            'delta': self.delta,
+            'num_inference_steps': self.num_inference_steps,
+            'seed': self.seed,
+            't_index_list': self.t_index_list,
+            'negative_prompt': self.negative_prompt,
+            'skip_diffusion': self.skip_diffusion,
+            'width': self.current_resolution["width"],
+            'height': self.current_resolution["height"],
+            'output_type': 'pt',  # Force optimal tensor performance
+        })
+        
+        # Update ControlNet configurations with current AppState values
+        if self.controlnet_info["enabled"] and self.controlnet_info["controlnets"]:
+            config['controlnets'] = []
+            for controlnet in self.controlnet_info["controlnets"]:
+                cn_config = dict(controlnet)
+                # Ensure conditioning_scale reflects current strength
+                cn_config['conditioning_scale'] = controlnet.get('strength', controlnet.get('conditioning_scale', 0.0))
+                config['controlnets'].append(cn_config)
+        elif 'controlnets' in config:
+            # Remove controlnets if disabled
+            del config['controlnets']
+        
+        # Update IPAdapter configurations with current AppState values
+        if self.ipadapter_info["enabled"]:
+            config['use_ipadapter'] = True
+            # Preserve original ipadapters config but update runtime values
+            if 'ipadapters' in config and config['ipadapters']:
+                # Update existing config with current values
+                config['ipadapters'][0].update({
+                    'scale': self.ipadapter_info["scale"],
+                    'weight_type': self.ipadapter_info["weight_type"]
+                })
+                # Add style image if available
+                if self.ipadapter_info.get("has_style_image") and self.ipadapter_info.get("style_image_path"):
+                    config['ipadapters'][0]['style_image'] = self.ipadapter_info["style_image_path"]
+        elif 'use_ipadapter' in config:
+            # Disable IPAdapter if not enabled in AppState
+            config['use_ipadapter'] = False
+        
+        # Update pipeline hooks with current AppState values
+        for hook_type, hook_config in self.pipeline_hooks.items():
+            if hook_config["enabled"] and hook_config["processors"]:
+                config[hook_type] = {
+                    "enabled": True,
+                    "processors": []
+                }
+                for processor in hook_config["processors"]:
+                    proc_config = {
+                        "type": processor["type"],
+                        "enabled": processor["enabled"],
+                        "order": processor["order"],
+                        "params": processor["params"]
+                    }
+                    config[hook_type]["processors"].append(proc_config)
+            elif hook_type in config:
+                # Disable hook if not enabled in AppState
+                config[hook_type] = {"enabled": False, "processors": []}
+        
+        # Update blending configurations with current AppState values
+        if self.prompt_blending:
+            config['prompt_blending'] = {
+                'prompt_list': self.prompt_blending,
+                'interpolation_method': 'slerp'
+            }
+            config['normalize_weights'] = self.normalize_prompt_weights
+        elif 'prompt_blending' in config:
+            del config['prompt_blending']
+        
+        if self.seed_blending:
+            config['seed_blending'] = {
+                'seed_list': self.seed_blending,
+                'interpolation_method': 'linear'
+            }
+            # Note: seed normalization uses same normalize_weights key
+            if not self.prompt_blending:  # Only set if not already set by prompt blending
+                config['normalize_weights'] = self.normalize_seed_weights
+        elif 'seed_blending' in config:
+            del config['seed_blending']
+        
+        print(f"DEBUG generate_pipeline_config: Final config model_id: {config.get('model_id', 'NOT SET')}")
+        print(f"DEBUG generate_pipeline_config: Final config model_id_or_path: {config.get('model_id_or_path', 'NOT SET')}")
+        logger.info("generate_pipeline_config: Generated pipeline config preserving all original parameters")
+        return config
+
     def update_state(self, updates):
         """Atomic state updates with validation"""
         for key, value in updates.items():
@@ -439,102 +639,67 @@ class App:
         logger.info("App cleanup: Completed application cleanup")
 
     def _handle_input_parameter_update(self, parameter_name: str, value: float) -> None:
-        """Handle parameter updates from input controls"""
+        """Handle parameter updates from input controls - UNIFIED THROUGH APPSTATE"""
         try:
-            if not self.pipeline or not hasattr(self.pipeline, 'stream'):
-                logger.warning(f"_handle_input_parameter_update: No pipeline available for parameter {parameter_name}")
-                return
-
-            # Map parameter names to pipeline update methods
-            if parameter_name == 'guidance_scale':
-                self.pipeline.update_stream_params(guidance_scale=value)
-            elif parameter_name == 'delta':
-                self.pipeline.update_stream_params(delta=value)
-            elif parameter_name == 'num_inference_steps':
-                self.pipeline.update_stream_params(num_inference_steps=int(value))
-            elif parameter_name == 'seed':
-                self.pipeline.update_stream_params(seed=int(value))
-            elif parameter_name == 'ipadapter_scale':
-                self.pipeline.update_stream_params(ipadapter_config={'scale': value})
-            elif parameter_name == 'ipadapter_weight_type':
-                # For weight type, we need to convert the numeric value to a string
-                weight_types = ["linear", "ease in", "ease out", "ease in-out", "reverse in-out", 
-                               "weak input", "weak output", "weak middle", "strong middle", 
-                               "style transfer", "composition", "strong style transfer", 
-                               "style and composition", "style transfer precise", "composition precise"]
-                index = int(value) % len(weight_types)
-                self.pipeline.update_ipadapter_weight_type(weight_types[index])
-            elif parameter_name.startswith('controlnet_') and parameter_name.endswith('_strength'):
-                # Handle ControlNet strength parameters
-                import re
-                match = re.match(r'controlnet_(\d+)_strength', parameter_name)
-                if match:
-                    index = int(match.group(1))
-                    # Update AppState - SINGLE SOURCE OF TRUTH
-                    self.app_state.update_controlnet_strength(index, float(value))
-                    # Update pipeline if active
-                    if self.pipeline:
-                        try:
-                            controlnet_config = []
-                            for cn in self.app_state.controlnet_info["controlnets"]:
-                                config_entry = dict(cn)
-                                config_entry['conditioning_scale'] = cn['strength']
-                                controlnet_config.append(config_entry)
-                            self.pipeline.update_stream_params(controlnet_config=controlnet_config)
-                        except Exception as e:
-                            logging.exception(f"_handle_input_parameter_update: Failed to update ControlNet strength: {e}")
-            elif parameter_name.startswith('controlnet_') and '_preprocessor_' in parameter_name:
-                # Handle ControlNet preprocessor parameters
-                match = re.match(r'controlnet_(\d+)_preprocessor_(.+)', parameter_name)
-                if match:
-                    controlnet_index = int(match.group(1))
-                    param_name = match.group(2)
-                    # Update AppState - SINGLE SOURCE OF TRUTH
-                    if controlnet_index < len(self.app_state.controlnet_info["controlnets"]):
-                        controlnet = self.app_state.controlnet_info["controlnets"][controlnet_index]
-                        if 'preprocessor_params' not in controlnet:
-                            controlnet['preprocessor_params'] = {}
-                        controlnet['preprocessor_params'][param_name] = value
-                        # Update pipeline if active
-                        if self.pipeline:
-                            try:
-                                controlnet_config = []
-                                for cn in self.app_state.controlnet_info["controlnets"]:
-                                    config_entry = dict(cn)
-                                    config_entry['conditioning_scale'] = cn['strength']
-                                    controlnet_config.append(config_entry)
-                                self.pipeline.update_stream_params(controlnet_config=controlnet_config)
-                            except Exception as e:
-                                logging.exception(f"_handle_input_parameter_update: Failed to update ControlNet preprocessor: {e}")
-            elif parameter_name.startswith('prompt_weight_'):
-                # Handle prompt blending weights
-                match = re.match(r'prompt_weight_(\d+)', parameter_name)
-                if match:
-                    index = int(match.group(1))
-                    # Get current prompt list from unified state and update specific weight
-                    state = self.pipeline.stream.get_stream_state()
-                    current_prompts = state.get('prompt_list', [])
-                    if current_prompts and index < len(current_prompts):
-                        updated_prompts = list(current_prompts)
-                        updated_prompts[index] = (updated_prompts[index][0], float(value))
-                        self.pipeline.update_stream_params(prompt_list=updated_prompts)
-            elif parameter_name.startswith('seed_weight_'):
-                # Handle seed blending weights  
-                match = re.match(r'seed_weight_(\d+)', parameter_name)
-                if match:
-                    index = int(match.group(1))
-                    # Get current seed list from unified state and update specific weight
-                    state = self.pipeline.stream.get_stream_state()
-                    current_seeds = state.get('seed_list', [])
-                    if current_seeds and index < len(current_seeds):
-                        updated_seeds = list(current_seeds)
-                        updated_seeds[index] = (updated_seeds[index][0], float(value))
-                        self.pipeline.update_stream_params(seed_list=updated_seeds)
+            logger.debug(f"_handle_input_parameter_update: Updating {parameter_name} = {value} via AppState")
+            
+            # Update AppState as single source of truth
+            self.app_state.update_parameter(parameter_name, value)
+            
+            # Sync to pipeline if active (for real-time updates)
+            if self.pipeline and hasattr(self.pipeline, 'stream'):
+                self._sync_appstate_to_pipeline()
             else:
-                logger.warning(f"_handle_input_parameter_update: Unknown parameter {parameter_name}")
+                logger.debug(f"_handle_input_parameter_update: No active pipeline, parameter stored in AppState for next pipeline creation")
 
         except Exception as e:
             logger.exception(f"_handle_input_parameter_update: Failed to update {parameter_name}: {e}")
+
+    def _sync_appstate_to_pipeline(self):
+        """Sync AppState parameters to active pipeline for real-time updates"""
+        try:
+            if not self.pipeline or not hasattr(self.pipeline, 'stream'):
+                return
+            
+            # Core parameters
+            self.pipeline.update_stream_params(
+                guidance_scale=self.app_state.guidance_scale,
+                delta=self.app_state.delta,
+                num_inference_steps=self.app_state.num_inference_steps,
+                seed=self.app_state.seed,
+                negative_prompt=self.app_state.negative_prompt,
+                t_index_list=self.app_state.t_index_list
+            )
+            
+            # IPAdapter parameters
+            if self.app_state.ipadapter_info["enabled"]:
+                self.pipeline.update_stream_params(ipadapter_config={
+                    'scale': self.app_state.ipadapter_info["scale"]
+                })
+                if hasattr(self.pipeline, 'update_ipadapter_weight_type'):
+                    self.pipeline.update_ipadapter_weight_type(self.app_state.ipadapter_info["weight_type"])
+            
+            # ControlNet parameters
+            if self.app_state.controlnet_info["enabled"] and self.app_state.controlnet_info["controlnets"]:
+                controlnet_config = []
+                for cn in self.app_state.controlnet_info["controlnets"]:
+                    config_entry = dict(cn)
+                    config_entry['conditioning_scale'] = cn['strength']
+                    controlnet_config.append(config_entry)
+                self.pipeline.update_stream_params(controlnet_config=controlnet_config)
+            
+            # Prompt blending
+            if self.app_state.prompt_blending:
+                self.pipeline.update_stream_params(prompt_list=self.app_state.prompt_blending)
+            
+            # Seed blending
+            if self.app_state.seed_blending:
+                self.pipeline.update_stream_params(seed_list=self.app_state.seed_blending)
+            
+            logger.debug("_sync_appstate_to_pipeline: Successfully synced AppState to pipeline")
+            
+        except Exception as e:
+            logger.exception(f"_sync_appstate_to_pipeline: Failed to sync AppState to pipeline: {e}")
 
 
     
@@ -622,90 +787,64 @@ class App:
             self.app.mount("/", StaticFiles(directory="frontend/public", html=True), name="public")
 
 
-    def _create_default_pipeline(self):
-        """Create the default pipeline (standard mode)"""
+    def _create_pipeline(self):
+        """Create pipeline using AppState as single source of truth"""
+        logger.info("_create_pipeline: Creating pipeline using AppState as single source of truth")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch_dtype = torch.float16
         
-        return Pipeline(self.args, device, torch_dtype, width=self.app_state.current_resolution["width"], height=self.app_state.current_resolution["height"])
-
-    def _create_pipeline_with_config(self, controlnet_config_path=None):
-        """Create a new pipeline with optional ControlNet configuration"""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        torch_dtype = torch.float16
+        # Generate pipeline config from AppState - SINGLE SOURCE OF TRUTH
+        pipeline_config = self.app_state.generate_pipeline_config()
         
-        # Use uploaded config if available
-        if self.app_state.uploaded_config:
-            # Create a temporary config file for the pipeline to use
-            import tempfile
-            import yaml
-            import os
-            import atexit
-            from config import Args
-            
-            # Create temp file with delete=False to control cleanup timing
-            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-            temp_path = temp_file.name
-            
-            try:
-                # Create enhanced config that includes runtime parameters from args
-                enhanced_config = dict(self.app_state.uploaded_config)
-                
-                # Ensure critical args parameters are included in the config
-                # These are needed for proper wrapper creation
-                if 'acceleration' not in enhanced_config:
-                    enhanced_config['acceleration'] = self.args.acceleration
-                if 'engine_dir' not in enhanced_config:
-                    enhanced_config['engine_dir'] = self.args.engine_dir
-                if 'use_safety_checker' not in enhanced_config:
-                    enhanced_config['use_safety_checker'] = self.args.safety_checker
-                if 'use_tiny_vae' not in enhanced_config and self.args.taesd:
-                    enhanced_config['use_tiny_vae'] = self.args.taesd
-                
-                # Include resolution if not already specified
-                if 'width' not in enhanced_config:
-                    enhanced_config['width'] = self.app_state.current_resolution["width"]
-                if 'height' not in enhanced_config:
-                    enhanced_config['height'] = self.app_state.current_resolution["height"]
-                
-                # Force output_type to "pt" for optimal tensor performance
-                enhanced_config['output_type'] = 'pt'
-                
-                # Write enhanced config to temp file
-                yaml.dump(enhanced_config, temp_file)
-                temp_file.close()
-                
-                # Create new Args object with updated controlnet_config (NamedTuple is immutable)
-                args_dict = self.args._asdict()
-                args_dict['controlnet_config'] = temp_path
-                modified_args = Args(**args_dict)
-                
-                # Load config style images into InputSourceManager before creating pipeline
-                self._load_config_style_images()
-                
-                # Create pipeline
-                pipeline = Pipeline(modified_args, device, torch_dtype, width=self.app_state.current_resolution["width"], height=self.app_state.current_resolution["height"])
-                
-                # Store temp file path for cleanup later
-                if not hasattr(self, '_temp_config_files'):
-                    self._temp_config_files = []
-                self._temp_config_files.append(temp_path)
-                
-                # Register cleanup on exit
-                atexit.register(lambda: self._cleanup_temp_files())
-                
-                return pipeline
-                
-            except Exception as e:
-                # Clean up temp file if pipeline creation fails
-                temp_file.close()
-                try:
-                    os.unlink(temp_path)
-                except:
-                    pass
-                raise e
+        # CONFIG IS ABSOLUTE SOURCE OF TRUTH - NO ARGS OVERRIDES AT ALL
+        print(f"DEBUG _create_pipeline: pipeline_config keys: {list(pipeline_config.keys())}")
+        print(f"DEBUG _create_pipeline: model_id in config: {pipeline_config.get('model_id', 'NOT SET')}")
+        print(f"DEBUG _create_pipeline: model_id_or_path in config: {pipeline_config.get('model_id_or_path', 'NOT SET')}")
+        print(f"DEBUG _create_pipeline: acceleration in config: {pipeline_config.get('acceleration', 'NOT SET')}")
+        print(f"DEBUG _create_pipeline: engine_dir in config: {pipeline_config.get('engine_dir', 'NOT SET')}")
+        logger.info(f"_create_pipeline: Using model_id from config: {pipeline_config.get('model_id', 'NOT SET')}")
         
-        return Pipeline(self.args, device, torch_dtype, width=self.app_state.current_resolution["width"], height=self.app_state.current_resolution["height"])
+        # Load config style images into InputSourceManager before creating pipeline
+        self._load_config_style_images()
+        
+        # Create wrapper using the unified config - THIS IS NOW THE SINGLE PLACE WHERE WRAPPER IS CREATED
+        from src.streamdiffusion.config import create_wrapper_from_config
+        
+        print(f"DEBUG _create_pipeline: About to call create_wrapper_from_config with model_id: {pipeline_config.get('model_id', 'NOT SET')}")
+        print(f"DEBUG _create_pipeline: FULL CONFIG BEING PASSED TO create_wrapper_from_config:")
+        for key, value in pipeline_config.items():
+            print(f"DEBUG _create_pipeline:   {key}: {value}")
+        
+        # Create wrapper using the unified config
+        wrapper = create_wrapper_from_config(pipeline_config)
+        print(f"DEBUG _create_pipeline: Wrapper created successfully")
+        print(f"DEBUG _create_pipeline: Wrapper type: {type(wrapper)}")
+        
+        # Update args with config values before passing to Pipeline
+        from config import Args
+        args_dict = self.args._asdict()
+        if 'acceleration' in pipeline_config:
+            args_dict['acceleration'] = pipeline_config['acceleration']
+            print(f"DEBUG _create_pipeline: Updated args.acceleration to {pipeline_config['acceleration']} from config")
+        if 'engine_dir' in pipeline_config:
+            args_dict['engine_dir'] = pipeline_config['engine_dir']
+            print(f"DEBUG _create_pipeline: Updated args.engine_dir to {pipeline_config['engine_dir']} from config")
+        if 'use_safety_checker' in pipeline_config:
+            args_dict['safety_checker'] = pipeline_config['use_safety_checker']
+            print(f"DEBUG _create_pipeline: Updated args.safety_checker to {pipeline_config['use_safety_checker']} from config")
+        
+        updated_args = Args(**args_dict)
+        print(f"DEBUG _create_pipeline: Final args.acceleration = {updated_args.acceleration}")
+        print(f"DEBUG _create_pipeline: Final args.engine_dir = {updated_args.engine_dir}")
+        
+        # Create Pipeline instance with the pre-created wrapper and config
+        print(f"DEBUG _create_pipeline: About to create Pipeline with pre-created wrapper")
+        pipeline = Pipeline(wrapper=wrapper, config=pipeline_config)
+        print(f"DEBUG _create_pipeline: Pipeline created with pre-created wrapper")
+        print(f"DEBUG _create_pipeline: Pipeline.stream type: {type(pipeline.stream)}")
+        
+        logger.info("_create_pipeline: Pipeline created successfully with pre-created wrapper")
+        return pipeline
 
     def _load_config_style_images(self):
         """Load style images from config into InputSourceManager"""

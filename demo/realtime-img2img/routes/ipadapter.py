@@ -43,13 +43,14 @@ async def update_ipadapter_scale(request: Request, app_instance=Depends(get_app_
         validate_pipeline(app_instance.pipeline, "update_ipadapter_scale")
         validate_config_mode(app_instance.pipeline, "ipadapters")
         
-        # Update IPAdapter scale in the pipeline
-        success = app_instance.pipeline.update_ipadapter_scale(float(scale))
+        # Update AppState as single source of truth
+        app_instance.app_state.update_parameter("ipadapter_scale", float(scale))
         
-        if success:
-            return create_success_response(f"Updated IPAdapter scale to {scale}")
-        else:
-            raise HTTPException(status_code=500, detail="Failed to update scale in pipeline")
+        # Sync to pipeline if active
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+            app_instance._sync_appstate_to_pipeline()
+        
+        return create_success_response(f"Updated IPAdapter scale to {scale}")
         
     except Exception as e:
         raise handle_api_error(e, "update_ipadapter_scale")
@@ -64,13 +65,14 @@ async def update_ipadapter_weight_type(request: Request, app_instance=Depends(ge
         validate_pipeline(app_instance.pipeline, "update_ipadapter_weight_type")
         validate_config_mode(app_instance.pipeline, "ipadapters")
         
-        # Update IPAdapter weight type in the pipeline
-        success = app_instance.pipeline.update_ipadapter_weight_type(weight_type)
+        # Update AppState as single source of truth
+        app_instance.app_state.ipadapter_info["weight_type"] = weight_type
         
-        if success:
-            return create_success_response(f"Updated IPAdapter weight type to {weight_type}")
-        else:
-            raise HTTPException(status_code=500, detail="Failed to update weight type in pipeline")
+        # Sync to pipeline if active
+        if app_instance.pipeline and hasattr(app_instance.pipeline, 'stream'):
+            app_instance._sync_appstate_to_pipeline()
+        
+        return create_success_response(f"Updated IPAdapter weight type to {weight_type}")
         
     except Exception as e:
         raise handle_api_error(e, "update_ipadapter_weight_type")
