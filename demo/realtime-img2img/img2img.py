@@ -13,9 +13,6 @@ sys.path.append(
 # Config system functions are now used only in main.py
 
 import torch
-import yaml
-from pathlib import Path
-
 from pydantic import BaseModel, Field
 from PIL import Image
 from typing import Optional
@@ -33,7 +30,7 @@ page_content = """<h1 class="text-3xl font-bold"><a href="https://github.com/liv
         </div>
         <div class="ml-3">
             <div class="text-sm text-yellow-700">
-                <p><strong>Development Tool Notice:</strong> This is an internal development tool. It may change frequently and contain bugs. It is not supported.</p>
+                <p><strong>Development Tool Notice:</strong> This is an internal, vibe-coded development tool. It may change frequently and contain bugs. It is not supported.</p>
                 <p>For production-level real-time research tools, use <a href="https://github.com/livepeer/stream-model-lab" target="_blank" class="text-blue-600 underline hover:no-underline">Livepeer Stream Model Lab</a></p>
             </div>
         </div>
@@ -100,7 +97,6 @@ class Pipeline:
             wrapper: Pre-created StreamDiffusionWrapper instance
             config: Configuration dictionary used to create the wrapper
         """
-        print("DEBUG Pipeline.__init__: Using pre-created wrapper and config")
         
         # IPAdapter state tracking for optimization
         self._last_ipadapter_source_type = None

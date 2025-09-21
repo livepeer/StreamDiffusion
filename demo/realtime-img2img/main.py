@@ -334,7 +334,7 @@ class AppState:
         if index < len(self.controlnet_info["controlnets"]):
             self.controlnet_info["controlnets"][index]["strength"] = strength
             self.controlnet_info["controlnets"][index]["conditioning_scale"] = strength
-            logger.info(f"update_controlnet_strength: Updated ControlNet {index} strength to {strength}")
+            logger.debug(f"update_controlnet_strength: Updated ControlNet {index} strength to {strength}")
         else:
             logger.warning(f"update_controlnet_strength: ControlNet index {index} out of range")
     
@@ -348,7 +348,7 @@ class AppState:
         
         self.controlnet_info["controlnets"].append(processed)
         self.controlnet_info["enabled"] = True
-        logger.info(f"add_controlnet: Added ControlNet at index {index}")
+        logger.debug(f"add_controlnet: Added ControlNet at index {index}")
         
     def remove_controlnet(self, index: int):
         """Remove ControlNet from AppState - SINGLE SOURCE OF TRUTH"""
@@ -359,7 +359,7 @@ class AppState:
                 controlnet['index'] = i
             if not self.controlnet_info["controlnets"]:
                 self.controlnet_info["enabled"] = False
-            logger.info(f"remove_controlnet: Removed ControlNet at index {index}")
+            logger.debug(f"remove_controlnet: Removed ControlNet at index {index}")
         else:
             logger.warning(f"remove_controlnet: ControlNet index {index} out of range")
     
@@ -369,7 +369,7 @@ class AppState:
             processors = self.pipeline_hooks[hook_type]["processors"]
             if processor_index < len(processors):
                 processors[processor_index].update(updates)
-                logger.info(f"update_hook_processor: Updated {hook_type} processor {processor_index}")
+                logger.debug(f"update_hook_processor: Updated {hook_type} processor {processor_index}")
             else:
                 logger.warning(f"update_hook_processor: Processor index {processor_index} out of range for {hook_type}")
         else:
@@ -389,7 +389,7 @@ class AppState:
             }
             self.pipeline_hooks[hook_type]["processors"].append(processed)
             self.pipeline_hooks[hook_type]["enabled"] = True
-            logger.info(f"add_hook_processor: Added {hook_type} processor at index {index}")
+            logger.debug(f"add_hook_processor: Added {hook_type} processor at index {index}")
         else:
             logger.warning(f"add_hook_processor: Unknown hook type {hook_type}")
     
@@ -404,7 +404,7 @@ class AppState:
                     processor['index'] = i
                 if not processors:
                     self.pipeline_hooks[hook_type]["enabled"] = False
-                logger.info(f"remove_hook_processor: Removed {hook_type} processor at index {processor_index}")
+                logger.debug(f"remove_hook_processor: Removed {hook_type} processor at index {processor_index}")
             else:
                 logger.warning(f"remove_hook_processor: Processor index {processor_index} out of range for {hook_type}")
         else:
@@ -502,10 +502,6 @@ class AppState:
         config = {}
         if self.uploaded_config:
             config = dict(self.uploaded_config)
-            print(f"DEBUG generate_pipeline_config: Original config model_id: {self.uploaded_config.get('model_id', 'NOT SET')}")
-            print(f"DEBUG generate_pipeline_config: Original config model_id_or_path: {self.uploaded_config.get('model_id_or_path', 'NOT SET')}")
-        else:
-            print("DEBUG generate_pipeline_config: NO UPLOADED CONFIG!")
         
         # Only override runtime-changeable parameters from AppState
         config.update({
@@ -590,8 +586,6 @@ class AppState:
         elif 'seed_blending' in config:
             del config['seed_blending']
         
-        print(f"DEBUG generate_pipeline_config: Final config model_id: {config.get('model_id', 'NOT SET')}")
-        print(f"DEBUG generate_pipeline_config: Final config model_id_or_path: {config.get('model_id_or_path', 'NOT SET')}")
         logger.info("generate_pipeline_config: Generated pipeline config preserving all original parameters")
         return config
 
@@ -796,52 +790,29 @@ class App:
         # Generate pipeline config from AppState - SINGLE SOURCE OF TRUTH
         pipeline_config = self.app_state.generate_pipeline_config()
         
-        # CONFIG IS ABSOLUTE SOURCE OF TRUTH - NO ARGS OVERRIDES AT ALL
-        print(f"DEBUG _create_pipeline: pipeline_config keys: {list(pipeline_config.keys())}")
-        print(f"DEBUG _create_pipeline: model_id in config: {pipeline_config.get('model_id', 'NOT SET')}")
-        print(f"DEBUG _create_pipeline: model_id_or_path in config: {pipeline_config.get('model_id_or_path', 'NOT SET')}")
-        print(f"DEBUG _create_pipeline: acceleration in config: {pipeline_config.get('acceleration', 'NOT SET')}")
-        print(f"DEBUG _create_pipeline: engine_dir in config: {pipeline_config.get('engine_dir', 'NOT SET')}")
-        logger.info(f"_create_pipeline: Using model_id from config: {pipeline_config.get('model_id', 'NOT SET')}")
-        
         # Load config style images into InputSourceManager before creating pipeline
         self._load_config_style_images()
         
         # Create wrapper using the unified config - THIS IS NOW THE SINGLE PLACE WHERE WRAPPER IS CREATED
         from src.streamdiffusion.config import create_wrapper_from_config
         
-        print(f"DEBUG _create_pipeline: About to call create_wrapper_from_config with model_id: {pipeline_config.get('model_id', 'NOT SET')}")
-        print(f"DEBUG _create_pipeline: FULL CONFIG BEING PASSED TO create_wrapper_from_config:")
-        for key, value in pipeline_config.items():
-            print(f"DEBUG _create_pipeline:   {key}: {value}")
-        
         # Create wrapper using the unified config
         wrapper = create_wrapper_from_config(pipeline_config)
-        print(f"DEBUG _create_pipeline: Wrapper created successfully")
-        print(f"DEBUG _create_pipeline: Wrapper type: {type(wrapper)}")
         
         # Update args with config values before passing to Pipeline
         from config import Args
         args_dict = self.args._asdict()
         if 'acceleration' in pipeline_config:
             args_dict['acceleration'] = pipeline_config['acceleration']
-            print(f"DEBUG _create_pipeline: Updated args.acceleration to {pipeline_config['acceleration']} from config")
         if 'engine_dir' in pipeline_config:
             args_dict['engine_dir'] = pipeline_config['engine_dir']
-            print(f"DEBUG _create_pipeline: Updated args.engine_dir to {pipeline_config['engine_dir']} from config")
         if 'use_safety_checker' in pipeline_config:
             args_dict['safety_checker'] = pipeline_config['use_safety_checker']
-            print(f"DEBUG _create_pipeline: Updated args.safety_checker to {pipeline_config['use_safety_checker']} from config")
         
         updated_args = Args(**args_dict)
-        print(f"DEBUG _create_pipeline: Final args.acceleration = {updated_args.acceleration}")
-        print(f"DEBUG _create_pipeline: Final args.engine_dir = {updated_args.engine_dir}")
         
         # Create Pipeline instance with the pre-created wrapper and config
-        print(f"DEBUG _create_pipeline: About to create Pipeline with pre-created wrapper")
         pipeline = Pipeline(wrapper=wrapper, config=pipeline_config)
-        print(f"DEBUG _create_pipeline: Pipeline created with pre-created wrapper")
-        print(f"DEBUG _create_pipeline: Pipeline.stream type: {type(pipeline.stream)}")
         
         logger.info("_create_pipeline: Pipeline created successfully with pre-created wrapper")
         return pipeline

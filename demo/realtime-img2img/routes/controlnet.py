@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 import copy
 
-from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline, validate_feature_enabled, validate_config_mode
+from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_feature_enabled, validate_config_mode
 from .common.dependencies import get_app_instance, get_available_controlnets
 
 router = APIRouter(prefix="/api", tags=["controlnet"])
@@ -482,10 +482,11 @@ async def switch_preprocessor(request: Request, app_instance=Depends(get_app_ins
         if controlnet_index is None or not preprocessor_name:
             raise HTTPException(status_code=400, detail="Missing controlnet_index/processor_index or preprocessor/processor parameter")
         
-        validate_pipeline(app_instance.pipeline, "switch_preprocessor")
-        validate_config_mode(app_instance.pipeline, "controlnets")
+        # Validate AppState has ControlNet configuration (pipeline not required)
+        if not app_instance.app_state.controlnet_info["enabled"] or not app_instance.app_state.controlnet_info["controlnets"]:
+            raise HTTPException(status_code=400, detail="No ControlNet configuration available. Please upload a config first.")
         
-        # Update AppState - SINGLE SOURCE OF TRUTH
+        # Update AppState - SINGLE SOURCE OF TRUTH (works before pipeline creation)
         if controlnet_index >= len(app_instance.app_state.controlnet_info["controlnets"]):
             raise HTTPException(status_code=400, detail=f"ControlNet index {controlnet_index} out of range")
         
@@ -576,7 +577,7 @@ async def update_preprocessor_params(request: Request, app_instance=Depends(get_
                 # Mark for reload as fallback
                 app_instance.app_state.config_needs_reload = True
         
-        logging.info(f"update_preprocessor_params: Updated ControlNet {controlnet_index} preprocessor params: {params}")
+        logging.debug(f"update_preprocessor_params: Updated ControlNet {controlnet_index} preprocessor params: {params}")
         
         return create_success_response(f"Updated ControlNet {controlnet_index} preprocessor parameters", updated_params=params)
         

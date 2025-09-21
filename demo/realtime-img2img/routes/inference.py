@@ -7,7 +7,7 @@ import logging
 import uuid
 import markdown2
 
-from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
+from .common.api_utils import handle_api_request, create_success_response, handle_api_error
 from .common.dependencies import get_app_instance, get_pipeline_class, get_default_settings
 
 router = APIRouter(prefix="/api", tags=["inference"])

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 import logging
 
-from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
+from .common.api_utils import handle_api_request, create_success_response, handle_api_error
 from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["parameters"])

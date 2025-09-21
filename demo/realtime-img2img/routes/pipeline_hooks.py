@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 import logging
 
-from .common.api_utils import handle_api_request, create_success_response, handle_api_error, validate_pipeline
+from .common.api_utils import handle_api_request, create_success_response, handle_api_error
 from .common.dependencies import get_app_instance
 
 router = APIRouter(prefix="/api", tags=["pipeline-hooks"])
@@ -123,12 +123,12 @@ async def add_hook_processor(hook_type: str, request: Request, app_instance=Depe
         if not processor_type:
             raise HTTPException(status_code=400, detail="Missing processor_type parameter")
         
-        validate_pipeline(app_instance.pipeline, "add_hook_processor")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
         if hook_type not in ["image_preprocessing", "image_postprocessing", "latent_preprocessing", "latent_postprocessing"]:
             raise HTTPException(status_code=400, detail=f"Invalid hook type: {hook_type}")
         
-        logging.info(f"add_hook_processor: Adding {processor_type} to {hook_type}")
+        logging.debug(f"add_hook_processor: Adding {processor_type} to {hook_type}")
         
         # Create processor config
         new_processor = {
@@ -169,9 +169,9 @@ async def add_hook_processor(hook_type: str, request: Request, app_instance=Depe
 async def remove_hook_processor(hook_type: str, processor_index: int, app_instance=Depends(get_app_instance)):
     """Remove a processor from a hook"""
     try:
-        validate_pipeline(app_instance.pipeline, "remove_hook_processor")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
-        logging.info(f"remove_hook_processor: Removing processor {processor_index} from {hook_type}")
+        logging.debug(f"remove_hook_processor: Removing processor {processor_index} from {hook_type}")
         
         # Remove from AppState - SINGLE SOURCE OF TRUTH
         app_instance.app_state.remove_hook_processor(hook_type, processor_index)
@@ -212,9 +212,9 @@ async def toggle_hook_processor(hook_type: str, request: Request, app_instance=D
         if processor_index is None or enabled is None:
             raise HTTPException(status_code=400, detail="Missing processor_index or enabled parameter")
         
-        validate_pipeline(app_instance.pipeline, "toggle_hook_processor")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
-        logging.info(f"toggle_hook_processor: Toggling processor {processor_index} in {hook_type} to {'enabled' if enabled else 'disabled'}")
+        logging.debug(f"toggle_hook_processor: Toggling processor {processor_index} in {hook_type} to {'enabled' if enabled else 'disabled'}")
         
         # Update AppState - SINGLE SOURCE OF TRUTH
         app_instance.app_state.update_hook_processor(hook_type, processor_index, {"enabled": bool(enabled)})
@@ -274,9 +274,9 @@ async def switch_hook_processor(hook_type: str, request: Request, app_instance=D
             app_instance.app_state.uploaded_config[hook_type] = hook_config
             
         else:
-            validate_pipeline(app_instance.pipeline, "switch_hook_processor")
+            # No pipeline validation needed - AppState updates work before pipeline creation
             
-            logging.info(f"switch_hook_processor: Switching processor {processor_index} in {hook_type} to {new_processor_type}")
+            logging.debug(f"switch_hook_processor: Switching processor {processor_index} in {hook_type} to {new_processor_type}")
             
             # Update AppState - SINGLE SOURCE OF TRUTH
             processors = app_instance.app_state.pipeline_hooks[hook_type]["processors"]
@@ -332,9 +332,9 @@ async def update_hook_processor_params(hook_type: str, request: Request, app_ins
             logging.error(f"update_hook_processor_params: Missing processor_index parameter")
             raise HTTPException(status_code=400, detail="Missing processor_index parameter")
         
-        validate_pipeline(app_instance.pipeline, "update_hook_processor_params")
+        # No pipeline validation needed - AppState updates work before pipeline creation
         
-        logging.info(f"update_hook_processor_params: Updating params for processor {processor_index} in {hook_type}")
+        logging.debug(f"update_hook_processor_params: Updating params for processor {processor_index} in {hook_type}")
         
         # Check if processors exist in AppState
         processors = app_instance.app_state.pipeline_hooks[hook_type]["processors"]
