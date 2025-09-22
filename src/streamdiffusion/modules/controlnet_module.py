@@ -98,20 +98,9 @@ class ControlNetModule(OrchestratorUser):
         preproc = None
         if cfg.preprocessor:
             from streamdiffusion.preprocessing.processors import get_preprocessor
-            preproc = get_preprocessor(cfg.preprocessor, pipeline_ref=self._stream)
-            # Apply provided parameters to the preprocessor instance
-            if cfg.preprocessor_params:
-                params = cfg.preprocessor_params or {}
-                # If the preprocessor exposes a 'params' dict, update it
-                if hasattr(preproc, 'params') and isinstance(getattr(preproc, 'params'), dict):
-                    preproc.params.update(params)
-                # Also set attributes directly when they exist
-                for name, value in params.items():
-                    try:
-                        if hasattr(preproc, name):
-                            setattr(preproc, name, value)
-                    except Exception:
-                        pass
+            # Pass all preprocessor params as constructor kwargs
+            preprocessor_params = cfg.preprocessor_params or {}
+            preproc = get_preprocessor(cfg.preprocessor, pipeline_ref=self._stream, **preprocessor_params)
 
 
             # Align preprocessor target size with stream resolution once (avoid double-resize later)
