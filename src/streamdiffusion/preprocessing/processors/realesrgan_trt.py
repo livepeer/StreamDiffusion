@@ -126,17 +126,27 @@ logger = logging.getLogger(__name__)
 
 class RealESRGANProcessor(BasePreprocessor):
     """
-    RealESRGAN 2x upscaling processor with automatic model download, ONNX export, and TensorRT acceleration.
+    RealESRGAN upscaling processor with automatic model download, ONNX export, and TensorRT acceleration.
+    Supports both 2x and 4x upscaling models.
     """
     
-    MODEL_URL = "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth?download=true"
+    MODEL_URLS = {
+        2: "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth?download=true",
+        4: "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth?download=true"
+    }
     
     @classmethod 
     def get_preprocessor_metadata(cls):
         return {
-            "display_name": "RealESRGAN 2x",
-            "description": "High-quality 2x image upscaling using RealESRGAN with TensorRT acceleration",
+            "display_name": "RealESRGAN",
+            "description": "High-quality image upscaling using RealESRGAN with TensorRT acceleration",
             "parameters": {
+                "scale_factor": {
+                    "type": "int",
+                    "default": 2,
+                    "options": [2, 4],
+                    "description": "Upscaling factor (2x or 4x)"
+                },
                 "enable_tensorrt": {
                     "type": "bool",
                     "default": True,
@@ -148,21 +158,27 @@ class RealESRGANProcessor(BasePreprocessor):
                     "description": "Force rebuild TensorRT engine even if it exists"
                 }
             },
-            "use_cases": ["High-quality upscaling", "Real-time 2x enlargement", "Image enhancement"]
+            "use_cases": ["High-quality upscaling", "Real-time enlargement", "Image enhancement"]
         }
     
-    def __init__(self, enable_tensorrt: bool = True, force_rebuild: bool = False, **kwargs):
-        super().__init__(enable_tensorrt=enable_tensorrt, force_rebuild=force_rebuild, **kwargs)
+    def __init__(self, scale_factor: int = 2, enable_tensorrt: bool = True, force_rebuild: bool = False, **kwargs):
+        super().__init__(scale_factor=scale_factor, enable_tensorrt=enable_tensorrt, force_rebuild=force_rebuild, **kwargs)
         self.enable_tensorrt = enable_tensorrt and TRT_AVAILABLE
         self.force_rebuild = force_rebuild
-        self.scale_factor = 2  # RealESRGAN 2x model
         
-        # Model paths
+        # Validate scale factor
+        if scale_factor not in self.MODEL_URLS:
+            available_scales = list(self.MODEL_URLS.keys())
+            raise ValueError(f"__init__: Unsupported scale_factor {scale_factor}. Available: {available_scales}")
+        
+        self.scale_factor = scale_factor
+        
+        # Model paths (scale-factor specific)
         self.models_dir = Path("models") / "realesrgan"
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.model_path = self.models_dir / "RealESRGAN_x2.pth"
-        self.onnx_path = self.models_dir / "RealESRGAN_x2.onnx"
-        self.engine_path = self.models_dir / f"RealESRGAN_x2_{trt.__version__ if TRT_AVAILABLE else 'notrt'}.trt"
+        self.model_path = self.models_dir / f"RealESRGAN_x{scale_factor}.pth"
+        self.onnx_path = self.models_dir / f"RealESRGAN_x{scale_factor}.onnx"
+        self.engine_path = self.models_dir / f"RealESRGAN_x{scale_factor}_{trt.__version__ if TRT_AVAILABLE else 'notrt'}.trt"
         
         # Model state
         self.pytorch_model = None
@@ -218,7 +234,8 @@ class RealESRGANProcessor(BasePreprocessor):
         """Ensure PyTorch model is downloaded and loaded"""
         # Download model if needed
         if not self.model_path.exists():
-            self._download_file(self.MODEL_URL, self.model_path)
+            model_url = self.MODEL_URLS[self.scale_factor]
+            self._download_file(model_url, self.model_path)
         
         # Load PyTorch model
         if self.pytorch_model is None:
@@ -470,7 +487,7 @@ class RealESRGANProcessor(BasePreprocessor):
         return output_tensor
     
     def get_target_dimensions(self) -> Tuple[int, int]:
-        """Get target output dimensions (width, height) - 2x upscaled"""
+        """Get target output dimensions (width, height) - upscaled by scale_factor"""
         width = self.params.get('image_width')
         height = self.params.get('image_height')
         
