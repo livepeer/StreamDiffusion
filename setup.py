@@ -54,7 +54,7 @@ install_requires = [
 ]
 
 
-def _require_torch_preinstalled() -> None:
+def _require_torch_preinstalled() -> str:
     missing = []
     for pkg in ("torch", "torchvision", "torchaudio"):
         try:
@@ -69,20 +69,15 @@ def _require_torch_preinstalled() -> None:
             "Replace the index URL and versions to match your CUDA runtime."
         )
         raise RuntimeError(msg)
+    import torch  # safe here; already verified importable
+    return getattr(torch.version, "cuda", "")
 
 
 if any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop")):
-    _require_torch_preinstalled()
-    import torch  # guaranteed by the preinstall check
-    cuda_str = getattr(torch.version, "cuda", "")
+    cuda_str = _require_torch_preinstalled()
     if not cuda_str:
         raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
-    parts = cuda_str.split(".")
-    if len(parts) < 2:
-        raise RuntimeError(f"Unrecognized CUDA version from torch: '{cuda_str}'")
-    cu_major, cu_minor = parts[0], parts[1]
-    cuda_python_version = f"{cu_major}.{cu_minor}.0"
-    install_requires.append(f"cuda-python=={cuda_python_version}")
+    install_requires.append(f"cuda-python=={cuda_str}.0")
 
 setup(
     name="streamdiffusion",
