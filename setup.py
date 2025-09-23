@@ -28,7 +28,7 @@ def get_cuda_version() -> str:
     return torch.version.cuda
 
 
-_is_install = any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop"))
+_is_install = any(cmd in sys.argv for cmd in ("install", "develop"))
 
 _deps = [
     f"cuda-python~={get_cuda_version()}" if _is_install else "cuda-python",
