@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 
 from setuptools import find_packages, setup
 
@@ -13,7 +14,6 @@ _deps = [
     "Pillow==10.5.0",
     "fire==0.6.0",
     "omegaconf==2.3.0",
-    "cuda-python==12.8.0",
     "onnx==1.18.0",
     "onnxruntime==1.22.0",
     "onnxruntime-gpu==1.22.0",
@@ -32,7 +32,7 @@ def deps_list(*pkgs):
 extras = {}
 extras["xformers"] = deps_list("xformers")
 extras["torch"] = []
-extras["tensorrt"] = deps_list("protobuf", "cuda-python", "onnx", "onnxruntime", "onnxruntime-gpu", "colored")
+extras["tensorrt"] = deps_list("protobuf", "onnx", "onnxruntime", "onnxruntime-gpu", "colored")
 
 extras["dev"] = extras["xformers"] + extras["torch"] + extras["tensorrt"]
 
@@ -49,6 +49,27 @@ install_requires = [
     "insightface==0.7.3",
     "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@405f87da42932e30bd55ee8dca3ce502d7834a99",
 ]
+
+
+def _require_torch_preinstalled() -> None:
+    missing = []
+    for pkg in ("torch", "torchvision", "torchaudio"):
+        try:
+            __import__(pkg)
+        except Exception:
+            missing.append(pkg)
+    if missing:
+        msg = (
+            "Missing required pre-installed packages: " + ", ".join(missing) + "\n"
+            "Install the PyTorch CUDA wheels from the appropriate index first, e.g.:\n"
+            "  pip install --index-url https://download.pytorch.org/whl/cu12x torch torchvision torchaudio\n"
+            "Replace the index URL and versions to match your CUDA runtime."
+        )
+        raise RuntimeError(msg)
+
+
+if any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop")):
+    _require_torch_preinstalled()
 
 setup(
     name="streamdiffusion",
