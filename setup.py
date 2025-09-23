@@ -5,9 +5,6 @@ from setuptools import find_packages, setup
 
 
 _deps = [
-    "torch==2.7.1+cu128",
-    "torchvision==0.22.1+cu128",
-    "torchaudio==2.7.1+cu128",
     "xformers==0.0.30",
     "diffusers==0.35.0",
     "transformers==4.56.0",
@@ -34,7 +31,7 @@ def deps_list(*pkgs):
 
 extras = {}
 extras["xformers"] = deps_list("xformers")
-extras["torch"] = deps_list("torch", "torchvision", "torchaudio", "accelerate")
+extras["torch"] = []
 extras["tensorrt"] = deps_list("protobuf", "cuda-python", "onnx", "onnxruntime", "onnxruntime-gpu", "colored")
 
 extras["dev"] = extras["xformers"] + extras["torch"] + extras["tensorrt"]
