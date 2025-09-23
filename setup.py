@@ -47,12 +47,14 @@ _deps = [
     "protobuf==4.25.3",
     "colored==2.2.4",
     "pywin32==306;sys_platform == 'win32'",
+    "onnx-graphsurgeon==0.5.8",
     "controlnet-aux==0.0.10",
+    "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@405f87da42932e30bd55ee8dca3ce502d7834a99",
     "mediapipe==0.10.21",
     "insightface==0.7.3",
 ]
 
-deps = {b: a for a, b in (re.findall(r"^(([^!=<>~]+)(?:[!=<>~].*)?$)", x)[0] for x in _deps)}
+deps = {b: a for a, b in (re.findall(r"^(([^!=<>~ @]+)(?:[!=<>~ @].*)?$)", x)[0] for x in _deps)}
 
 
 def deps_list(*pkgs):
@@ -63,6 +65,8 @@ extras = {}
 extras["xformers"] = deps_list("xformers")
 extras["torch"] = deps_list("torch", "accelerate")
 extras["tensorrt"] = deps_list("protobuf", "cuda-python", "onnx", "onnxruntime", "onnxruntime-gpu", "colored")
+extras["controlnet"] = deps_list("onnx-graphsurgeon", "controlnet-aux")
+extras["ipadapter"] = deps_list("diffusers-ipadapter", "mediapipe", "insightface")
 
 extras["dev"] = extras["xformers"] + extras["torch"] + extras["tensorrt"]
 
@@ -74,10 +78,6 @@ install_requires = [
     deps["accelerate"],
     deps["huggingface_hub"],
     deps["Pillow"],
-    deps["controlnet-aux"],
-    deps["mediapipe"],
-    deps["insightface"],
-    "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@405f87da42932e30bd55ee8dca3ce502d7834a99",
 ]
 
 
