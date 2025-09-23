@@ -11,7 +11,7 @@ _deps = [
     "transformers==4.56.0",
     "accelerate==1.10.0",
     "huggingface_hub==0.35.0",
-    "Pillow==10.5.0",
+    "Pillow==11.0.0",
     "fire==0.6.0",
     "omegaconf==2.3.0",
     "onnx==1.18.0",
@@ -19,7 +19,10 @@ _deps = [
     "onnxruntime-gpu==1.22.0",
     "protobuf==4.25.3",
     "colored==2.2.4",
-    "pywin32==306;sys_platform == 'win32'"
+    "pywin32==306;sys_platform == 'win32'",
+    "controlnet-aux==0.0.10",
+    "mediapipe==0.10.21",
+    "insightface==0.7.3",
 ]
 
 deps = {b: a for a, b in (re.findall(r"^(([^!=<>~]+)(?:[!=<>~].*)?$)", x)[0] for x in _deps)}
@@ -44,9 +47,9 @@ install_requires = [
     deps["accelerate"],
     deps["huggingface_hub"],
     deps["Pillow"],
-    "controlnet-aux==0.0.10",
-    "mediapipe==0.10.21",
-    "insightface==0.7.3",
+    deps["controlnet-aux"],
+    deps["mediapipe"],
+    deps["insightface"],
     "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@405f87da42932e30bd55ee8dca3ce502d7834a99",
 ]
 
@@ -70,18 +73,16 @@ def _require_torch_preinstalled() -> None:
 
 if any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop")):
     _require_torch_preinstalled()
-    # Dynamically pin cuda-python to match the preinstalled torch CUDA series
-    try:
-        import torch  # noqa: F401
-        cuda_str = getattr(torch.version, "cuda", "")
-        if cuda_str:
-            parts = cuda_str.split(".")
-            if len(parts) >= 2:
-                cu_major, cu_minor = parts[0], parts[1]
-                cuda_python_version = f"{cu_major}.{cu_minor}.0"
-                install_requires.append(f"cuda-python=={cuda_python_version}")
-    except Exception:
-        pass
+    import torch  # guaranteed by the preinstall check
+    cuda_str = getattr(torch.version, "cuda", "")
+    if not cuda_str:
+        raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
+    parts = cuda_str.split(".")
+    if len(parts) < 2:
+        raise RuntimeError(f"Unrecognized CUDA version from torch: '{cuda_str}'")
+    cu_major, cu_minor = parts[0], parts[1]
+    cuda_python_version = f"{cu_major}.{cu_minor}.0"
+    install_requires.append(f"cuda-python=={cuda_python_version}")
 
 setup(
     name="streamdiffusion",

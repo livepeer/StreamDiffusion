@@ -1,14 +1,26 @@
-from typing import Literal
+from typing import Literal, Optional
 
 import fire
 from ..pip_utils import is_installed, run_pip
 import platform
 
 
-def install(cu: Literal["11", "12"]):
-    print("Installing TensorRT requirements...")
+def _detect_cuda_major() -> Optional[Literal["11", "12"]]:
+    try:
+        import torch
+        return torch.version.cuda.split(".")[0]  # type: ignore
+    except Exception:
+        return None
 
-    cudnn_name = f"nvidia-cudnn-cu{cu}==8.9.7.29"
+
+def install(cu: Optional[Literal["11", "12"]] = _detect_cuda_major()):
+    print("Installing TensorRT requirements...")
+    if cu not in ("11", "12"):
+        raise RuntimeError("CUDA major version not detected. Pass --cu 11 or --cu 12 explicitly.")
+
+    cudnn_name = (
+        f"nvidia-cudnn-cu12==9.7.1.26" if cu == "12" else f"nvidia-cudnn-cu11==8.9.7.29"
+    )
 
     run_pip(f"install {cudnn_name} --no-cache-dir")
 
