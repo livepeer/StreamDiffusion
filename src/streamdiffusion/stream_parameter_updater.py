@@ -7,6 +7,7 @@ import gc
 import logging
 logger = logging.getLogger(__name__)
 from .preprocessing.orchestrator_user import OrchestratorUser
+from .preprocessing.processors import _preprocessor_registry
 
 class CacheStats:
     """Helper class to track cache statistics"""
@@ -1440,7 +1441,15 @@ class StreamParameterUpdater(OrchestratorUser):
                 logger.info(f"_update_hook_config: Modifying existing processor {i}: {current_type} -> {processor_type}")
                 
                 # If processor type changed, replace it
-                if current_type.lower() != processor_type.lower() and not current_type.lower().startswith(processor_type.lower()):
+                # Get the registry name for the current processor by checking the registry
+                current_registry_name = None
+                for registry_name, registry_class in _preprocessor_registry.items():
+                    if registry_class.__name__ == current_type:
+                        current_registry_name = registry_name
+                        break
+                
+                # Compare registry names directly
+                if current_registry_name != processor_type:
                     logger.info(f"_update_hook_config: Type changed, replacing processor {i}")
                     try:
                         from streamdiffusion.preprocessing.processors import get_preprocessor
