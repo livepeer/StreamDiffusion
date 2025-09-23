@@ -6,15 +6,18 @@ from setuptools import find_packages, setup
 
 _deps = [
     "torch",
-    "xformers",
-    "diffusers>=0.31.0",
-    "transformers",
-    "accelerate",
+    "xformers==0.0.30",
+    "diffusers==0.35.0",
+    "transformers==4.56.0",
+    "accelerate==1.10.0",
+    "huggingface_hub==0.35.0",
+    "Pillow==10.5.0",
     "fire",
     "omegaconf",
     "cuda-python==12.9.0",
-    "onnx>=1.15.0",
-    "onnxruntime>=1.16.3",
+    "onnx==1.18.0",
+    "onnxruntime==1.22.0",
+    "onnxruntime-gpu==1.22.0",
     "protobuf>=3.20.2",
     "colored",
     "pywin32;sys_platform == 'win32'"
@@ -30,7 +33,7 @@ def deps_list(*pkgs):
 extras = {}
 extras["xformers"] = deps_list("xformers")
 extras["torch"] = deps_list("torch", "accelerate")
-extras["tensorrt"] = deps_list("protobuf", "cuda-python", "onnx", "onnxruntime", "colored")
+extras["tensorrt"] = deps_list("protobuf", "cuda-python", "onnx", "onnxruntime", "onnxruntime-gpu", "colored")
 
 extras["dev"] = extras["xformers"] + extras["torch"] + extras["tensorrt"]
 
@@ -40,7 +43,8 @@ install_requires = [
     deps["diffusers"],
     deps["transformers"],
     deps["accelerate"],
-    # Required preprocessors/features (pin to known-good versions)
+    deps["huggingface_hub"],
+    deps["Pillow"],
     "controlnet-aux==0.0.10",
     "mediapipe==0.10.21",
     "insightface==0.7.3",

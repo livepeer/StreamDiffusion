@@ -30,28 +30,25 @@ def install(cu: Optional[Literal["11", "12"]] = get_cuda_version_from_torch()):
             # best-effort cleanup; proceed with install
             pass
 
-    cudnn_name = f"nvidia-cudnn-cu{cu}==8.9.4.25"
+    cudnn_name = f"nvidia-cudnn-cu{cu}==8.9.7.29"
 
     if not is_installed("tensorrt"):
-        # Ensure CuDNN for the correct CUDA major is present
         run_pip(f"install {cudnn_name} --no-cache-dir")
-        # Install a stable, known-good TensorRT build from NVIDIA PyPI for CUDA {cu}
-        # Post11 builds are for CUDA 12.x; for CUDA 11 we fallback to the matching 8.x series
         if cu == "12":
-            trt_spec = "tensorrt==9.1.0.post12"  # stable CUDA 12 build
+            run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==10.12.0.36 --no-cache-dir")
+            run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt-cu12-bindings==10.12.0.36 --no-cache-dir")
+            run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt-cu12-libs==10.12.0.36 --no-cache-dir")
         else:
-            trt_spec = "tensorrt==8.6.1"  # last stable for CUDA 11 runtime
-        run_pip(
-            f"install --extra-index-url https://pypi.nvidia.com {trt_spec} --no-cache-dir"
-        )
+            # CUDA 11 fallback to last supported TRT 8.x
+            run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==8.6.1 --no-cache-dir")
 
     if not is_installed("polygraphy"):
         run_pip(
-            "install polygraphy==0.47.1 --extra-index-url https://pypi.ngc.nvidia.com"
+            "install polygraphy==0.49.24 --extra-index-url https://pypi.ngc.nvidia.com"
         )
     if not is_installed("onnx_graphsurgeon"):
         run_pip(
-            "install onnx-graphsurgeon==0.3.26 --extra-index-url https://pypi.ngc.nvidia.com"
+            "install onnx-graphsurgeon==0.5.8 --extra-index-url https://pypi.ngc.nvidia.com"
         )
     if platform.system() == 'Windows' and not is_installed("pywin32"):
         run_pip(
