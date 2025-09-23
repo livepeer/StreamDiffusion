@@ -32,6 +32,7 @@ _is_install = any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop
 
 _deps = [
     f"cuda-python~={get_cuda_version()}" if _is_install else "cuda-python",
+    "torch", # We can't really pin the torch version as it depends on CUDA
     "xformers==0.0.30",
     "diffusers==0.35.0",
     "transformers==4.56.0",
