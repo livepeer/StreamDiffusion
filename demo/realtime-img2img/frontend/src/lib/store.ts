@@ -45,6 +45,10 @@ export interface AppState {
     // Input sources
     input_sources: Record<string, any>;
     
+    // Debug mode state
+    debug_mode: boolean;
+    debug_pending_frame: boolean;
+    
     // Additional dynamic fields from backend
     info?: any;
     input_params?: any;

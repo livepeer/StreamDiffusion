@@ -129,6 +129,10 @@ class AppState:
             'base': None
         }
         
+        # Debug mode state
+        self.debug_mode = False
+        self.debug_pending_frame = False  # True when a frame step is requested
+        
     def populate_from_config(self, config_data):
         """Populate AppState from uploaded config - SINGLE SOURCE OF TRUTH"""
         if not config_data:
@@ -321,6 +325,10 @@ class AppState:
             
             # Input sources
             "input_sources": self.input_sources,
+            
+            # Debug mode state
+            "debug_mode": self.debug_mode,
+            "debug_pending_frame": self.debug_pending_frame,
             
             # Pipeline hooks - AUTHORITATIVE SOURCE
             "image_preprocessing": self.pipeline_hooks["image_preprocessing"],
@@ -787,7 +795,7 @@ class App:
     
     def _register_routes(self):
         """Register all route modules with dependency injection"""
-        from routes import parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket, input_sources
+        from routes import parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket, input_sources, debug
         from routes.common.dependencies import get_app_instance as shared_get_app_instance, get_pipeline_class as shared_get_pipeline_class, get_default_settings as shared_get_default_settings, get_available_controlnets as shared_get_available_controlnets
         
         # Create dependency overrides to inject app instance and other dependencies
@@ -804,7 +812,7 @@ class App:
             return AVAILABLE_CONTROLNETS
         
         # Include routers and set up dependency overrides on the main app
-        for router_module in [parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket, input_sources]:
+        for router_module in [parameters, controlnet, ipadapter, inference, pipeline_hooks, websocket, input_sources, debug]:
             # Include the router
             self.app.include_router(router_module.router)
         

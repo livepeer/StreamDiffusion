@@ -94,8 +94,22 @@ async def stream(user_id: uuid.UUID, request: Request, app_instance=Depends(get_
             async def generate_frames():
                 try:
                     while True:
-                        # Request a new frame from the frontend via WebSocket
-                        await app_instance.conn_manager.send_json(user_id, {"status": "send_frame"})
+                        # Check debug mode before requesting new frame
+                        if app_instance.app_state.debug_mode:
+                            # In debug mode, only process frame if step was requested
+                            if app_instance.app_state.debug_pending_frame:
+                                # Reset the pending frame flag
+                                app_instance.app_state.debug_pending_frame = False
+                                # Request frame and continue with processing
+                                await app_instance.conn_manager.send_json(user_id, {"status": "send_frame"})
+                            else:
+                                # Wait in debug mode without requesting frames
+                                import asyncio
+                                await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
+                                continue
+                        else:
+                            # Normal mode - request new frame automatically
+                            await app_instance.conn_manager.send_json(user_id, {"status": "send_frame"})
                         
                         # Get the latest parameters from the WebSocket connection manager
                         # This consumes data from the queue after requesting a new frame

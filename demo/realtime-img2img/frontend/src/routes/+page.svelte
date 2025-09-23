@@ -16,7 +16,7 @@
   import Success from '$lib/components/Success.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
-  import { appState, startStatePolling, stopStatePolling, type AppState } from '$lib/store';
+  import { appState, startStatePolling, stopStatePolling, fetchAppState, type AppState } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
   import InputControl from '$lib/components/InputControl.svelte';
@@ -50,6 +50,8 @@
   $: selectedModelId = $appState?.model_id || '';
   $: pipelineActive = $appState?.pipeline_active || false;
   $: fps = $appState?.fps || 0;
+  $: debugMode = $appState?.debug_mode || false;
+  $: debugPendingFrame = $appState?.debug_pending_frame || false;
   
   // Local UI state that doesn't come from backend
   let queueCheckerRunning: boolean = false;
@@ -110,7 +112,8 @@
 
   onMount(() => {
     // Start centralized state polling (replaces getSettings, FPS polling, and queue polling)
-    startStatePolling(5000);
+    // Using 500ms for highly responsive UI updates (FPS, queue size, debug state, etc.)
+    startStatePolling(500);
   });
 
   onDestroy(() => {
@@ -667,6 +670,44 @@
   let controlNetConfigComponent: any;
   let ipAdapterConfigComponent: any;
 
+  // Debug control functions
+  async function toggleDebugMode() {
+    try {
+      const endpoint = debugMode ? '/api/debug/disable' : '/api/debug/enable';
+      const response = await fetch(endpoint, { method: 'POST' });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('toggleDebugMode: Debug mode toggled:', result.message);
+      } else {
+        const error = await response.json();
+        warningMessage = `Failed to toggle debug mode: ${error.detail}`;
+      }
+    } catch (error) {
+      console.error('toggleDebugMode: Error toggling debug mode:', error);
+      warningMessage = 'Failed to toggle debug mode: ' + (error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function stepFrame() {
+    try {
+      const response = await fetch('/api/debug/step', { method: 'POST' });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('stepFrame: Frame step requested:', result.message);
+        // Immediately refresh state to update button disabled state
+        await fetchAppState();
+      } else {
+        const error = await response.json();
+        warningMessage = `Failed to step frame: ${error.detail}`;
+      }
+    } catch (error) {
+      console.error('stepFrame: Error stepping frame:', error);
+      warningMessage = 'Failed to step frame: ' + (error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // Function to reset all input source selectors
   async function resetAllInputSourceSelectors() {
     console.log('resetAllInputSourceSelectors: Resetting all input source selectors');
@@ -740,6 +781,28 @@
           on:change={uploadConfig}
         />
         
+        <!-- Debug Controls (only show when streaming) -->
+        {#if isLCMRunning}
+          <div class="flex items-center gap-1 px-3 py-1 bg-yellow-100 dark:bg-yellow-900 rounded-lg border">
+            <span class="text-xs font-semibold text-yellow-800 dark:text-yellow-200">Debug:</span>
+            <Button 
+              on:click={toggleDebugMode} 
+              classList={`text-xs px-2 py-1 ${debugMode ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'}`}
+            >
+              {debugMode ? 'Resume' : 'Pause'}
+            </Button>
+            {#if debugMode}
+              <Button 
+                on:click={stepFrame} 
+                disabled={debugPendingFrame}
+                classList="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50"
+              >
+                Step →
+              </Button>
+            {/if}
+          </div>
+        {/if}
+
         <!-- Main Control Button -->
         <Button on:click={toggleLcmLive} {disabled} classList={'text-sm px-4 py-2 font-semibold'}>
           {#if isLCMRunning}
@@ -911,8 +974,16 @@
                   </span>
                 </div>
               {/if}
+              {#if debugMode}
+                <div class="flex items-center gap-2 px-3 py-1 bg-yellow-100 dark:bg-yellow-900 rounded-lg">
+                  <div class="w-2 h-2 bg-yellow-500 rounded-full"></div>
+                  <span class="text-sm font-medium text-yellow-800 dark:text-yellow-200">
+                    Debug Paused
+                  </span>
+                </div>
+              {/if}
               <div class="text-sm text-gray-600 dark:text-gray-400">
-                Status: {isLCMRunning ? 'Streaming' : 'Stopped'}
+                Status: {debugMode ? 'Debug Paused' : isLCMRunning ? 'Streaming' : 'Stopped'}
               </div>
             </div>
           </div>
