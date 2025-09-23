@@ -21,7 +21,7 @@ from typing import Optional
 default_negative_prompt = "black and white, blurry, low resolution, pixelated,  pixel art, low quality, low fidelity"
 
 page_content = """<h1 class="text-3xl font-bold"><a href="https://github.com/livepeer/StreamDiffusion" target="_blank" class="text-blue-500 underline hover:no-underline">StreamDiffusion</a></h1>
-<div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-4">
+<div class="border-l-4 border-gray-400 p-4 mb-4">
     <div class="flex">
         <div class="flex-shrink-0">
             <svg class="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
@@ -29,9 +29,9 @@ page_content = """<h1 class="text-3xl font-bold"><a href="https://github.com/liv
             </svg>
         </div>
         <div class="ml-3">
-            <div class="text-sm text-yellow-700">
-                <p><strong>Development Tool Notice:</strong> This is an internal, vibe-coded development tool. It may change frequently and contain bugs. It is not supported.</p>
-                <p>For production-level real-time research tools, use <a href="https://github.com/livepeer/stream-model-lab" target="_blank" class="text-blue-600 underline hover:no-underline">Livepeer Stream Model Lab</a></p>
+            <div class="text-sm">
+                <p><strong class="text-yellow-400">Development Tool Notice:</strong> <span class="text-gray-700 dark:text-gray-300">This is an internal, vibe-coded development tool. It may change frequently and contain bugs. It is not supported.</span></p>
+                <p class="text-gray-700 dark:text-gray-300">For production-level real-time research tools, use <a href="https://github.com/daydreamlive/scope" target="_blank" class="text-blue-600 underline hover:no-underline">Daydream Scope</a></p>
             </div>
         </div>
     </div>
