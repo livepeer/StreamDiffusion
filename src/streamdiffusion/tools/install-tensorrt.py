@@ -23,15 +23,26 @@ def install(cu: Optional[Literal["11", "12"]] = get_cuda_version_from_torch()):
     print("Installing TensorRT requirements...")
 
     if is_installed("tensorrt"):
-        if version("tensorrt") < Version("9.0.0"):
-            run_pip("uninstall -y tensorrt")
+        try:
+            if version("tensorrt") and version("tensorrt") < Version("9.0.0"):
+                run_pip("uninstall -y tensorrt")
+        except Exception:
+            # best-effort cleanup; proceed with install
+            pass
 
     cudnn_name = f"nvidia-cudnn-cu{cu}==8.9.4.25"
 
     if not is_installed("tensorrt"):
+        # Ensure CuDNN for the correct CUDA major is present
         run_pip(f"install {cudnn_name} --no-cache-dir")
+        # Install a stable, known-good TensorRT build from NVIDIA PyPI for CUDA {cu}
+        # Post11 builds are for CUDA 12.x; for CUDA 11 we fallback to the matching 8.x series
+        if cu == "12":
+            trt_spec = "tensorrt==9.1.0.post12"  # stable CUDA 12 build
+        else:
+            trt_spec = "tensorrt==8.6.1"  # last stable for CUDA 11 runtime
         run_pip(
-            "install --pre --extra-index-url https://pypi.nvidia.com tensorrt==9.0.1.post11.dev4 --no-cache-dir"
+            f"install --extra-index-url https://pypi.nvidia.com {trt_spec} --no-cache-dir"
         )
 
     if not is_installed("polygraphy"):

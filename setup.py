@@ -40,6 +40,10 @@ install_requires = [
     deps["diffusers"],
     deps["transformers"],
     deps["accelerate"],
+    # Required preprocessors/features (pin to known-good versions)
+    "controlnet-aux==0.0.10",
+    "mediapipe==0.10.21",
+    "insightface==0.7.3",
     "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@405f87da42932e30bd55ee8dca3ce502d7834a99",
 ]
 
