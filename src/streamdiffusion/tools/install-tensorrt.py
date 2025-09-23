@@ -13,24 +13,19 @@ def install(cu: Optional[Literal["11", "12"]] = get_cuda_major()):
 
     print("Installing TensorRT requirements...")
 
+    min_trt_version = Version("10.12.0") if cu == "12" else Version("9.0.0")
     trt_version = version("tensorrt")
+    if trt_version and trt_version < min_trt_version:
+        run_pip("uninstall -y tensorrt")
 
-
-    if cu == "12":
-        if trt_version and trt_version < Version("12.0.0"):
-            run_pip("uninstall -y tensorrt")
-
-        run_pip(f"install nvidia-cudnn-cu12==9.7.1.26 --no-cache-dir")
-        run_pip("install --extra-index-url https://pypi.nvidia.com --no-cache-dir "
-                "tensorrt==10.12.0.36 "
-                "tensorrt-cu12-bindings==10.12.0.36 "
-                "tensorrt-cu12-libs==10.12.0.36")
-    else:
-        if trt_version and trt_version < Version("9.0.0"):
-            run_pip("uninstall -y tensorrt")
-
-        run_pip(f"install nvidia-cudnn-cu11==8.9.7.29 --no-cache-dir")
-        run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==9.0.1.post11.dev4 --no-cache-dir")
+    cudnn_package, trt_package = (
+        ("nvidia-cudnn-cu12==9.7.1.26", "tensorrt==10.12.0.36")
+        if cu == "12" else
+        ("nvidia-cudnn-cu11==8.9.7.29", "tensorrt==9.0.1.post11.dev4")
+    )
+    if not is_installed(trt_package):
+        run_pip(f"install {cudnn_package} --no-cache-dir")
+        run_pip(f"install --extra-index-url https://pypi.nvidia.com {trt_package} --no-cache-dir")
 
     if not is_installed("polygraphy"):
         run_pip(
