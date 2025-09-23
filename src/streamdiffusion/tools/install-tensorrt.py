@@ -1,36 +1,36 @@
 from typing import Literal, Optional
 
 import fire
-from ..pip_utils import is_installed, run_pip
+from packaging.version import Version
+
+from ..pip_utils import is_installed, run_pip, version, get_cuda_major
 import platform
 
 
-def _detect_cuda_major() -> Optional[Literal["11", "12"]]:
-    try:
-        import torch
-        return torch.version.cuda.split(".")[0]  # type: ignore
-    except Exception:
-        return None
-
-
-def install(cu: Optional[Literal["11", "12"]] = _detect_cuda_major()):
-    print("Installing TensorRT requirements...")
+def install(cu: Optional[Literal["11", "12"]] = get_cuda_major()):
     if cu not in ("11", "12"):
         raise RuntimeError("CUDA major version not detected. Pass --cu 11 or --cu 12 explicitly.")
 
-    cudnn_name = (
-        f"nvidia-cudnn-cu12==9.7.1.26" if cu == "12" else f"nvidia-cudnn-cu11==8.9.7.29"
-    )
+    print("Installing TensorRT requirements...")
 
-    run_pip(f"install {cudnn_name} --no-cache-dir")
+    trt_version = version("tensorrt")
+
 
     if cu == "12":
+        if trt_version and trt_version < Version("12.0.0"):
+            run_pip("uninstall -y tensorrt")
+
+        run_pip(f"install nvidia-cudnn-cu12==9.7.1.26 --no-cache-dir")
         run_pip("install --extra-index-url https://pypi.nvidia.com --no-cache-dir "
                 "tensorrt==10.12.0.36 "
                 "tensorrt-cu12-bindings==10.12.0.36 "
                 "tensorrt-cu12-libs==10.12.0.36")
     else:
-        run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==8.6.1 --no-cache-dir")
+        if trt_version and trt_version < Version("9.0.0"):
+            run_pip("uninstall -y tensorrt")
+
+        run_pip(f"install nvidia-cudnn-cu11==8.9.7.29 --no-cache-dir")
+        run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==9.0.1.post11.dev4 --no-cache-dir")
 
     if not is_installed("polygraphy"):
         run_pip(

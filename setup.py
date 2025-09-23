@@ -1,11 +1,10 @@
-import os
 import re
 import sys
 
 from setuptools import find_packages, setup
 
-
-def _check_torch_installed() -> str:
+# Same helpers as pip_utils.py but we shouldn't import it from setup.py
+def _check_torch_installed():
     try:
         import torch
         import torchvision
@@ -18,13 +17,15 @@ def _check_torch_installed() -> str:
         )
         raise RuntimeError(msg)
 
+    if not torch.version.cuda:
+        raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
+
+
 def get_cuda_version() -> str:
     _check_torch_installed()
+
     import torch
-    v = torch.version.cuda
-    if not v:
-        raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
-    return v
+    return torch.version.cuda
 
 
 _is_install = any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop"))
