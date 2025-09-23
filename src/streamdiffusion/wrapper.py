@@ -316,8 +316,6 @@ class StreamDiffusionWrapper:
                 similar_image_filter_threshold, similar_image_filter_max_skip_frame
             )
 
-    
-
     def prepare(
         self,
         prompt: Union[str, List[Tuple[str, float]]],
