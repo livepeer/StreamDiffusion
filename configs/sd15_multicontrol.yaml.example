@@ -52,13 +52,23 @@ engine_dir: "./engines/sd15"
 use_controlnet: true
 use_ipadapter: true
 
-# IPAdapter configuration for style conditioning
+IPAdapter configuration for style conditioning
 ipadapters:
-  - ipadapter_model_path: "h94/IP-Adapter/models/ip-adapter_sd15.safetensors"
+  - ipadapter_model_path: "h94/IP-Adapter/models/ip-adapter_sd15.bin"
     image_encoder_path: "h94/IP-Adapter/models/image_encoder"
-    # style_image: "path/to/your/style/image.jpg"  # Optional: specify style image
+    style_image: "path/to/your/style/image.jpg"
     scale: 0.7
     enabled: true
+
+
+#ipadapters:
+#  - type: "faceid"
+#    ipadapter_model_path: "h94/IP-Adapter-FaceID/ip-adapter-faceid_sd15.bin"
+#    image_encoder_path: "h94/IP-Adapter/models/image_encoder"
+#    insightface_model_name: "buffalo_l"
+#    style_image: "path/to/your/style/image.jpg"
+#    scale: 0.5
+#    enabled: false
 
 # ControlNet configurations
 controlnets:

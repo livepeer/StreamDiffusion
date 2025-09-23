@@ -44,7 +44,7 @@ async def handle_api_request(
         return data
         
     except Exception as e:
-        logging.error(f"{operation_name}: Failed to parse request: {e}")
+        logging.exception(f"{operation_name}: Failed to parse request: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
 
 
@@ -97,7 +97,9 @@ def validate_pipeline(pipeline: Any, operation_name: str) -> None:
     Raises:
         HTTPException: If pipeline is not valid
     """
+    logging.info(f"validate_pipeline: {operation_name} - pipeline is: {pipeline is not None}")
     if not pipeline:
+        logging.error(f"validate_pipeline: {operation_name} - Pipeline is not initialized")
         raise HTTPException(
             status_code=400, 
             detail="Pipeline is not initialized"
@@ -134,13 +136,17 @@ def validate_config_mode(pipeline: Any, config_check: Optional[str] = None) -> N
     Raises:
         HTTPException: If not in config mode or config key missing
     """
+    logging.info(f"validate_config_mode: use_config={getattr(pipeline, 'use_config', None)}, config exists={getattr(pipeline, 'config', None) is not None}")
     if not (pipeline.use_config and pipeline.config):
+        logging.error(f"validate_config_mode: Pipeline is not using configuration mode")
         raise HTTPException(
             status_code=400, 
             detail="Pipeline is not using configuration mode"
         )
     
     if config_check and config_check not in pipeline.config:
+        logging.error(f"validate_config_mode: Configuration key '{config_check}' not found in pipeline config")
+        logging.info(f"validate_config_mode: Available config keys: {list(pipeline.config.keys())}")
         raise HTTPException(
             status_code=400, 
             detail=f"Configuration missing required section: {config_check}"

@@ -1,18 +1,15 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import Button from './Button.svelte';
+  import InputSourceSelector from './InputSourceSelector.svelte';
 
   export let ipadapterInfo: any = null;
   export let currentScale: number = 1.0;
   export let currentWeightType: string = "linear";
+  export let currentEnabled: boolean = true;
 
   const dispatch = createEventDispatcher();
 
-  // Style image upload state
-  let styleImageFile: HTMLInputElement;
-  let uploadingImage = false;
-  let uploadStatus = '';
-  let currentStyleImage: string | null = null;
 
   // Collapsible toggle handled internally for consistency
   let showIPAdapter: boolean = true;
@@ -87,69 +84,69 @@
     updateIPAdapterWeightType(weightType);
   }
 
-  async function uploadStyleImage() {
-    if (!styleImageFile.files || styleImageFile.files.length === 0) {
-      uploadStatus = 'Please select an image file';
-      return;
-    }
-
-    const file = styleImageFile.files[0];
-    if (!file.type.startsWith('image/')) {
-      uploadStatus = 'Please select a valid image file';
-      return;
-    }
-
-    uploadingImage = true;
-    uploadStatus = 'Uploading style image...';
-
+  async function updateIPAdapterEnabled(enabled: boolean) {
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch('/api/ipadapter/upload-style-image', {
+      const response = await fetch('/api/ipadapter/update-enabled', {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          enabled: enabled,
+        }),
       });
 
-      const result = await response.json();
-
-      if (response.ok) {
-        uploadStatus = 'Style image uploaded successfully!';
-        
-        // Create preview URL for the uploaded image and keep it for display
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          currentStyleImage = e.target?.result as string;
-        };
-        reader.readAsDataURL(file);
-        
-        // Clear file input
-        styleImageFile.value = '';
-        
-        setTimeout(() => {
-          uploadStatus = '';
-        }, 3000);
-      } else {
-        uploadStatus = `Error: ${result.detail || 'Failed to upload style image'}`;
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('updateIPAdapterEnabled: Failed to update enabled state:', result.detail);
       }
     } catch (error) {
-      console.error('uploadStyleImage: Upload failed:', error);
-      uploadStatus = 'Upload failed. Please try again.';
-    } finally {
-      uploadingImage = false;
+      console.error('updateIPAdapterEnabled: Update failed:', error);
     }
   }
 
-  function selectStyleImage() {
-    styleImageFile.click();
+  function handleEnabledChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const enabled = target.checked;
+    
+    // Update local state immediately for responsiveness
+    currentEnabled = enabled;
+    
+    updateIPAdapterEnabled(enabled);
   }
 
-  // Update current scale and weight type when prop changes
+  function handleInputSourceChanged(event: CustomEvent) {
+    const { componentType, sourceType, sourceData } = event.detail;
+    console.log('IPAdapterConfig: Input source changed:', event.detail);
+    
+    // The InputSourceSelector handles all input routing
+    // The backend will automatically handle:
+    // - Image mode: uses config image or default demo image
+    // - Webcam mode: uses live camera feed
+    // - Video mode: cycles through video frames
+  }
+
+  // Store reference to InputSourceSelector component
+  let inputSourceSelector: any;
+
+  // Expose reset function for parent components
+  export function resetInputSource() {
+    console.log('IPAdapterConfig: resetInputSource called');
+    
+    if (inputSourceSelector && inputSourceSelector.resetToDefaults) {
+      inputSourceSelector.resetToDefaults();
+    }
+  }
+
+  // Update current scale, weight type, and enabled state when props change
   $: if (ipadapterInfo?.scale !== undefined) {
     currentScale = ipadapterInfo.scale;
   }
   $: if (ipadapterInfo?.weight_type !== undefined) {
     currentWeightType = ipadapterInfo.weight_type;
+  }
+  $: if (ipadapterInfo?.enabled !== undefined) {
+    currentEnabled = ipadapterInfo.enabled;
   }
 </script>
 
@@ -167,140 +164,106 @@
     <div class="p-4 pt-1">
         <!-- IPAdapter Status -->
         <div class="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-700 rounded mb-3">
-          {#if ipadapterInfo?.enabled}
+          {#if currentEnabled}
             <div class="w-2 h-2 bg-green-500 rounded-full"></div>
             <span class="text-sm font-medium text-green-800 dark:text-green-200">IPAdapter Enabled</span>
           {:else}
             <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
-            <span class="text-sm text-gray-600 dark:text-gray-400">Standard Mode</span>
+            <span class="text-sm text-gray-600 dark:text-gray-400">IPAdapter Disabled</span>
           {/if}
         </div>
 
-        {#if ipadapterInfo?.enabled}
-          <!-- Style Image Upload -->
-          <div class="space-y-3">
-            <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
-              <h5 class="text-sm font-medium mb-2">Style Image</h5>
-              
-              <!-- Style Image Preview -->
-              {#if currentStyleImage}
-                <div class="mb-3">
-                  <img 
-                    src={currentStyleImage} 
-                    alt="Uploaded style image" 
-                    class="w-full max-w-32 h-32 object-cover rounded border border-gray-200 dark:border-gray-600"
-                  />
-                  <p class="text-xs text-gray-500 mt-1">Uploaded style image</p>
-                </div>
-              {:else if ipadapterInfo?.style_image_path}
-                <div class="mb-3">
-                  <img 
-                    src={ipadapterInfo.style_image_path} 
-                    alt="Style image" 
-                    class="w-full max-w-32 h-32 object-cover rounded border border-gray-200 dark:border-gray-600"
-                  />
-                  <!-- Show different text for uploaded vs config vs default style images -->
-                  <p class="text-xs text-gray-500 mt-1">
-                    {#if ipadapterInfo.style_image_path.includes('/api/ipadapter/uploaded-style-image')}
-                      Uploaded style image
-                    {:else if ipadapterInfo.style_image_path.includes('/api/default-image')}
-                      Default style image (input.png)
-                    {:else}
-                      From config: {ipadapterInfo.style_image_path}
-                    {/if}
-                  </p>
-                </div>
-              {/if}
-              
-              <!-- Upload Button -->
-              <div class="flex items-center gap-2">
-                <Button 
-                  on:click={selectStyleImage} 
-                  disabled={uploadingImage} 
-                  classList="text-sm px-3 py-2"
-                >
-                  {uploadingImage ? 'Uploading...' : 'Upload Style Image'}
-                </Button>
+        <!-- Enable/Disable Toggle (only show if IPAdapter is available) -->
+        {#if ipadapterInfo}
+          <div class="bg-gray-50 dark:bg-gray-700 rounded p-3 mb-3">
+            <div class="flex items-center justify-between">
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300" for="ipadapter-enabled">
+                Enable IPAdapter
+              </label>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input
+                  id="ipadapter-enabled"
+                  type="checkbox"
+                  class="sr-only peer"
+                  checked={currentEnabled}
+                  on:change={handleEnabledChange}
+                />
+                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            <p class="text-xs text-gray-500 mt-2">
+              Toggle to enable or disable IPAdapter style influence on the generated images.
+            </p>
+          </div>
+        {/if}
+
+        <!-- Style Input Source -->
+        <div class="space-y-3">
+          <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
+            <h5 class="text-sm font-medium mb-3">Style Input Source</h5>
+            
+            <InputSourceSelector
+              bind:this={inputSourceSelector}
+              componentType="ipadapter"
+              on:sourceChanged={handleInputSourceChanged}
+            />
+            <p class="text-xs text-gray-500 mt-3">
+              Choose the input source for IPAdapter style conditioning. Upload images/videos or use webcam for dynamic styling.
+            </p>
+          </div>
+
+          <!-- Scale Control -->
+          <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
+            <h5 class="text-sm font-medium mb-2">IPAdapter Scale</h5>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Strength</label>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{(currentScale || 0).toFixed(2)}</span>
               </div>
-              
-              <!-- Hidden file input -->
               <input
-                bind:this={styleImageFile}
-                type="file"
-                accept="image/*"
-                class="hidden"
-                on:change={uploadStyleImage}
+                type="range"
+                min="0"
+                max="2"
+                step="0.01"
+                value={currentScale}
+                on:input={handleScaleChange}
+                class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
               />
-              
-              <!-- Upload Status -->
-              {#if uploadStatus}
-                <p class="text-xs mt-2 {uploadStatus.includes('Error') || uploadStatus.includes('Please') ? 'text-red-600' : 'text-green-600'}">
-                  {uploadStatus}
-                </p>
-              {/if}
-              
-              <p class="text-xs text-gray-500 mt-2">
-                Upload an image to use as style reference for IPAdapter conditioning. If no image is uploaded, the default input.png will be used.
+              <p class="text-xs text-gray-500">
+                Controls how strongly the style image influences the generation. Higher values = stronger style influence.
               </p>
             </div>
-
-            <!-- Scale Control -->
-            <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
-              <h5 class="text-sm font-medium mb-2">IPAdapter Scale</h5>
-              <div class="space-y-2">
-                <div class="flex items-center justify-between">
-                  <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Strength</label>
-                  <span class="text-xs text-gray-600 dark:text-gray-400">{currentScale.toFixed(2)}</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.01"
-                  value={currentScale}
-                  on:input={handleScaleChange}
-                  class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600"
-                />
-                <p class="text-xs text-gray-500">
-                  Controls how strongly the style image influences the generation. Higher values = stronger style influence.
-                </p>
-              </div>
-            </div>
-
-            <!-- Weight Type Control -->
-            <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
-              <h5 class="text-sm font-medium mb-2">Weight Type</h5>
-              <div class="space-y-2">
-                <select
-                  value={currentWeightType}
-                  on:change={handleWeightTypeChange}
-                  class="w-full px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  {#each weightTypes as weightType}
-                    <option value={weightType}>{weightType}</option>
-                  {/each}
-                </select>
-                <p class="text-xs text-gray-500">
-                  Controls how the IPAdapter influence is distributed across different layers of the model.
-                </p>
-              </div>
-            </div>
-
-            <!-- IPAdapter Info -->
-            {#if ipadapterInfo?.model_path}
-              <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
-                <h5 class="text-sm font-medium mb-2">Model Information</h5>
-                <p class="text-xs text-gray-600 dark:text-gray-400 font-mono break-all">
-                  {ipadapterInfo.model_path}
-                </p>
-              </div>
-            {/if}
           </div>
-        {:else}
-          <p class="text-xs text-gray-600 dark:text-gray-400">
-            Load a configuration with IPAdapter settings to enable style-guided generation.
-          </p>
-        {/if}
+
+          <!-- Weight Type Control -->
+          <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
+            <h5 class="text-sm font-medium mb-2">Weight Type</h5>
+            <div class="space-y-2">
+              <select
+                value={currentWeightType}
+                on:change={handleWeightTypeChange}
+                class="w-full px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                {#each weightTypes as weightType}
+                  <option value={weightType}>{weightType}</option>
+                {/each}
+              </select>
+              <p class="text-xs text-gray-500">
+                Controls how the IPAdapter influence is distributed across different layers of the model.
+              </p>
+            </div>
+          </div>
+
+          <!-- IPAdapter Info -->
+          {#if ipadapterInfo?.model_path}
+            <div class="bg-gray-50 dark:bg-gray-700 rounded p-3">
+              <h5 class="text-sm font-medium mb-2">Model Information</h5>
+              <p class="text-xs text-gray-600 dark:text-gray-400 font-mono break-all">
+                {ipadapterInfo.model_path}
+              </p>
+            </div>
+          {/if}
+        </div>
     </div>
     {/if}
   </div>

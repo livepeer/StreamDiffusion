@@ -6,6 +6,7 @@
   import PreprocessorSelector from './PreprocessorSelector.svelte';
   import PreprocessorParams from './PreprocessorParams.svelte';
   import ControlNetSelector from './ControlNetSelector.svelte';
+  import InputSourceSelector from './InputSourceSelector.svelte';
 
   export let controlnetInfo: any = null;
   export let tIndexList: number[] = [35, 45];
@@ -260,6 +261,30 @@
     preprocessorParams[controlnet_index] = { ...preprocessorParams[controlnet_index], ...parameters };
     console.log('ControlNetConfig: Parameters updated:', { controlnet_index, parameters });
   }
+
+  function handleInputSourceChanged(event: CustomEvent) {
+    const { componentType, componentIndex, sourceType, sourceData } = event.detail;
+    console.log('ControlNetConfig: Input source changed:', event.detail);
+    
+    // Input source changes are UI-only and don't affect pipeline configuration
+    // Don't dispatch controlnetConfigChanged to avoid triggering getSettings()
+    // which would reset UI state like t_index_list sliders and preprocessor selections
+  }
+
+  // Store references to InputSourceSelector components
+  let inputSourceSelectors: { [key: number]: any } = {};
+
+  // Expose reset function for parent components
+  export function resetInputSources() {
+    console.log('ControlNetConfig: resetInputSources called');
+    
+    // Reset all ControlNet input source selectors
+    Object.values(inputSourceSelectors).forEach(selector => {
+      if (selector && selector.resetToDefaults) {
+        selector.resetToDefaults();
+      }
+    });
+  }
   
   // Clear preprocessor state when controlnet info changes (e.g., new YAML uploaded)
   let lastControlNetSignature = '';
@@ -269,38 +294,42 @@
     // Create a signature based on controlnet names and indices to detect changes
     const currentSignature = controlnetInfo.controlnets.map((cn: any) => `${cn.index}:${cn.name}`).join(',');
     
-    // If the signature changed, clear state (new YAML or reordering)
-    if (currentSignature !== lastControlNetSignature && lastControlNetSignature !== '') {
+    // If the signature changed, clear state (including initial load)
+    if (currentSignature !== lastControlNetSignature) {
       console.log('ControlNetConfig: ControlNet configuration changed, clearing preprocessor state');
       console.log('ControlNetConfig: Old signature:', lastControlNetSignature);
       console.log('ControlNetConfig: New signature:', currentSignature);
       currentPreprocessors = {};
       preprocessorInfos = {};
       preprocessorParams = {};
-    }
-    lastControlNetSignature = currentSignature;
-    
-    controlnetInfo.controlnets.forEach(async (controlnet: any, index: number) => {
-      if (controlnet.preprocessor && !currentPreprocessors[index]) {
-        currentPreprocessors[index] = controlnet.preprocessor;
-        
-        // Also initialize parameters by fetching current values
-        try {
-          const response = await fetch(`/api/preprocessors/current-params/${index}`);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.parameters && Object.keys(data.parameters).length > 0) {
-              preprocessorParams[index] = { ...data.parameters };
-              // Force reactivity
-              preprocessorParams = { ...preprocessorParams };
-              console.log('ControlNetConfig: Loaded initial params for CN', index, ':', data.parameters);
+      lastControlNetSignature = currentSignature;
+      
+      // Initialize all preprocessors from config
+      controlnetInfo.controlnets.forEach(async (controlnet: any, index: number) => {
+        if (controlnet.preprocessor) {
+          currentPreprocessors[index] = controlnet.preprocessor;
+          
+          // Also initialize parameters by fetching current values
+          try {
+            const response = await fetch(`/api/preprocessors/current-params/${index}`);
+            if (response.ok) {
+              const data = await response.json();
+              if (data.parameters && Object.keys(data.parameters).length > 0) {
+                preprocessorParams[index] = { ...data.parameters };
+                // Force reactivity
+                preprocessorParams = { ...preprocessorParams };
+                console.log('ControlNetConfig: Loaded initial params for CN', index, ':', data.parameters);
+              }
             }
+          } catch (err) {
+            console.warn('ControlNetConfig: Failed to load initial params for CN', index, ':', err);
           }
-        } catch (err) {
-          console.warn('ControlNetConfig: Failed to load initial params for CN', index, ':', err);
+          
+          // Force reactivity for preprocessors
+          currentPreprocessors = { ...currentPreprocessors };
         }
-      }
-    });
+      });
+    }
   }
 </script>
 
@@ -366,7 +395,7 @@
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-medium">Strength</span>
                     <span class="text-xs text-gray-600 dark:text-gray-400">
-                      {controlnet.strength.toFixed(2)}
+                      {(controlnet.strength || 0).toFixed(2)}
                     </span>
                   </div>
                   <input
@@ -386,6 +415,17 @@
                     controlnetIndex={controlnet.index}
                     currentPreprocessor={currentPreprocessors[controlnet.index] || controlnet.preprocessor || 'passthrough'}
                     on:preprocessorChanged={handlePreprocessorChanged}
+                  />
+                </div>
+                
+                <!-- Input Source Selector -->
+                <div class="border-t border-gray-200 dark:border-gray-600 pt-3">
+                  <h6 class="text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Input Source</h6>
+                  <InputSourceSelector
+                    bind:this={inputSourceSelectors[controlnet.index]}
+                    componentType="controlnet"
+                    componentIndex={controlnet.index}
+                    on:sourceChanged={handleInputSourceChanged}
                   />
                 </div>
                 
@@ -485,7 +525,7 @@
             <div class="space-y-1">
               <div class="flex items-center justify-between">
                 <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Guidance Scale</label>
-                <span class="text-xs text-gray-600 dark:text-gray-400">{guidanceScale.toFixed(2)}</span>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{(guidanceScale || 0).toFixed(2)}</span>
               </div>
               <input
                 type="range"
@@ -503,7 +543,7 @@
             <div class="space-y-1">
               <div class="flex items-center justify-between">
                 <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Delta</label>
-                <span class="text-xs text-gray-600 dark:text-gray-400">{delta.toFixed(2)}</span>
+                <span class="text-xs text-gray-600 dark:text-gray-400">{(delta || 0).toFixed(2)}</span>
               </div>
               <input
                 type="range"

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { lcmLiveStatus, LCMLiveStatus, streamId } from '$lib/lcmLive';
-  import { getPipelineValues, pipelineValues } from '$lib/store';
+  import { getAppState, appState } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import { onDestroy } from 'svelte';
 
@@ -22,9 +22,6 @@
     if (currentResolution) {
       // Use prop if provided
       localResolution = currentResolution;
-    } else if ($pipelineValues.resolution) {
-      // Fallback to pipeline values
-      localResolution = parseResolution($pipelineValues.resolution);
     } else {
       // Default fallback
       localResolution = {
@@ -39,10 +36,10 @@
   async function takeSnapshot() {
     if (isLCMRunning) {
       await snapImage(imageEl, {
-        prompt: getPipelineValues()?.prompt,
-        negative_prompt: getPipelineValues()?.negative_prompt,
-        seed: getPipelineValues()?.seed,
-        guidance_scale: getPipelineValues()?.guidance_scale
+        prompt: getAppState()?.config_prompt || '',
+        negative_prompt: getAppState()?.negative_prompt || '',
+        seed: getAppState()?.seed || 0,
+        guidance_scale: getAppState()?.guidance_scale || 1.0
       });
     }
   }

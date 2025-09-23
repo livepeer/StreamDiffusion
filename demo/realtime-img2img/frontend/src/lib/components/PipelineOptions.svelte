@@ -6,9 +6,23 @@
   import TextArea from './TextArea.svelte';
   import Checkbox from './Checkbox.svelte';
   import Selectlist from './Selectlist.svelte';
-  import { pipelineValues } from '$lib/store';
+  import { appState } from '$lib/store';
 
   export let pipelineParams: Fields;
+  
+  // Create a reactive object that maps parameter values from appState
+  let parameterValues: Record<string, any>;
+  $: parameterValues = $appState ? {
+    // Map common parameters from appState
+    guidance_scale: $appState.guidance_scale,
+    delta: $appState.delta,
+    num_inference_steps: $appState.num_inference_steps,
+    seed: $appState.seed,
+    negative_prompt: $appState.negative_prompt,
+    skip_diffusion: $appState.skip_diffusion,
+    // Add any config_values that might be present
+    ...($appState.config_values || {})
+  } : {};
 
   $: advanceOptions = Object.values(pipelineParams)?.filter(
     (e) => e?.hide == true && e?.disabled !== true
@@ -21,15 +35,15 @@
     {#if featuredOptions}
       {#each featuredOptions as params}
         {#if params.field === FieldType.RANGE}
-          <InputRange {params} bind:value={$pipelineValues[params.id]}></InputRange>
+          <InputRange {params} bind:value={parameterValues[params.id]}></InputRange>
         {:else if params.field === FieldType.SEED}
-          <SeedInput {params} bind:value={$pipelineValues[params.id]}></SeedInput>
+          <SeedInput {params} bind:value={parameterValues[params.id]}></SeedInput>
         {:else if params.field === FieldType.TEXTAREA}
-          <TextArea {params} bind:value={$pipelineValues[params.id]}></TextArea>
+          <TextArea {params} bind:value={parameterValues[params.id]}></TextArea>
         {:else if params.field === FieldType.CHECKBOX}
-          <Checkbox {params} bind:value={$pipelineValues[params.id]}></Checkbox>
+          <Checkbox {params} bind:value={parameterValues[params.id]}></Checkbox>
         {:else if params.field === FieldType.SELECT}
-          <Selectlist {params} bind:value={$pipelineValues[params.id]}></Selectlist>
+          <Selectlist {params} bind:value={parameterValues[params.id]}></Selectlist>
         {/if}
       {/each}
     {/if}
@@ -44,15 +58,15 @@
       >
         {#each advanceOptions as params}
           {#if params.field === FieldType.RANGE}
-            <InputRange {params} bind:value={$pipelineValues[params.id]}></InputRange>
+            <InputRange {params} bind:value={parameterValues[params.id]}></InputRange>
           {:else if params.field === FieldType.SEED}
-            <SeedInput {params} bind:value={$pipelineValues[params.id]}></SeedInput>
+            <SeedInput {params} bind:value={parameterValues[params.id]}></SeedInput>
           {:else if params.field === FieldType.TEXTAREA}
-            <TextArea {params} bind:value={$pipelineValues[params.id]}></TextArea>
+            <TextArea {params} bind:value={parameterValues[params.id]}></TextArea>
           {:else if params.field === FieldType.CHECKBOX}
-            <Checkbox {params} bind:value={$pipelineValues[params.id]}></Checkbox>
+            <Checkbox {params} bind:value={parameterValues[params.id]}></Checkbox>
           {:else if params.field === FieldType.SELECT}
-            <Selectlist {params} bind:value={$pipelineValues[params.id]}></Selectlist>
+            <Selectlist {params} bind:value={parameterValues[params.id]}></Selectlist>
           {/if}
         {/each}
       </div>

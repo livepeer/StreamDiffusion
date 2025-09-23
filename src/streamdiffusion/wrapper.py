@@ -279,7 +279,11 @@ class StreamDiffusionWrapper:
         self.max_batch_size = max_batch_size
 
         self.use_denoising_batch = use_denoising_batch
-        self.use_safety_checker = use_safety_checker
+        # safety checker is only supported for TensorRT acceleration
+        self.use_safety_checker = use_safety_checker and (acceleration == "tensorrt")
+        self.set_nsfw_fallback_img(height, width)
+        self.safety_checker_fallback_type = safety_checker_fallback_type
+        self.safety_checker_threshold = safety_checker_threshold
 
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
@@ -345,10 +349,6 @@ class StreamDiffusionWrapper:
             self.stream.enable_similar_image_filter(
                 similar_image_filter_threshold, similar_image_filter_max_skip_frame
             )
-
-        self.set_nsfw_fallback_img(height, width)
-        self.safety_checker_fallback_type = safety_checker_fallback_type
-        self.safety_checker_threshold = safety_checker_threshold
 
     def prepare(
         self,
@@ -574,7 +574,9 @@ class StreamDiffusionWrapper:
         ipadapter_config : Optional[Dict[str, Any]]
             IPAdapter configuration dict containing scale, style_image, etc.
         use_safety_checker : Optional[bool]
-            Whether to use the safety checker.
+            Whether to use the safety checker. Only supported for TensorRT acceleration.
+        safety_checker_threshold : Optional[float]
+            The threshold for the safety checker.
         """
         # Handle all parameters via parameter updater (including ControlNet)
         self.stream._param_updater.update_stream_params(
@@ -598,7 +600,7 @@ class StreamDiffusionWrapper:
             latent_postprocessing_config=latent_postprocessing_config,
         )
         if use_safety_checker is not None:
-            self.use_safety_checker = use_safety_checker
+            self.use_safety_checker = use_safety_checker and (self._acceleration == "tensorrt")
         if safety_checker_threshold is not None:
             self.safety_checker_threshold = safety_checker_threshold
 
@@ -1385,7 +1387,7 @@ class StreamDiffusionWrapper:
                     # scale omitted from engine naming; runtime will pass ipadapter_scale vector
                     ipadapter_tokens = cfg0.get('num_image_tokens', 4)
                     # Determine FaceID type from config for engine naming
-                    is_faceid = (cfg0.get('type') == 'faceid' or bool(cfg0.get('is_faceid', False)))
+                    is_faceid = (cfg0['type'] == 'faceid')
                 # Generate engine paths using EngineManager
                 unet_path = engine_manager.get_engine_path(
                     EngineType.UNET,
@@ -1475,7 +1477,7 @@ class StreamDiffusionWrapper:
                 # CRITICAL: Install IPAdapter module BEFORE TensorRT compilation to ensure processors are baked into engines
                 if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
                     try:
-                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig
+                        from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
                         logger.info("Installing IPAdapter module before TensorRT compilation...")
                         
                         # Use first config if list provided
@@ -1487,7 +1489,7 @@ class StreamDiffusionWrapper:
                             image_encoder_path=cfg['image_encoder_path'],
                             style_image=cfg.get('style_image'),
                             scale=cfg.get('scale', 1.0),
-                            is_faceid=(cfg.get('type') == 'faceid' or bool(cfg.get('is_faceid', False))),
+                            type=IPAdapterType(cfg.get('type', "regular")),
                             insightface_model_name=cfg.get('insightface_model_name'),
                         )
                         ip_module = IPAdapterModule(ip_cfg)
@@ -1861,8 +1863,33 @@ class StreamDiffusionWrapper:
         # IPAdapter module installation has been moved to before TensorRT compilation (see lines 1307-1345)
         # This ensures processors are properly baked into the TensorRT engines
         if use_ipadapter and ipadapter_config and not hasattr(stream, '_ipadapter_module'):
-            logger.warning("IPAdapter was not installed during TensorRT compilation phase - this may cause runtime issues")
-            logger.warning("IPAdapter should have been installed before engine compilation for proper TensorRT integration")
+            try:
+                from streamdiffusion.modules.ipadapter_module import IPAdapterModule, IPAdapterConfig, IPAdapterType
+                # Use first config if list provided
+                cfg = ipadapter_config[0] if isinstance(ipadapter_config, list) else ipadapter_config
+                
+                # Get adapter type from config  
+                ipadapter_type = IPAdapterType(cfg['type'])
+                
+                ip_cfg = IPAdapterConfig(
+                    style_image_key=cfg.get('style_image_key') or 'ipadapter_main',
+                    num_image_tokens=cfg.get('num_image_tokens', 4),
+                    ipadapter_model_path=cfg['ipadapter_model_path'],
+                    image_encoder_path=cfg['image_encoder_path'],
+                    style_image=cfg.get('style_image'),
+                    scale=cfg.get('scale', 1.0),
+                    type=ipadapter_type,
+                    insightface_model_name=cfg.get('insightface_model_name'),
+                )
+                ip_module = IPAdapterModule(ip_cfg)
+                ip_module.install(stream)
+                # Expose for later updates
+                stream._ipadapter_module = ip_module
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                logger.error("Failed to install IPAdapterModule")
+                raise
 
         # Note: LoRA weights have already been merged permanently during model loading
 
@@ -1937,11 +1964,17 @@ class StreamDiffusionWrapper:
         else:
             logger.debug("update_control_image: Skipping ControlNet update in skip diffusion mode")
 
-    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor]) -> None:
+    def update_style_image(self, image: Union[str, Image.Image, torch.Tensor], is_stream: bool = False, style_key = "ipadapter_main") -> None:
         """Update IPAdapter style image"""
         if not self.use_ipadapter:
             raise RuntimeError("update_style_image: IPAdapter support not enabled. Set use_ipadapter=True in constructor.")
-        self.stream.update_style_image(image)
+        
+        if not self.skip_diffusion:
+            self.stream._param_updater.update_style_image(style_key, image, is_stream=is_stream)
+        else:
+            logger.debug("update_style_image: Skipping IPAdapter update in skip diffusion mode")
+        
+        
         
     def clear_caches(self) -> None:
         """Clear all cached prompt embeddings and seed noise tensors."""

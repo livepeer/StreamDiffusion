@@ -191,7 +191,7 @@
       ></canvas>
       
       <div class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-xs px-2 py-1 rounded">
-        Hand {handIndex} Distance: {currentDistance.toFixed(3)}
+        Hand {handIndex} Distance: {(currentDistance || 0).toFixed(3)}
       </div>
     </div>
     
@@ -202,7 +202,7 @@
 {:else}
   <div class="hand-tracking-info">
     <div class="text-sm text-gray-400">
-      Hand {handIndex} Distance: {currentDistance.toFixed(3)}
+      Hand {handIndex} Distance: {(currentDistance || 0).toFixed(3)}
     </div>
     {#if handTrackingError}
       <p class="text-red-500 text-sm mt-1">{handTrackingError}</p>

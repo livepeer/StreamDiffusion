@@ -2,6 +2,7 @@ from typing import Tuple, Any
 import torch
 from PIL import Image
 from .ipadapter_embedding import IPAdapterEmbeddingPreprocessor
+from streamdiffusion.utils.reporting import report_error
 
 
 class FaceIDEmbeddingPreprocessor(IPAdapterEmbeddingPreprocessor):
@@ -43,12 +44,6 @@ class FaceIDEmbeddingPreprocessor(IPAdapterEmbeddingPreprocessor):
         super().__init__(ipadapter=ipadapter, **kwargs)
         self.faceid_v2_weight = float(faceid_v2_weight)
 
-        # Verify this is a FaceID-capable IP-Adapter
-        if not hasattr(ipadapter, "is_faceid") or not bool(ipadapter.is_faceid):
-            raise ValueError(
-                "FaceIDEmbeddingPreprocessor: ipadapter must be a FaceID-capable IPAdapter with is_faceid=True"
-            )
-
         if not hasattr(ipadapter, "insightface_model") or ipadapter.insightface_model is None:
             raise ValueError(
                 "FaceIDEmbeddingPreprocessor: ipadapter must have an initialized InsightFace model"
@@ -77,12 +72,9 @@ class FaceIDEmbeddingPreprocessor(IPAdapterEmbeddingPreprocessor):
             return image_embeds, negative_embeds
 
         except Exception as e:
-            print(
-                f"FaceIDEmbeddingPreprocessor._process_core: Error processing face image: {e}"
-            )
-            raise RuntimeError(
-                f"FaceIDEmbeddingPreprocessor: Failed to extract face embeddings: {e}"
-            )
+            msg = f"FaceIDEmbeddingPreprocessor: Failed to extract face embeddings: {e}"
+            report_error(msg)
+            raise RuntimeError(msg)
 
     def update_faceid_v2_weight(self, weight: float) -> None:
         self.faceid_v2_weight = float(weight)

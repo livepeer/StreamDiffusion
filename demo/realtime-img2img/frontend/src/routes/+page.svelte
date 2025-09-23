@@ -16,49 +16,67 @@
   import Success from '$lib/components/Success.svelte';
   import { lcmLiveStatus, lcmLiveActions, LCMLiveStatus } from '$lib/lcmLive';
   import { mediaStreamActions, onFrameChangeStore } from '$lib/mediaStream';
-  import { getPipelineValues, deboucedPipelineValues, pipelineValues } from '$lib/store';
+  import { appState, startStatePolling, stopStatePolling, fetchAppState, type AppState } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
   import TextArea from '$lib/components/TextArea.svelte';
   import InputControl from '$lib/components/InputControl.svelte';
+  import InputSourceSelector from '$lib/components/InputSourceSelector.svelte';
 
-  let pipelineParams: Fields;
-  let pipelineInfo: PipelineInfo;
-  let controlnetInfo: any = null;
-  let ipadapterInfo: any = null;
-  let imagePreprocessingInfo: any = null;
-  let imagePostprocessingInfo: any = null;
-  let latentPreprocessingInfo: any = null;
-  let latentPostprocessingInfo: any = null;
-  let ipadapterScale: number = 1.0;
-  let ipadapterWeightType: string = "linear";
-  let tIndexList: number[] = [35, 45];
-  let guidanceScale: number = 1.1;
-  let delta: number = 0.7;
-  let numInferenceSteps: number = 50;
-  let seed: number = 2;
-  let promptBlendingConfig: any = null;
-  let seedBlendingConfig: any = null;
-  let normalizePromptWeights: boolean = true;
-  let normalizeSeedWeights: boolean = true;
-  let skipDiffusion: boolean = false;
-  let pageContent: string;
-  let isImageMode: boolean = false;
-  let maxQueueSize: number = 0;
-  let currentQueueSize: number = 0;
+  // Reactive state derived from centralized store
+  $: pipelineParams = $appState?.input_params?.properties || $appState?.pipeline_params?.properties;
+  $: pipelineInfo = $appState?.info?.properties;
+  $: controlnetInfo = $appState?.controlnet;
+  $: ipadapterInfo = $appState?.ipadapter;
+  $: imagePreprocessingInfo = $appState?.image_preprocessing;
+  $: imagePostprocessingInfo = $appState?.image_postprocessing;
+  $: latentPreprocessingInfo = $appState?.latent_preprocessing;
+  $: latentPostprocessingInfo = $appState?.latent_postprocessing;
+  $: ipadapterScale = $appState?.ipadapter?.scale || 1.0;
+  $: ipadapterWeightType = $appState?.ipadapter?.weight_type || "linear";
+  $: tIndexList = $appState?.t_index_list || [35, 45];
+  $: guidanceScale = $appState?.guidance_scale || 1.1;
+  $: delta = $appState?.delta || 0.7;
+  $: numInferenceSteps = $appState?.num_inference_steps || 50;
+  $: seed = $appState?.seed || 2;
+  $: promptBlendingConfig = $appState?.prompt_blending;
+  $: seedBlendingConfig = $appState?.seed_blending;
+  $: normalizePromptWeights = $appState?.normalize_prompt_weights ?? true;
+  $: normalizeSeedWeights = $appState?.normalize_seed_weights ?? true;
+  $: skipDiffusion = $appState?.skip_diffusion || false;
+  $: pageContent = $appState?.page_content || '';
+  $: isImageMode = pipelineInfo?.input_mode?.default === PipelineMode.IMAGE;
+  $: maxQueueSize = $appState?.max_queue_size || 0;
+  $: currentQueueSize = $appState?.queue_size || 0;
+  $: selectedModelId = $appState?.model_id || '';
+  $: pipelineActive = $appState?.pipeline_active || false;
+  $: fps = $appState?.fps || 0;
+  $: debugMode = $appState?.debug_mode || false;
+  $: debugPendingFrame = $appState?.debug_pending_frame || false;
+  
+  // Local UI state that doesn't come from backend
   let queueCheckerRunning: boolean = false;
   let warningMessage: string = '';
   let successMessage: string = '';
-  let selectedModelId: string = '';
-  let pipelineActive: boolean = false;
+  let configRefreshKey: number = 0; // Used to force component refresh when config is uploaded
+  
+  // Reactive key that updates when pipeline state changes (not just config uploads)
+  $: pipelineStateKey = `${configRefreshKey}-${pipelineActive}-${$appState?.pipeline_lifecycle || 'stopped'}`;
 
   let currentResolution: ResolutionInfo;
   let apiError: string = '';
   let isRetrying: boolean = false;
   
-  // Reactive resolution parsing
+  // Reactive resolution parsing from centralized state
   $: {
-    if ($pipelineValues.resolution) {
-      currentResolution = parseResolution($pipelineValues.resolution);
+    if ($appState?.resolution) {
+      currentResolution = parseResolution($appState.resolution);
+    } else if ($appState?.current_resolution) {
+      currentResolution = {
+        width: $appState.current_resolution.width,
+        height: $appState.current_resolution.height,
+        aspectRatio: $appState.current_resolution.width / $appState.current_resolution.height,
+        aspectRatioString: "1:1"
+      };
     } else if (pipelineParams?.width?.default && pipelineParams?.height?.default) {
       // Fallback to pipeline params
       currentResolution = {
@@ -89,145 +107,40 @@
   let videoOffsetX = 0;
   let videoOffsetY = 0;
 
-  // FPS tracking
-  let fps = 0;
+  // Legacy FPS interval (kept for cleanup in onDestroy)
   let fpsInterval: number | null = null;
 
   onMount(() => {
-    getSettings();
-    updateFPS();
-    fpsInterval = setInterval(updateFPS, 1000);
+    // Start centralized state polling (replaces getSettings, FPS polling, and queue polling)
+    // Using 500ms for highly responsive UI updates (FPS, queue size, debug state, etc.)
+    startStatePolling(500);
   });
 
   onDestroy(() => {
+    // Stop centralized state polling
+    stopStatePolling();
     if (fpsInterval) {
       clearInterval(fpsInterval);
     }
   });
 
   async function getSettings() {
+    // Legacy fallback function - now just triggers state fetch
     try {
       apiError = '';
       isRetrying = false;
       
-      const response = await fetch('/api/settings');
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      // Use centralized state fetching
+      const state = await fetch('/api/state').then(r => r.json());
       
-      const settings = await response.json();
-
-      pipelineParams = settings.input_params.properties;
-      pipelineInfo = settings.info.properties;
-      pipelineActive = settings.pipeline_active || false;
+      // Prompt initialization is now handled by centralized state management
+      console.log('getSettings: Prompt from centralized state:', state.config_prompt);
       
-      // Initialize prompt value in store if not already set
-      if (!($pipelineValues.prompt)) {
-        pipelineValues.update(values => ({
-          ...values,
-          prompt: pipelineParams.prompt?.default || "Portrait of The Joker halloween costume, face painting, with , glare pose, detailed, intricate, full of colour, cinematic lighting, trending on artstation, 8k, hyperrealistic, focused, extreme details, unreal engine 5 cinematic, masterpiece"
-        }));
-      }
-      
-      controlnetInfo = settings.controlnet || null;
-      ipadapterInfo = settings.ipadapter || null;
-      
-      // Load pipeline hooks info
-      try {
-        const [imgPreResponse, imgPostResponse, latPreResponse, latPostResponse] = await Promise.all([
-          fetch('/api/pipeline-hooks/image_preprocessing/info-config'),
-          fetch('/api/pipeline-hooks/image_postprocessing/info-config'),
-          fetch('/api/pipeline-hooks/latent_preprocessing/info-config'),
-          fetch('/api/pipeline-hooks/latent_postprocessing/info-config')
-        ]);
-        
-        if (imgPreResponse.ok) {
-          const data = await imgPreResponse.json();
-          imagePreprocessingInfo = data.image_preprocessing || null;
-        }
-        
-        if (imgPostResponse.ok) {
-          const data = await imgPostResponse.json();
-          imagePostprocessingInfo = data.image_postprocessing || null;
-        }
-        
-        if (latPreResponse.ok) {
-          const data = await latPreResponse.json();
-          latentPreprocessingInfo = data.latent_preprocessing || null;
-        }
-        
-        if (latPostResponse.ok) {
-          const data = await latPostResponse.json();
-          latentPostprocessingInfo = data.latent_postprocessing || null;
-        }
-      } catch (err) {
-        console.warn('getSettings: Failed to load pipeline hooks info:', err);
-      }
-      
-      selectedModelId = settings.model_id || '';
-      // Apply config_values (from YAML) into the pipelineValues store for immediate UI sync
-      if (settings.config_values) {
-        pipelineValues.update(values => ({
-          ...values,
-          ...settings.config_values
-        }));
-      }
-      ipadapterScale = settings.ipadapter?.scale || 1.0;
-      ipadapterWeightType = settings.ipadapter?.weight_type || "linear";
-      tIndexList = settings.t_index_list || [35, 45];
-      guidanceScale = settings.guidance_scale || 1.1;
-      delta = settings.delta || 0.7;
-      numInferenceSteps = settings.num_inference_steps || 50;
-      seed = settings.seed || 2;
-      promptBlendingConfig = settings.prompt_blending || null;
-      seedBlendingConfig = settings.seed_blending || null;
-      normalizePromptWeights = settings.normalize_prompt_weights ?? true;
-      normalizeSeedWeights = settings.normalize_seed_weights ?? true;
-      skipDiffusion = settings.skip_diffusion || false;
-      isImageMode = pipelineInfo.input_mode.default === PipelineMode.IMAGE;
-      maxQueueSize = settings.max_queue_size;
-      pageContent = settings.page_content;
-      
-      console.log('getSettings: promptBlendingConfig:', promptBlendingConfig);
-      console.log('getSettings: current prompt in store:', $pipelineValues.prompt);
-      
-      // Update prompt in store if config prompt is available (fallback to settings.prompt)
-      if (settings.config_prompt) {
-        pipelineValues.update(values => ({
-          ...values,
-          prompt: settings.config_prompt
-        }));
-        console.log('getSettings: Updated prompt from config_prompt:', settings.config_prompt);
-      } else if (settings.prompt) {
-        pipelineValues.update(values => ({
-          ...values,
-          prompt: settings.prompt
-        }));
-        console.log('getSettings: Updated prompt from prompt:', settings.prompt);
-      }
-      // Update negative prompt if provided
-      if (settings.negative_prompt !== undefined) {
-        pipelineValues.update(values => ({
-          ...values,
-          negative_prompt: settings.negative_prompt
-        }));
-      }
-      
-      // Set initial resolution value if available
-      if (settings.current_resolution) {
-        pipelineValues.update(values => ({
-          ...values,
-          resolution: settings.current_resolution
-        }));
-      }
-      
-      console.log(pipelineParams);
-      console.log('handleControlNetUpdate: ControlNet Info:', controlnetInfo);
-      console.log('handleControlNetUpdate: T-Index List:', tIndexList);
+      console.log('getSettings: Legacy function called - using centralized state');
       toggleQueueChecker(true);
       
     } catch (error) {
-      console.error('Failed to load settings:', error);
+      console.error('getSettings: Failed to load settings:', error);
       apiError = error instanceof Error ? error.message : 'Failed to connect to the API. Please check if the server is running.';
     }
   }
@@ -240,12 +153,9 @@
   function handleControlNetUpdate(event: CustomEvent) {
     controlnetInfo = event.detail.controlnet;
     
-    // Update prompt if config prompt is available
+    // Prompt updates are now handled by centralized state management
     if (event.detail.config_prompt) {
-      pipelineValues.update(values => ({
-        ...values,
-        prompt: event.detail.config_prompt
-      }));
+      console.log('handleControlNetUpdate: Config prompt updated:', event.detail.config_prompt);
     }
     
     // Update t_index_list if available
@@ -353,37 +263,14 @@
 
   function toggleQueueChecker(start: boolean) {
     queueCheckerRunning = start && maxQueueSize > 0;
-    if (start) {
-      getQueueSize();
-    }
-  }
-  
-  async function getQueueSize() {
-    if (!queueCheckerRunning) {
-      return;
-    }
-    
-    try {
-      const response = await fetch('/api/queue');
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      const data = await response.json();
-      currentQueueSize = data.queue_size;
-    } catch (error) {
-      console.error('Failed to get queue size:', error);
-      // Don't show error to user for queue size, just log it
-      // This is a background operation that shouldn't interrupt the main flow
-    }
-    
-    setTimeout(getQueueSize, 10000);
+    // Queue checking is now handled by centralized state polling
   }
 
   function getSreamdata() {
     if (isImageMode) {
-      return [getPipelineValues(), $onFrameChangeStore?.blob];
+      return [$appState, $onFrameChangeStore?.blob];
     } else {
-      return [$deboucedPipelineValues];
+      return [$appState];
     }
   }
 
@@ -394,19 +281,28 @@
   
   // Watch for resolution changes
   let previousResolution: string = '';
+  let userInitiatedResolutionChange = false;
+  
   $: {
-    if ($pipelineValues.resolution && $pipelineValues.resolution !== previousResolution && previousResolution !== '') {
-      const nextResolution = $pipelineValues.resolution;
+    const currentAppResolution = $appState?.resolution;
+    if (currentAppResolution && currentAppResolution !== previousResolution && previousResolution !== '') {
+      const nextResolution = currentAppResolution;
       previousResolution = nextResolution;
-      if (pipelineActive) {
+      
+      // Only trigger automatic resolution update if it wasn't initiated by user action
+      // This prevents double pipeline restarts when user manually updates resolution
+      if (!userInitiatedResolutionChange && pipelineActive) {
         handleResolutionUpdate(nextResolution);
-      } else {
+      } else if (!userInitiatedResolutionChange && !pipelineActive) {
         // No pipeline yet: don't call backend, just inform the user
         successMessage = 'Resolution set to ' + nextResolution.split(' ')[0] + '. It will be applied when streaming starts.';
         setTimeout(() => { successMessage = ''; }, 3000);
       }
-    } else if ($pipelineValues.resolution && previousResolution === '') {
-      previousResolution = $pipelineValues.resolution;
+      
+      // Reset the flag after processing
+      userInitiatedResolutionChange = false;
+    } else if (currentAppResolution && previousResolution === '') {
+      previousResolution = currentAppResolution;
     }
   }
   
@@ -436,15 +332,7 @@
     }
   }
 
-  async function updateFPS() {
-    try {
-      const response = await fetch('/api/fps');
-      const data = await response.json();
-      fps = data.fps;
-    } catch (error) {
-      console.error('updateFPS: Failed to fetch FPS:', error);
-    }
-  }
+  // FPS is now handled by centralized state polling
 
   async function refreshBlendingConfigs() {
     try {
@@ -553,12 +441,23 @@
       const result = await response.json();
 
       if (response.ok) {
-        successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        console.log('uploadConfig: Full response received:', result);
+        console.log('uploadConfig: controls_updated flag:', result.controls_updated);
+        
+        // If pipeline is running, stop it first
+        if (isLCMRunning) {
+          console.log('uploadConfig: Stopping active pipeline before applying config...');
+          await toggleLcmLive(); // Stop the current pipeline
+          successMessage = 'Configuration uploaded successfully! Pipeline stopped and reset to config.';
+        } else {
+          successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
+        }
         fileInput.value = '';
         
         // Update ControlNet info
         if (result.controlnet) {
           controlnetInfo = result.controlnet;
+          console.log('uploadConfig: Updated controlnetInfo to:', controlnetInfo);
         }
         
         // Update IPAdapter info
@@ -574,26 +473,28 @@
         // Update streaming parameters
         if (result.t_index_list) {
           tIndexList = [...result.t_index_list];
+          console.log('uploadConfig: Updated tIndexList to:', tIndexList);
         }
         if (result.guidance_scale !== undefined) {
           guidanceScale = result.guidance_scale;
+          console.log('uploadConfig: Updated guidanceScale to:', guidanceScale);
         }
         if (result.delta !== undefined) {
           delta = result.delta;
+          console.log('uploadConfig: Updated delta to:', delta);
         }
         if (result.num_inference_steps !== undefined) {
           numInferenceSteps = result.num_inference_steps;
+          console.log('uploadConfig: Updated numInferenceSteps to:', numInferenceSteps);
         }
         if (result.seed !== undefined) {
           seed = result.seed;
+          console.log('uploadConfig: Updated seed to:', seed);
         }
         
-        // Apply config_values (from YAML upload) into the pipelineValues store
+        // Config values are now handled by centralized state management
         if (result.config_values) {
-          pipelineValues.update(values => ({
-            ...values,
-            ...result.config_values
-          }));
+          console.log('uploadConfig: Config values updated via centralized state');
         }
 
         // Update normalization settings
@@ -618,36 +519,25 @@
           console.log('uploadConfig: Updated seed blending config:', seedBlendingConfig);
         }
         
-        // Update main prompt if config prompt is available (fallback to result.prompt)
+        // Prompt and resolution updates are now handled by centralized state management
         if (result.config_prompt) {
-          pipelineValues.update(values => ({
-            ...values,
-            prompt: result.config_prompt
-          }));
+          console.log('uploadConfig: Config prompt updated via centralized state:', result.config_prompt);
         } else if (result.prompt) {
-          pipelineValues.update(values => ({
-            ...values,
-            prompt: result.prompt
-          }));
+          console.log('uploadConfig: Prompt updated via centralized state:', result.prompt);
         }
-        // Update negative prompt if provided
+        
         if (result.negative_prompt !== undefined) {
-          pipelineValues.update(values => ({
-            ...values,
-            negative_prompt: result.negative_prompt
-          }));
+          console.log('uploadConfig: Negative prompt updated via centralized state:', result.negative_prompt);
         }
         
-        // Update resolution if config resolution is available
         if (result.current_resolution) {
-          pipelineValues.update(values => ({
-            ...values,
-            resolution: result.current_resolution
-          }));
-          console.log('uploadConfig: Updated resolution to:', result.current_resolution);
+          console.log('uploadConfig: Resolution updated via centralized state:', result.current_resolution);
         }
         
-        // Update pipeline hooks info
+        // Force complete refresh of all pipeline hook components by generating new keys
+        const configUploadTimestamp = Date.now();
+        
+        // Update pipeline hooks info with forced refresh
         if (result.image_preprocessing) {
           imagePreprocessingInfo = result.image_preprocessing;
           console.log('uploadConfig: Updated image preprocessing info:', imagePreprocessingInfo);
@@ -664,6 +554,12 @@
           latentPostprocessingInfo = result.latent_postprocessing;
           console.log('uploadConfig: Updated latent postprocessing info:', latentPostprocessingInfo);
         }
+        
+        // Trigger complete re-initialization of all components by updating the config refresh key
+        configRefreshKey = configUploadTimestamp;
+        
+        // Reset all input source selectors to defaults
+        await resetAllInputSourceSelectors();
         
         // Success toast will auto-dismiss
       } else {
@@ -763,6 +659,80 @@
     document.removeEventListener('mouseup', stopVideoDrag);
     document.body.style.userSelect = '';
   }
+
+  function handleBaseInputSourceChanged(event: CustomEvent) {
+    const { componentType, sourceType, sourceData } = event.detail;
+    console.log('Main page: Base input source changed:', event.detail);
+  }
+
+  // Component references for resetting input sources
+  let baseInputSourceSelector: any;
+  let controlNetConfigComponent: any;
+  let ipAdapterConfigComponent: any;
+
+  // Debug control functions
+  async function toggleDebugMode() {
+    try {
+      const endpoint = debugMode ? '/api/debug/disable' : '/api/debug/enable';
+      const response = await fetch(endpoint, { method: 'POST' });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('toggleDebugMode: Debug mode toggled:', result.message);
+      } else {
+        const error = await response.json();
+        warningMessage = `Failed to toggle debug mode: ${error.detail}`;
+      }
+    } catch (error) {
+      console.error('toggleDebugMode: Error toggling debug mode:', error);
+      warningMessage = 'Failed to toggle debug mode: ' + (error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function stepFrame() {
+    try {
+      const response = await fetch('/api/debug/step', { method: 'POST' });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('stepFrame: Frame step requested:', result.message);
+        // Immediately refresh state to update button disabled state
+        await fetchAppState();
+      } else {
+        const error = await response.json();
+        warningMessage = `Failed to step frame: ${error.detail}`;
+      }
+    } catch (error) {
+      console.error('stepFrame: Error stepping frame:', error);
+      warningMessage = 'Failed to step frame: ' + (error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  // Function to reset all input source selectors
+  async function resetAllInputSourceSelectors() {
+    console.log('resetAllInputSourceSelectors: Resetting all input source selectors');
+    
+    try {
+      // Reset base input source selector
+      if (baseInputSourceSelector && baseInputSourceSelector.resetToDefaults) {
+        baseInputSourceSelector.resetToDefaults();
+      }
+      
+      // Reset ControlNet input source selectors (handled by ControlNetConfig component)
+      if (controlNetConfigComponent && controlNetConfigComponent.resetInputSources) {
+        controlNetConfigComponent.resetInputSources();
+      }
+      
+      // Reset IPAdapter input source selector (handled by IPAdapterConfig component)
+      if (ipAdapterConfigComponent && ipAdapterConfigComponent.resetInputSource) {
+        ipAdapterConfigComponent.resetInputSource();
+      }
+      
+      console.log('resetAllInputSourceSelectors: All input source selectors reset');
+    } catch (error) {
+      console.error('resetAllInputSourceSelectors: Error resetting input source selectors:', error);
+    }
+  }
 </script>
 
 <svelte:head>
@@ -811,6 +781,28 @@
           on:change={uploadConfig}
         />
         
+        <!-- Debug Controls (only show when streaming) -->
+        {#if isLCMRunning}
+          <div class="flex items-center gap-1 px-3 py-1 bg-yellow-100 dark:bg-yellow-900 rounded-lg border">
+            <span class="text-xs font-semibold text-yellow-800 dark:text-yellow-200">Debug:</span>
+            <Button 
+              on:click={toggleDebugMode} 
+              classList={`text-xs px-2 py-1 ${debugMode ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-green-500 hover:bg-green-600 text-white'}`}
+            >
+              {debugMode ? 'Resume' : 'Pause'}
+            </Button>
+            {#if debugMode}
+              <Button 
+                on:click={stepFrame} 
+                disabled={debugPendingFrame}
+                classList="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50"
+              >
+                Step →
+              </Button>
+            {/if}
+          </div>
+        {/if}
+
         <!-- Main Control Button -->
         <Button on:click={toggleLcmLive} {disabled} classList={'text-sm px-4 py-2 font-semibold'}>
           {#if isLCMRunning}
@@ -883,9 +875,24 @@
               </button>
               {#if showResolutionPicker}
                 <div class="p-4 pt-1">
-                  <ResolutionPicker {currentResolution} {pipelineParams} />
+                  <ResolutionPicker {currentResolution} on:userResolutionChange={() => userInitiatedResolutionChange = true} />
                 </div>
               {/if}
+            </div>
+
+            <!-- Base Pipeline Input Source -->
+            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+              <div class="p-4">
+                <h3 class="text-md font-medium mb-3">Base Input Source</h3>
+                <InputSourceSelector
+                  bind:this={baseInputSourceSelector}
+                  componentType="base"
+                  on:sourceChanged={handleBaseInputSourceChanged}
+                />
+                <p class="text-xs text-gray-500 mt-3">
+                  Select the input source for the main pipeline. This affects the base image that gets processed through the diffusion model.
+                </p>
+              </div>
             </div>
 
             <!-- Unified Blending Control -->
@@ -904,7 +911,7 @@
                     {seedBlendingConfig}
                     {normalizePromptWeights}
                     {normalizeSeedWeights}
-                    currentPrompt={$pipelineValues.prompt}
+                    currentPrompt={$appState?.config_prompt || ''}
                   />
                 </div>
               {/if}
@@ -963,12 +970,20 @@
                 <div class="flex items-center gap-2 px-3 py-1 bg-green-100 dark:bg-green-900 rounded-lg">
                   <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                   <span class="text-sm font-medium text-green-800 dark:text-green-200">
-                    {fps.toFixed(1)} FPS
+                    {(fps || 0).toFixed(1)} FPS
+                  </span>
+                </div>
+              {/if}
+              {#if debugMode}
+                <div class="flex items-center gap-2 px-3 py-1 bg-yellow-100 dark:bg-yellow-900 rounded-lg">
+                  <div class="w-2 h-2 bg-yellow-500 rounded-full"></div>
+                  <span class="text-sm font-medium text-yellow-800 dark:text-yellow-200">
+                    Debug Paused
                   </span>
                 </div>
               {/if}
               <div class="text-sm text-gray-600 dark:text-gray-400">
-                Status: {isLCMRunning ? 'Streaming' : 'Stopped'}
+                Status: {debugMode ? 'Debug Paused' : isLCMRunning ? 'Streaming' : 'Stopped'}
               </div>
             </div>
           </div>
@@ -1008,8 +1023,9 @@
             </button>
           </div>
           
-          <ControlNetConfig
-            {controlnetInfo}
+          <ControlNetConfig 
+            bind:this={controlNetConfigComponent}
+            {controlnetInfo} 
             {tIndexList}
             {guidanceScale}
             {delta}
@@ -1020,36 +1036,40 @@
           ></ControlNetConfig>
 
           <IPAdapterConfig 
+            bind:this={ipAdapterConfigComponent}
             {ipadapterInfo} 
             currentScale={ipadapterScale}
             currentWeightType={ipadapterWeightType}
+            currentEnabled={ipadapterInfo?.enabled ?? true}
           ></IPAdapterConfig>
 
-          <PipelineHooksConfig 
-            hookType="image_preprocessing"
-            hookInfo={imagePreprocessingInfo}
-            {skipDiffusion}
-            on:refresh={handleImagePreprocessingRefresh}
-            on:skipDiffusionChanged={(e) => handleSkipDiffusionUpdate(e.detail)}
-          ></PipelineHooksConfig>
+          {#key pipelineStateKey}
+            <PipelineHooksConfig 
+              hookType="image_preprocessing"
+              hookInfo={imagePreprocessingInfo}
+              {skipDiffusion}
+              on:refresh={handleImagePreprocessingRefresh}
+              on:skipDiffusionChanged={(e) => handleSkipDiffusionUpdate(e.detail)}
+            ></PipelineHooksConfig>
 
-          <PipelineHooksConfig 
-            hookType="image_postprocessing"
-            hookInfo={imagePostprocessingInfo}
-            on:refresh={handleImagePostprocessingRefresh}
-          ></PipelineHooksConfig>
+            <PipelineHooksConfig 
+              hookType="image_postprocessing"
+              hookInfo={imagePostprocessingInfo}
+              on:refresh={handleImagePostprocessingRefresh}
+            ></PipelineHooksConfig>
 
-          <PipelineHooksConfig 
-            hookType="latent_preprocessing"
-            hookInfo={latentPreprocessingInfo}
-            on:refresh={handleLatentPreprocessingRefresh}
-          ></PipelineHooksConfig>
+            <PipelineHooksConfig 
+              hookType="latent_preprocessing"
+              hookInfo={latentPreprocessingInfo}
+              on:refresh={handleLatentPreprocessingRefresh}
+            ></PipelineHooksConfig>
 
-          <PipelineHooksConfig 
-            hookType="latent_postprocessing"
-            hookInfo={latentPostprocessingInfo}
-            on:refresh={handleLatentPostprocessingRefresh}
-          ></PipelineHooksConfig>
+            <PipelineHooksConfig 
+              hookType="latent_postprocessing"
+              hookInfo={latentPostprocessingInfo}
+              on:refresh={handleLatentPostprocessingRefresh}
+            ></PipelineHooksConfig>
+          {/key}
         </div>
       {:else}
         <!-- Collapsed Right Panel Toggle -->

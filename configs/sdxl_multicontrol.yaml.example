@@ -55,11 +55,10 @@ use_controlnet: true
 use_ipadapter: true
 
 # IPAdapter configuration for SDXL style conditioning
-ipadapters:
-  - ipadapter_model_path: "h94/IP-Adapter/sdxl_models/ip-adapter_sdxl.safetensors"
+  - ipadapter_model_path: "h94/IP-Adapter/sdxl_models/ip-adapter_sdxl.bin"
     image_encoder_path: "h94/IP-Adapter/sdxl_models/image_encoder"
-    # style_image: "path/to/your/style/image.jpg"  # Optional: specify style image
-    scale: 0.7
+    style_image: "path/to/your/style/image.jpg"
+    scale: 1.3
     enabled: true
 
 # ControlNet configurations

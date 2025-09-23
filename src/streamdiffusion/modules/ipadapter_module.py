@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any
+from enum import Enum
 import torch
 
 from streamdiffusion.hooks import EmbedsCtx, EmbeddingHook, StepCtx, UnetKwargsDelta, UnetHook
 import os
 from streamdiffusion.preprocessing.orchestrator_user import OrchestratorUser
+import logging
+from streamdiffusion.utils.reporting import report_error
+
+logger = logging.getLogger(__name__)
+
+
+class IPAdapterType(Enum):
+    REGULAR = "regular"
+    PLUS = "plus"
+    FACEID = "faceid"
 
 
 @dataclass
@@ -22,8 +33,10 @@ class IPAdapterConfig:
     image_encoder_path: Optional[str] = None
     style_image: Optional[Any] = None
     scale: float = 1.0
-    # FaceID support
-    is_faceid: bool = False
+    weight_type: Optional[str] = None  # Weight type for per-layer scaling
+    enabled: bool = True  # Runtime enable/disable state
+
+    type: IPAdapterType = IPAdapterType.REGULAR
     insightface_model_name: Optional[str] = None
 
 
@@ -97,9 +110,8 @@ class IPAdapterModule(OrchestratorUser):
         - Registers IPAdapterEmbeddingPreprocessor with StreamParameterUpdater using style_image_key
         - Optionally processes provided style image to populate the embedding cache
         - Registers the embedding hook onto stream.embedding_hooks
-        - Sets the initial scale and mirrors it onto stream.ipadapter_scale
+        - Sets the initial scale on the IPAdapter instance
         """
-        logger = __import__('logging').getLogger(__name__)
         style_key = self.config.style_image_key or "ipadapter_main"
 
         # Attach shared orchestrator to ensure consistent reuse across modules
@@ -133,7 +145,7 @@ class IPAdapterModule(OrchestratorUser):
             'device': stream.device,
             'dtype': stream.dtype,
         }
-        if bool(self.config.is_faceid) and self.config.insightface_model_name:
+        if self.config.type == IPAdapterType.FACEID and self.config.insightface_model_name:
             ip_kwargs['insightface_model_name'] = self.config.insightface_model_name
             print(
                 f"IPAdapterModule.install: Initializing FaceID IP-Adapter with InsightFace model: {self.config.insightface_model_name}"
@@ -141,13 +153,9 @@ class IPAdapterModule(OrchestratorUser):
         ipadapter = IPAdapter(**ip_kwargs)
         self.ipadapter = ipadapter
 
-        # Register embedding preprocessor for this style key 
+        # Register embedding preprocessor for this style key
         # Use FaceID preprocessor if applicable
-        try:
-            use_faceid_preproc = hasattr(ipadapter, 'is_faceid') and bool(getattr(ipadapter, 'is_faceid'))
-        except Exception:
-            use_faceid_preproc = False
-        if use_faceid_preproc:
+        if self.config.type == IPAdapterType.FACEID:
             try:
                 from streamdiffusion.preprocessing.processors.faceid_embedding import FaceIDEmbeddingPreprocessor
                 embedding_preprocessor = FaceIDEmbeddingPreprocessor(
@@ -157,7 +165,7 @@ class IPAdapterModule(OrchestratorUser):
                 )
                 print("IPAdapterModule.install: Using FaceIDEmbeddingPreprocessor for FaceID model")
             except Exception as e:
-                logger.error(f"IPAdapterModule.install: Failed to initialize FaceIDEmbeddingPreprocessor: {e}")
+                report_error(f"IPAdapterModule.install: Failed to initialize FaceIDEmbeddingPreprocessor: {e}")
                 raise
         else:
             embedding_preprocessor = IPAdapterEmbeddingPreprocessor(
@@ -175,28 +183,19 @@ class IPAdapterModule(OrchestratorUser):
                 logger.error(f"IPAdapterModule.install: Failed to process style image: {e}")
                 raise
 
-        # Set initial scale and mirror onto stream for TRT runtime vector if needed
+        # Set initial scale on the IPAdapter instance
         try:
             ipadapter.set_scale(float(self.config.scale))
-            setattr(stream, 'ipadapter_scale', float(self.config.scale))
         except Exception:
             pass
 
-        # Compatibility: expose expected attributes/methods used by StreamParameterUpdater
+        # Expose IPAdapter instance as single source of truth
         try:
             setattr(stream, 'ipadapter', ipadapter)
-            setattr(stream, 'scale', float(self.config.scale))
-            def _update_scale(new_scale: float) -> None:
-                ipadapter.set_scale(float(new_scale))
-                setattr(stream, 'ipadapter_scale', float(new_scale))
-                try:
-                    setattr(stream, 'scale', float(new_scale))
-                except Exception:
-                    pass
-            def _update_style_image(style_image) -> None:
-                stream._param_updater.update_style_image(style_key, style_image, is_stream=False)
-            setattr(stream, 'update_scale', _update_scale)
-            setattr(stream, 'update_style_image', _update_style_image)
+            # Extend IPAdapter with our custom attributes since diffusers IPAdapter doesn't expose current state
+            setattr(ipadapter, 'weight_type', self.config.weight_type)  # For build_layer_weights
+            setattr(ipadapter, 'scale', float(self.config.scale))       # Track current scale
+            setattr(ipadapter, 'enabled', bool(self.config.enabled))    # Track enabled state
         except Exception:
             pass
 
@@ -241,7 +240,7 @@ class IPAdapterModule(OrchestratorUser):
             return local_path
         else:
             # Directory download
-            repo_root = snapshot_download(repo_id=repo_id, allow_patterns=[f"{subpath}/*"]) 
+            repo_root = snapshot_download(repo_id=repo_id, allow_patterns=[f"{subpath}/*"])
             full_path = os.path.join(repo_root, subpath)
             if not os.path.exists(full_path):
                 raise FileNotFoundError(f"IPAdapterModule._resolve_model_path: Downloaded path not found: {full_path}")
@@ -253,17 +252,22 @@ class IPAdapterModule(OrchestratorUser):
         - For TensorRT UNet engines compiled with IP-Adapter, pass a per-layer vector in extra kwargs
         - For PyTorch UNet with installed IP processors, modulate per-layer processor scale by time factor
         """
+        _last_enabled_state = None  # Track previous enabled state to avoid redundant updates
+        
         def _unet_hook(ctx: StepCtx) -> UnetKwargsDelta:
             # If no IP-Adapter installed, do nothing
             if not hasattr(stream, 'ipadapter') or stream.ipadapter is None:
                 return UnetKwargsDelta()
 
-            # Read base weight and weight type from stream
+            # Check if IPAdapter is enabled
+            enabled = getattr(stream.ipadapter, 'enabled', True)
+
+            # Read base weight and weight type from IPAdapter instance
             try:
-                base_weight = float(getattr(stream, 'ipadapter_scale', getattr(self, 'config', None).scale if hasattr(self, 'config') else 1.0))
+                base_weight = float(getattr(stream.ipadapter, 'scale', 1.0)) if enabled else 0.0
             except Exception:
-                base_weight = 1.0
-            weight_type = getattr(stream, 'ipadapter_weight_type', None)
+                base_weight = 0.0 if not enabled else 1.0
+            weight_type = getattr(stream.ipadapter, 'weight_type', None)
 
             # Determine total steps and current step index for time scheduling
             total_steps = None
@@ -306,8 +310,7 @@ class IPAdapterModule(OrchestratorUser):
                     except Exception:
                         weights_tensor = None
                     if weights_tensor is None:
-                        import torch as _torch
-                        weights_tensor = _torch.full((num_ip_layers,), float(base_weight), dtype=_torch.float32, device=stream.device)
+                        weights_tensor = torch.full((num_ip_layers,), float(base_weight), dtype=torch.float32, device=stream.device)
                     # Apply per-step time factor
                     try:
                         weights_tensor = weights_tensor * float(time_factor)
@@ -315,13 +318,19 @@ class IPAdapterModule(OrchestratorUser):
                         pass
                     return UnetKwargsDelta(extra_unet_kwargs={'ipadapter_scale': weights_tensor})
 
-            # PyTorch UNet path: modulate installed processor scales by time factor
+            # PyTorch UNet path: modulate installed processor scales by time factor and enabled state
             try:
-                if time_factor != 1.0 and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                nonlocal _last_enabled_state
+                # Only process if we need to make changes (time scaling or state transition)
+                needs_update = (time_factor != 1.0 or enabled != _last_enabled_state)
+                if needs_update and hasattr(stream.pipe, 'unet') and hasattr(stream.pipe.unet, 'attn_processors'):
+                    _last_enabled_state = enabled
                     for proc in stream.pipe.unet.attn_processors.values():
                         if hasattr(proc, 'scale') and hasattr(proc, '_ip_layer_index'):
                             base_val = getattr(proc, '_base_scale', proc.scale)
-                            proc.scale = float(base_val) * float(time_factor)
+                            # Apply both enabled state and time factor
+                            final_scale = float(base_val) * float(time_factor) if enabled else 0.0
+                            proc.scale = final_scale
             except Exception:
                 pass
 

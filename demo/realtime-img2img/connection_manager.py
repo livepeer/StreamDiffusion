@@ -18,6 +18,7 @@ class ServerFullException(Exception):
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Connections = {}
+        self.latest_data: Dict[UUID, SimpleNamespace] = {}  # Store latest parameters for HTTP streaming
 
     async def connect(
         self, user_id: UUID, websocket: WebSocket, max_queue_size: int = 0
@@ -49,6 +50,8 @@ class ConnectionManager:
         if user_session:
             queue = user_session["queue"]
             await queue.put(new_data)
+            # Also store as latest data for HTTP streaming access
+            self.latest_data[user_id] = new_data
 
     async def get_latest_data(self, user_id: UUID) -> SimpleNamespace:
         user_session = self.active_connections.get(user_id)
@@ -58,6 +61,10 @@ class ConnectionManager:
                 return await queue.get()
             except asyncio.QueueEmpty:
                 return None
+                
+    def get_latest_data_sync(self, user_id: UUID) -> SimpleNamespace:
+        """Get the latest data without consuming it from the queue (for HTTP streaming)"""
+        return self.latest_data.get(user_id)
 
     def delete_user(self, user_id: UUID):
         user_session = self.active_connections.pop(user_id, None)
@@ -68,6 +75,8 @@ class ConnectionManager:
                     queue.get_nowait()
                 except asyncio.QueueEmpty:
                     continue
+        # Also clean up latest data
+        self.latest_data.pop(user_id, None)
 
     def get_user_count(self) -> int:
         return len(self.active_connections)

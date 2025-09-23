@@ -1,21 +1,26 @@
 <script lang="ts">
-  import { pipelineValues } from '$lib/store';
+  import { appState, fetchAppState } from '$lib/store';
   import { parseResolution, type ResolutionInfo } from '$lib/utils';
+  import { createEventDispatcher } from 'svelte';
 
   export let currentResolution: ResolutionInfo;
-  export let pipelineParams: any;
+  
+  const dispatch = createEventDispatcher();
 
   // Generate resolution options from 384 to 1024, divisible by 64
   const resolutionValues = Array.from({ length: 11 }, (_, i) => 384 + (i * 64));
 
   // Local state for selected values (not yet applied)
+  // Initialize once from currentResolution, then let user control independently
   let selectedWidth = currentResolution?.width || 512;
   let selectedHeight = currentResolution?.height || 512;
+  let hasInitialized = false;
 
-  // Update local state when currentResolution changes
-  $: if (currentResolution) {
+  // Only initialize once when component mounts, don't reset on every currentResolution change
+  $: if (currentResolution && !hasInitialized) {
     selectedWidth = currentResolution.width;
     selectedHeight = currentResolution.height;
+    hasInitialized = true;
   }
 
   function handleWidthChange(event: Event) {
@@ -26,7 +31,12 @@
     selectedHeight = parseInt((event.target as HTMLSelectElement).value);
   }
 
-  function updateResolution() {
+  async function updateResolution() {
+    console.log('updateResolution: Starting update with selectedWidth:', selectedWidth, 'selectedHeight:', selectedHeight);
+    
+    // Notify parent that this is a user-initiated resolution change
+    dispatch('userResolutionChange');
+    
     const aspectRatio = selectedWidth / selectedHeight;
     let aspectRatioString = "1:1";
     
@@ -37,11 +47,34 @@
     }
     
     const resolutionString = `${selectedWidth}x${selectedHeight} (${aspectRatioString})`;
+    console.log('updateResolution: Sending resolution string:', resolutionString);
     
-    pipelineValues.update(values => ({
-      ...values,
-      resolution: resolutionString
-    }));
+    try {
+      const response = await fetch('/api/params', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          resolution: resolutionString
+        }),
+      });
+      
+      console.log('updateResolution: API response status:', response.status);
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('updateResolution: API response result:', result);
+        
+        // State will be updated automatically by the polling mechanism
+        // No need to manually fetch state here to avoid potential double-triggering
+      } else {
+        const result = await response.json();
+        console.error('updateResolution: Failed to update resolution:', result.detail);
+      }
+    } catch (error) {
+      console.error('updateResolution: Error updating resolution:', error);
+    }
   }
 </script>
 

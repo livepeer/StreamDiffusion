@@ -21,6 +21,42 @@ import json
 from collections import deque
 
 
+def tensor_to_opencv(tensor: torch.Tensor, target_width: int, target_height: int) -> np.ndarray:
+    """
+    Convert a PyTorch tensor (output_type='pt') to OpenCV BGR format for video writing.
+    Uses efficient tensor operations similar to the realtime-img2img demo.
+    
+    Args:
+        tensor: Tensor in range [0,1] with shape [B, C, H, W] or [C, H, W]
+        target_width: Target width for output
+        target_height: Target height for output
+    
+    Returns:
+        BGR numpy array ready for OpenCV
+    """
+    # Handle batch dimension - take first image if batched
+    if tensor.dim() == 4:
+        tensor = tensor[0]
+    
+    # Convert to uint8 format (0-255) and ensure correct shape (C, H, W)
+    tensor_uint8 = (tensor * 255).clamp(0, 255).to(torch.uint8)
+    
+    # Convert from [C, H, W] to [H, W, C] format
+    if tensor_uint8.dim() == 3:
+        image_np = tensor_uint8.permute(1, 2, 0).cpu().numpy()
+    else:
+        raise ValueError(f"tensor_to_opencv: Unexpected tensor shape: {tensor_uint8.shape}")
+    
+    # Convert RGB to BGR for OpenCV
+    image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    
+    # Resize if needed
+    if image_bgr.shape[:2] != (target_height, target_width):
+        image_bgr = cv2.resize(image_bgr, (target_width, target_height))
+    
+    return image_bgr
+
+
 def process_video(config_path, input_video, output_dir, engine_only=False):
     """Process video through ControlNet pipeline"""
     print(f"process_video: Loading config from {config_path}")
@@ -32,11 +68,15 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
     # Load configuration
     config = load_config(config_path)
     
+    # Force tensor output for better performance
+    config['output_type'] = 'pt'
+    
     # Get width and height from config (with defaults)
     width = config.get('width', 512)
     height = config.get('height', 512)
     
     print(f"process_video: Using dimensions: {width}x{height}")
+    print(f"process_video: Using output_type='pt' for better performance")
     
     # Create output directory
     output_dir = Path(output_dir)
@@ -103,11 +143,10 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
                 wrapper.update_control_image(i, frame_pil)
         else:
             print(f"process_video: No ControlNet module found for frame {frame_idx}")
-        output_image = wrapper(frame_pil)
+        output_tensor = wrapper(frame_pil)
         
-        # Convert output to display format
-        output_array = np.array(output_image)
-        output_bgr = cv2.cvtColor(output_array, cv2.COLOR_RGB2BGR)
+        # Convert tensor output to OpenCV BGR format
+        output_bgr = tensor_to_opencv(output_tensor, width, height)
         
         # Create side-by-side display
         combined = np.hstack([frame_resized, output_bgr])
@@ -165,7 +204,10 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         "frame_buffer_size": config.get('frame_buffer_size', 1),
         "num_inference_steps": config.get('num_inference_steps', 50),
         "guidance_scale": config.get('guidance_scale', 1.1),
-        "controlnets": [cn['model_id'] for cn in config.get('controlnets', [])]
+        "output_type": "pt",
+        "controlnets": [cn['model_id'] for cn in config.get('controlnets', [])],
+        "test_type": "controlnet_video_test",
+        "description": "ControlNet video processing using tensor output for performance"
     }
     
     # Save metrics
@@ -192,19 +234,22 @@ def main():
                        help="Path to ControlNet configuration file")
     parser.add_argument("--input-video", type=str, required=True,
                        help="Path to input video file")
-    parser.add_argument("--output-dir", type=str, default=None,
-                       help="Output directory for results (default: creates timestamped directory)")
+    parser.add_argument("--output-dir", type=str, default="output",
+                       help="Parent directory for results (default: 'output'). Script will create a timestamped subdirectory inside this.")
     parser.add_argument("--engine-only", action="store_true", help="Only build TensorRT engines and exit (no video processing)")
     
     args = parser.parse_args()
     
-    # Create default output directory if not specified
-    if args.output_dir is None:
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        input_name = Path(args.input_video).stem
-        config_name = Path(args.config).stem
-        args.output_dir = f"controlnet_test_{config_name}_{input_name}_{timestamp}"
-        print(f"main: No output directory specified, using: {args.output_dir}")
+    # Create timestamped subdirectory within the specified parent directory
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    input_name = Path(args.input_video).stem
+    config_name = Path(args.config).stem
+    subdir_name = f"controlnet_test_{config_name}_{input_name}_{timestamp}"
+    
+    # Combine parent directory with generated subdirectory name
+    final_output_dir = Path(args.output_dir) / subdir_name
+    args.output_dir = str(final_output_dir)
+    print(f"main: Using output directory: {args.output_dir}")
     
     # Validate input files
     if not Path(args.config).exists():
