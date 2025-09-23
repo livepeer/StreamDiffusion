@@ -25,9 +25,10 @@ def install(cu: Optional[Literal["11", "12"]] = _detect_cuda_major()):
     run_pip(f"install {cudnn_name} --no-cache-dir")
 
     if cu == "12":
-        run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==10.12.0.36 --no-cache-dir")
-        run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt-cu12-bindings==10.12.0.36 --no-cache-dir")
-        run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt-cu12-libs==10.12.0.36 --no-cache-dir")
+        run_pip("install --extra-index-url https://pypi.nvidia.com --no-cache-dir "
+                "tensorrt==10.12.0.36 "
+                "tensorrt-cu12-bindings==10.12.0.36 "
+                "tensorrt-cu12-libs==10.12.0.36")
     else:
         run_pip("install --extra-index-url https://pypi.nvidia.com tensorrt==8.6.1 --no-cache-dir")
 
