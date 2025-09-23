@@ -7,9 +7,6 @@ fastapi==0.115.0
 uvicorn[standard]==0.32.0
 Pillow==10.5.0
 compel==2.0.2
-controlnet-aux==0.0.10
-mediapipe==0.10.21
-insightface==0.7.3
 xformers; sys_platform != 'darwin' or platform_machine != 'arm64'
 markdown2
 PyYAML
