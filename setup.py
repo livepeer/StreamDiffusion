@@ -1,9 +1,10 @@
+import os
 import re
 import sys
 
 from setuptools import find_packages, setup
 
-# Same helpers as pip_utils.py but we shouldn't import it from setup.py
+# Copied from pip_utils.py to avoid import
 def _check_torch_installed():
     try:
         import torch
@@ -21,18 +22,32 @@ def _check_torch_installed():
         raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
 
 
-def get_cuda_version() -> str:
+def get_cuda_constraint():
+    cuda_version = os.environ.get("STREAMDIFFUSION_CUDA_VERSION") or \
+                    os.environ.get("CUDA_VERSION")
+
+    if not cuda_version:
+        try:
+            import torch
+            cuda_version = torch.version.cuda
+        except Exception:
+            # might not be available during wheel build, so we have to ignore
+            pass
+
+    if not cuda_version:
+        return ">=11,<13"
+
+    parts = cuda_version.split(".")
+    if len(parts) < 2:
+        raise RuntimeError(f"Invalid CUDA version: {cuda_version}")
+    return f"=={parts[0]}.{parts[1]}"
+
+
+if any(cmd in sys.argv for cmd in ("install", "develop")):
     _check_torch_installed()
 
-    import torch
-    return torch.version.cuda
-
-
-_is_install = any(cmd in sys.argv for cmd in ("install", "develop"))
-
 _deps = [
-    f"cuda-python~={get_cuda_version()}" if _is_install else "cuda-python",
-    "torch", # We can't really pin the torch version as it depends on CUDA
+    f"cuda-python~={get_cuda_constraint()}",
     "xformers==0.0.30",
     "diffusers==0.35.0",
     "transformers==4.56.0",
@@ -52,6 +67,8 @@ _deps = [
     "diffusers-ipadapter @ git+https://github.com/livepeer/Diffusers_IPAdapter.git@405f87da42932e30bd55ee8dca3ce502d7834a99",
     "mediapipe==0.10.21",
     "insightface==0.7.3",
+    # We can't really pin torch version as it depends on CUDA, but we check if it's pre-installed above
+    "torch",
 ]
 
 deps = {b: a for a, b in (re.findall(r"^(([^!=<>~ @]+)(?:[!=<>~ @].*)?$)", x)[0] for x in _deps)}
