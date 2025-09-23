@@ -2,14 +2,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union, Any, Tuple
 
-try:
-    import torch
-except ImportError as e:
-    raise ImportError(
-        "PyTorch is not installed. Install the CUDA-matched wheels, for example:\n"
-        "  pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.7.1+cu128 torchvision==0.22.1+cu128 torchaudio==2.7.1+cu128\n"
-        "Adjust the CUDA index and versions to match your environment."
-    ) from e
+import torch
 import numpy as np
 from PIL import Image
 from diffusers import AutoencoderTiny, StableDiffusionPipeline, StableDiffusionXLPipeline, AutoPipelineForText2Image
@@ -259,7 +252,6 @@ class StreamDiffusionWrapper:
         self.safety_checker_fallback_type = safety_checker_fallback_type
         self.safety_checker_threshold = safety_checker_threshold
 
-        self._validate_torch_stack()
         self.stream: StreamDiffusion = self._load_model(
             model_id_or_path=model_id_or_path,
             lora_dict=lora_dict,
@@ -324,20 +316,7 @@ class StreamDiffusionWrapper:
                 similar_image_filter_threshold, similar_image_filter_max_skip_frame
             )
 
-    def _validate_torch_stack(self) -> None:
-        # Validate torch with CUDA and specific minor if available
-        if not torch.cuda.is_available():
-            return
-        torch_version = getattr(torch, "__version__", "")
-        cuda_version = getattr(torch.version, "cuda", "")
-        if not cuda_version:
-            raise RuntimeError("Torch is installed without CUDA. Install CUDA-enabled wheels from the PyTorch CUDA index.")
-        # If targeting cu128, enforce it here
-        target_cuda_minor = "12.8"
-        if not cuda_version.startswith(target_cuda_minor.split(".")[0]):
-            raise RuntimeError(f"CUDA major mismatch: torch CUDA {cuda_version}, expected {target_cuda_minor} series.")
-        if not cuda_version.startswith(target_cuda_minor):
-            raise RuntimeError(f"CUDA minor mismatch: torch CUDA {cuda_version}, expected {target_cuda_minor}.")
+    
 
     def prepare(
         self,
