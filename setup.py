@@ -5,22 +5,24 @@ from setuptools import find_packages, setup
 
 
 _deps = [
-    "torch",
+    "torch==2.7.1+cu128",
+    "torchvision==0.22.1+cu128",
+    "torchaudio==2.7.1+cu128",
     "xformers==0.0.30",
     "diffusers==0.35.0",
     "transformers==4.56.0",
     "accelerate==1.10.0",
     "huggingface_hub==0.35.0",
     "Pillow==10.5.0",
-    "fire",
-    "omegaconf",
-    "cuda-python==12.9.0",
+    "fire==0.6.0",
+    "omegaconf==2.3.0",
+    "cuda-python==12.8.0",
     "onnx==1.18.0",
     "onnxruntime==1.22.0",
     "onnxruntime-gpu==1.22.0",
-    "protobuf>=3.20.2",
-    "colored",
-    "pywin32;sys_platform == 'win32'"
+    "protobuf==4.25.3",
+    "colored==2.2.4",
+    "pywin32==306;sys_platform == 'win32'"
 ]
 
 deps = {b: a for a, b in (re.findall(r"^(([^!=<>~]+)(?:[!=<>~].*)?$)", x)[0] for x in _deps)}
@@ -32,7 +34,7 @@ def deps_list(*pkgs):
 
 extras = {}
 extras["xformers"] = deps_list("xformers")
-extras["torch"] = deps_list("torch", "accelerate")
+extras["torch"] = deps_list("torch", "torchvision", "torchaudio", "accelerate")
 extras["tensorrt"] = deps_list("protobuf", "cuda-python", "onnx", "onnxruntime", "onnxruntime-gpu", "colored")
 
 extras["dev"] = extras["xformers"] + extras["torch"] + extras["tensorrt"]
