@@ -43,7 +43,7 @@ def get_cuda_major() -> Optional[Literal["11", "12"]]:
 
     major = version.split(".")[0]
     if major not in ("11", "12"):
-        raise RuntimeError("CUDA major version not detected. Must be 11 or 12.")
+        return None
     return major
 
 
