@@ -41,20 +41,9 @@ class LatentProcessingModule(OrchestratorUser):
         # Check if processor is enabled (default to True, same as ControlNet)
         enabled = proc_config.get('enabled', True)
         
-        # Create processor using existing registry (same as ControlNet)
-        processor = get_preprocessor(processor_type, pipeline_ref=self._stream)
-        
-        # Apply parameters (same pattern as ControlNet)
+        # Pass all processor params as constructor kwargs
         processor_params = proc_config.get('params', {})
-        if processor_params:
-            if hasattr(processor, 'params') and isinstance(getattr(processor, 'params'), dict):
-                processor.params.update(processor_params)
-            for name, value in processor_params.items():
-                try:
-                    if hasattr(processor, name):
-                        setattr(processor, name, value)
-                except Exception:
-                    pass
+        processor = get_preprocessor(processor_type, pipeline_ref=self._stream, **processor_params)
         
         # Set order for sequential execution
         order = proc_config.get('order', len(self.processors))
