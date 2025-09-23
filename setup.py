@@ -70,6 +70,18 @@ def _require_torch_preinstalled() -> None:
 
 if any(cmd in sys.argv for cmd in ("install", "bdist_wheel", "develop")):
     _require_torch_preinstalled()
+    # Dynamically pin cuda-python to match the preinstalled torch CUDA series
+    try:
+        import torch  # noqa: F401
+        cuda_str = getattr(torch.version, "cuda", "")
+        if cuda_str:
+            parts = cuda_str.split(".")
+            if len(parts) >= 2:
+                cu_major, cu_minor = parts[0], parts[1]
+                cuda_python_version = f"{cu_major}.{cu_minor}.0"
+                install_requires.append(f"cuda-python=={cuda_python_version}")
+    except Exception:
+        pass
 
 setup(
     name="streamdiffusion",
