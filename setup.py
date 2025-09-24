@@ -40,14 +40,14 @@ def get_cuda_constraint():
     parts = cuda_version.split(".")
     if len(parts) < 2:
         raise RuntimeError(f"Invalid CUDA version: {cuda_version}")
-    return f"=={parts[0]}.{parts[1]}"
+    return f"~={parts[0]}.{parts[1]}"
 
 
 if any(cmd in sys.argv for cmd in ("install", "develop")):
     _check_torch_installed()
 
 _deps = [
-    f"cuda-python~={get_cuda_constraint()}",
+    f"cuda-python{get_cuda_constraint()}",
     "xformers==0.0.30",
     "diffusers==0.35.0",
     "transformers==4.56.0",
