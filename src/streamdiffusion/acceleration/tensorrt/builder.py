@@ -63,6 +63,9 @@ class EngineBuilder:
             del self.network
             gc.collect()
             torch.cuda.empty_cache()
+            # Additional cleanup for compile_engines_only mode
+            torch.cuda.synchronize()
+            torch.cuda.ipc_collect()
         if not force_onnx_optimize and os.path.exists(onnx_opt_path):
             print(f"Found cached model: {onnx_opt_path}")
         else:
@@ -72,6 +75,9 @@ class EngineBuilder:
                 onnx_opt_path=onnx_opt_path,
                 model_data=self.model,
             )
+            # Cleanup after ONNX optimization
+            gc.collect()
+            torch.cuda.empty_cache()
         self.model.min_latent_shape = min_image_resolution // 8
         self.model.max_latent_shape = max_image_resolution // 8
         if not force_engine_build and os.path.exists(engine_path):
@@ -97,3 +103,6 @@ class EngineBuilder:
         
         gc.collect()
         torch.cuda.empty_cache()
+        # Additional cleanup after engine build
+        torch.cuda.synchronize()
+        torch.cuda.ipc_collect()

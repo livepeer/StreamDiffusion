@@ -1043,6 +1043,10 @@ class StreamDiffusionWrapper:
                 from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_controlnet_export import create_controlnet_wrapper
                 from streamdiffusion.acceleration.tensorrt.export_wrappers.unet_ipadapter_export import create_ipadapter_wrapper
 
+                # Clean up VRAM before starting TensorRT compilation when only compiling engines
+                if compile_engines_only:
+                    self.cleanup_gpu_memory_for_compilation()
+
                 # Legacy TensorRT implementation (fallback)
                 # Initialize engine manager
                 engine_manager = EngineManager(engine_dir)
@@ -1334,6 +1338,10 @@ class StreamDiffusionWrapper:
                         'max_image_resolution': 1024,
                     }
                 )
+                
+                # Clean up VRAM after VAE decoder compilation when only compiling engines
+                if compile_engines_only:
+                    self.cleanup_gpu_memory_for_compilation()
 
                 # Compile VAE encoder engine using EngineManager
                 vae_encoder = TorchVAEEncoder(stream.vae)
@@ -1359,6 +1367,10 @@ class StreamDiffusionWrapper:
                         'max_image_resolution': 1024,
                     }
                 )
+                
+                # Clean up VRAM after VAE encoder compilation when only compiling engines
+                if compile_engines_only:
+                    self.cleanup_gpu_memory_for_compilation()
 
                 cuda_stream = cuda.Stream()
 
@@ -1387,6 +1399,10 @@ class StreamDiffusionWrapper:
                     )
                     if load_engine:
                         logger.info("TensorRT UNet engine loaded successfully")
+                    
+                    # Clean up VRAM after UNet compilation when only compiling engines
+                    if compile_engines_only:
+                        self.cleanup_gpu_memory_for_compilation()
                     
                 except Exception as e:
                     error_msg = str(e).lower()
@@ -1506,6 +1522,10 @@ class StreamDiffusionWrapper:
                         cuda_stream=None,
                         load_engine=load_engine,
                     )
+                    
+                    # Clean up VRAM after safety checker compilation when only compiling engines
+                    if compile_engines_only:
+                        self.cleanup_gpu_memory_for_compilation()
                 
                 if load_engine:
                     self.safety_checker = NSFWDetectorEngine(
@@ -1585,6 +1605,10 @@ class StreamDiffusionWrapper:
                             logger.info(f"Compiled/loaded {len(compiled_cn_engines)} ControlNet TensorRT engine(s)")
                         except Exception:
                             pass
+                        
+                        # Clean up VRAM after ControlNet compilation when only compiling engines
+                        if compile_engines_only:
+                            self.cleanup_gpu_memory_for_compilation()
                 except Exception:
                     import traceback
                     traceback.print_exc()
@@ -1858,6 +1882,27 @@ class StreamDiffusionWrapper:
             logger.info(f"   GPU Memory after cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
         
         logger.info("   Enhanced GPU memory cleanup complete")
+
+    def cleanup_gpu_memory_for_compilation(self) -> None:
+        """Lightweight GPU memory cleanup specifically for TensorRT engine compilation."""
+        import gc
+        import torch
+        
+        logger.info("Cleaning up GPU memory for engine compilation...")
+        
+        # Force garbage collection
+        for i in range(2):
+            gc.collect()
+        
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            
+            # Get memory info for logging
+            allocated = torch.cuda.memory_allocated() / (1024**3)  # GB
+            cached = torch.cuda.memory_reserved() / (1024**3)     # GB
+            logger.info(f"   GPU Memory after compilation cleanup: {allocated:.2f}GB allocated, {cached:.2f}GB cached")
 
     def check_gpu_memory_for_engine(self, engine_size_gb: float) -> bool:
         """
