@@ -270,6 +270,11 @@ class Engine:
             self.context = self.engine.create_execution_context()
 
     def allocate_buffers(self, shape_dict=None, device="cuda"):
+        # Ensure an execution context exists before allocating buffers
+        if self.context is None:
+            if self.engine is None:
+                raise RuntimeError("TensorRT engine is not loaded; call load() before allocate_buffers().")
+            self.activate()
         # Check if we can reuse existing buffers (OPTIMIZATION)
         if self._can_reuse_buffers(shape_dict, device):
             return
