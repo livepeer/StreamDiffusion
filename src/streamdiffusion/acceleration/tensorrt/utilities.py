@@ -236,6 +236,13 @@ class Engine:
         workspace_size=0,
     ):
         logger.info(f"Building TensorRT engine for {onnx_path}: {self.engine_path}")
+        
+        # DEBUG: VRAM before TensorRT engine build
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before TensorRT engine build {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         p = Profile()
         if input_profile:
             for name, dims in input_profile.items():
@@ -256,18 +263,58 @@ class Engine:
             ),
             save_timing_cache=timing_cache,
         )
+        
+        # DEBUG: VRAM after engine creation, before save
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After TensorRT engine creation, before save {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         save_engine(engine, path=self.engine_path)
+        
+        # DEBUG: VRAM after TensorRT engine build complete
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After TensorRT engine build complete {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
     def load(self):
         logger.info(f"Loading TensorRT engine: {self.engine_path}")
+        
+        # DEBUG: VRAM before engine load
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before engine load {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         self.engine = engine_from_bytes(bytes_from_path(self.engine_path))
+        
+        # DEBUG: VRAM after engine load
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After engine load {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
     def activate(self, reuse_device_memory=None):
+        # DEBUG: VRAM before engine activate
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before engine activate {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         if reuse_device_memory:
             self.context = self.engine.create_execution_context_without_device_memory()
             self.context.device_memory = reuse_device_memory
         else:
             self.context = self.engine.create_execution_context()
+        
+        # DEBUG: VRAM after engine activate
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After engine activate {self.engine_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
     def allocate_buffers(self, shape_dict=None, device="cuda"):
         # Check if we can reuse existing buffers (OPTIMIZATION)
@@ -623,6 +670,13 @@ def optimize_onnx(
     import os
     import shutil
     
+    # DEBUG: VRAM before ONNX optimization
+    import torch
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: Before ONNX optimization {onnx_opt_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     # Check if external data files exist (indicating external data format was used)
     onnx_dir = os.path.dirname(onnx_path)
     external_data_files = [f for f in os.listdir(onnx_dir) if f.endswith('.pb')]
@@ -631,7 +685,19 @@ def optimize_onnx(
     if uses_external_data:
         # Load model with external data
         onnx_model = onnx.load(onnx_path, load_external_data=True)
+        # DEBUG: VRAM after loading ONNX model
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After loading ONNX model for optimization: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         onnx_opt_graph = model_data.optimize(onnx_model)
+        
+        # DEBUG: VRAM after ONNX graph optimization
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After ONNX graph optimization: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         
         # Create output directory
         opt_dir = os.path.dirname(onnx_opt_path)
@@ -661,4 +727,10 @@ def optimize_onnx(
     
     del onnx_opt_graph
     gc.collect()
+    
+    # DEBUG: VRAM after ONNX optimization complete
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After ONNX optimization complete {onnx_opt_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
     torch.cuda.empty_cache()

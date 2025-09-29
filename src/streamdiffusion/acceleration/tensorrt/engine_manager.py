@@ -138,6 +138,13 @@ class EngineManager:
     
     def _execute_compilation(self, compile_fn, engine_path: Path, model, model_config, batch_size: int, kwargs: Dict) -> None:
         """Execute compilation with common pattern to eliminate duplication."""
+        # DEBUG: VRAM before engine compilation
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before compilation {engine_path.name}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         compile_fn(
             model,
             model_config,
@@ -147,6 +154,12 @@ class EngineManager:
             opt_batch_size=batch_size,
             engine_build_options=kwargs.get('engine_build_options', {})
         )
+        
+        # DEBUG: VRAM after engine compilation
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After compilation {engine_path.name}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
     
     def _prepare_controlnet_models(self, kwargs: Dict):
         """Prepare ControlNet models for compilation."""
@@ -195,6 +208,13 @@ class EngineManager:
         
         Moves compilation blocks from wrapper.py lines 1200-1252, 1254-1283, 1285-1313.
         """
+        # DEBUG: VRAM at start of compile_and_load_engine
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Start compile_and_load_engine {engine_type.value}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         if not engine_path.exists():
             # Get the appropriate compile function for this engine type
             config = self._configs[engine_type]
@@ -224,7 +244,21 @@ class EngineManager:
             logger.info(f"EngineManager: engine_path already exists, skipping compile")
             
         if load_engine:
-            return self.load_engine(engine_type, engine_path, **kwargs)
+            # DEBUG: VRAM before loading engine
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: Before loading engine {engine_type.value}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
+            result = self.load_engine(engine_type, engine_path, **kwargs)
+            
+            # DEBUG: VRAM after loading engine
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: After loading engine {engine_type.value}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
+            return result
         else:
             logger.info(f"EngineManager: load_engine is False, skipping load engine")
             return None
@@ -280,6 +314,13 @@ class EngineManager:
         
         Replaces ControlNetEnginePool.get_or_load_engine functionality.
         """
+        # DEBUG: VRAM before TensorRT ControlNet engine loading
+        import torch
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before TensorRT ControlNet engine {model_id}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         # Generate engine path using ControlNet-specific logic
         engine_path = self.get_engine_path(
             EngineType.CONTROLNET,
@@ -293,7 +334,7 @@ class EngineManager:
         )
         
         # Compile and load ControlNet engine
-        return self.compile_and_load_engine(
+        result = self.compile_and_load_engine(
             EngineType.CONTROLNET,
             engine_path,
             load_engine=load_engine,
@@ -309,3 +350,11 @@ class EngineManager:
             conditioning_channels=conditioning_channels,
             engine_build_options=self._get_default_controlnet_build_options()
         )
+        
+        # DEBUG: VRAM after TensorRT ControlNet engine loading
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After TensorRT ControlNet engine {model_id}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
+        return result

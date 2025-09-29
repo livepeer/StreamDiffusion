@@ -51,6 +51,13 @@ class EngineBuilder:
             print(f"Found cached model: {onnx_path}")
         else:
             print(f"Exporting model: {onnx_path}")
+            # DEBUG: VRAM before ONNX export
+            import torch
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: Before ONNX export {onnx_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
             export_onnx(
                 self.network,
                 onnx_path=onnx_path,
@@ -60,18 +67,43 @@ class EngineBuilder:
                 opt_batch_size=opt_batch_size,
                 onnx_opset=onnx_opset,
             )
+            
+            # DEBUG: VRAM after ONNX export, before cleanup
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: After ONNX export, before cleanup {onnx_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
             del self.network
             gc.collect()
             torch.cuda.empty_cache()
+            
+            # DEBUG: VRAM after cleanup
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: After ONNX export cleanup {onnx_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         if not force_onnx_optimize and os.path.exists(onnx_opt_path):
             print(f"Found cached model: {onnx_opt_path}")
         else:
             print(f"Generating optimizing model: {onnx_opt_path}")
+            # DEBUG: VRAM before ONNX optimization
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: Before ONNX optimization {onnx_opt_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
             optimize_onnx(
                 onnx_path=onnx_path,
                 onnx_opt_path=onnx_opt_path,
                 model_data=self.model,
             )
+            
+            # DEBUG: VRAM after ONNX optimization
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: After ONNX optimization {onnx_opt_path}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         self.model.min_latent_shape = min_image_resolution // 8
         self.model.max_latent_shape = max_image_resolution // 8
         if not force_engine_build and os.path.exists(engine_path):

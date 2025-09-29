@@ -898,6 +898,12 @@ class StreamDiffusion:
         
         # Store latent result for latent feedback processors
         self.prev_latent_result = x_0_pred_out.detach().clone()
+        
+        # DEBUG: VRAM after storing prev_latent_result
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After storing prev_latent_result: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         
         x_output = self.decode_image(x_0_pred_out).detach().clone()
@@ -990,6 +996,12 @@ class StreamDiffusion:
         
         # Store latent result for latent feedback processors
         self.prev_latent_result = x_0_pred_out.detach().clone()
+        
+        # DEBUG: VRAM after storing prev_latent_result
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After storing prev_latent_result: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         
         x_output = self.decode_image(x_0_pred_out).detach().clone()
@@ -1047,6 +1059,12 @@ class StreamDiffusion:
         
         # Store latent result for latent feedback processors
         self.prev_latent_result = x_0_pred_out.detach().clone()
+        
+        # DEBUG: VRAM after storing prev_latent_result
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After storing prev_latent_result: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         
         x_output = self.decode_image(x_0_pred_out)

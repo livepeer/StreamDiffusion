@@ -972,6 +972,12 @@ class StreamDiffusionWrapper:
         temp_tensor = torch.zeros(1, device=self.device)
         del temp_tensor
         logger.info("_load_model: CUDA context reset completed")
+        
+        # DEBUG: VRAM at start of _load_model
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Start of _load_model: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         # First, try to detect if this is an SDXL model before loading
         # TODO: CAN we do this step with model_detection.py?
@@ -1011,7 +1017,21 @@ class StreamDiffusionWrapper:
         for method, method_name in loading_methods:
             try:
                 logger.info(f"_load_model: Attempting to load with {method_name}...")
+                
+                # DEBUG: VRAM before model loading
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / (1024**3)
+                    reserved = torch.cuda.memory_reserved() / (1024**3)
+                    print(f"DEBUG_VRAM: Before loading {method_name}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                
                 pipe = method(model_id_or_path).to(dtype=self.dtype)
+                
+                # DEBUG: VRAM after model loading
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / (1024**3)
+                    reserved = torch.cuda.memory_reserved() / (1024**3)
+                    print(f"DEBUG_VRAM: After loading {method_name}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                
                 logger.info(f"_load_model: Successfully loaded using {method_name}")
                 
                 # Verify that we have the right pipeline type for SDXL models
@@ -1020,7 +1040,21 @@ class StreamDiffusionWrapper:
                     # Try to explicitly load with SDXL pipeline instead
                     try:
                         logger.info(f"_load_model: Retrying with StableDiffusionXLPipeline...")
+                        
+                        # DEBUG: VRAM before SDXL retry
+                        if torch.cuda.is_available():
+                            allocated = torch.cuda.memory_allocated() / (1024**3)
+                            reserved = torch.cuda.memory_reserved() / (1024**3)
+                            print(f"DEBUG_VRAM: Before SDXL retry: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                        
                         pipe = StableDiffusionXLPipeline.from_single_file(model_id_or_path).to(dtype=self.dtype)
+                        
+                        # DEBUG: VRAM after SDXL retry
+                        if torch.cuda.is_available():
+                            allocated = torch.cuda.memory_allocated() / (1024**3)
+                            reserved = torch.cuda.memory_reserved() / (1024**3)
+                            print(f"DEBUG_VRAM: After SDXL retry: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                        
                         logger.info(f"_load_model: Successfully loaded using SDXL pipeline on retry")
                     except Exception as retry_error:
                         logger.warning(f"_load_model: SDXL pipeline retry failed: {retry_error}")
@@ -1064,6 +1098,12 @@ class StreamDiffusionWrapper:
         
         logger.info(f"_load_model: Detected model type: {model_type} (confidence: {confidence:.2f})")
 
+        # DEBUG: VRAM before StreamDiffusion creation
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before StreamDiffusion creation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         stream = StreamDiffusion(
             pipe=pipe,
             t_index_list=t_index_list,
@@ -1078,6 +1118,12 @@ class StreamDiffusionWrapper:
             normalize_prompt_weights=normalize_prompt_weights,
             normalize_seed_weights=normalize_seed_weights,
         )
+        
+        # DEBUG: VRAM after StreamDiffusion creation
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: After StreamDiffusion creation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         if not self.sd_turbo:
             if use_lcm_lora:
                 if lcm_lora_id is not None:
@@ -1094,12 +1140,24 @@ class StreamDiffusionWrapper:
                     stream.fuse_lora(lora_scale=lora_scale)
 
         if use_tiny_vae:
+            # DEBUG: VRAM before tiny VAE loading
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: Before tiny VAE loading: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
             if vae_id is not None:
                 stream.vae = AutoencoderTiny.from_pretrained(vae_id).to(dtype=pipe.dtype)
             else:
                 # Use TAESD XL for SDXL models, regular TAESD for SD 1.5
                 taesd_model = "madebyollin/taesdxl" if is_sdxl else "madebyollin/taesd"
                 stream.vae = AutoencoderTiny.from_pretrained(taesd_model).to(dtype=pipe.dtype)
+            
+            # DEBUG: VRAM after tiny VAE loading
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: After tiny VAE loading: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
     
 
         try:
@@ -1710,12 +1768,24 @@ class StreamDiffusionWrapper:
         # Install pipeline hook modules (Phase 4: Configuration Integration)
         if image_preprocessing_config and image_preprocessing_config.get('enabled', True):
             try:
+                # DEBUG: VRAM before image preprocessing module
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / (1024**3)
+                    reserved = torch.cuda.memory_reserved() / (1024**3)
+                    print(f"DEBUG_VRAM: Before ImagePreprocessingModule: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+                
                 from streamdiffusion.modules.image_processing_module import ImagePreprocessingModule
                 img_pre_module = ImagePreprocessingModule()
                 img_pre_module.install(stream)
                 for proc_config in image_preprocessing_config.get('processors', []):
                     img_pre_module.add_processor(proc_config)
                 stream._image_preprocessing_module = img_pre_module
+                
+                # DEBUG: VRAM after image preprocessing module
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / (1024**3)
+                    reserved = torch.cuda.memory_reserved() / (1024**3)
+                    print(f"DEBUG_VRAM: After ImagePreprocessingModule: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
             except Exception as e:
                 logger.error(f"Failed to install ImagePreprocessingModule: {e}")
         
@@ -1752,6 +1822,12 @@ class StreamDiffusionWrapper:
             except Exception as e:
                 logger.error(f"Failed to install LatentPostprocessingModule: {e}")
 
+        # DEBUG: VRAM at end of _load_model
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: End of _load_model: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        
         return stream
 
     def get_last_processed_image(self, index: int) -> Optional[Image.Image]:

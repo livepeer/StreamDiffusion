@@ -54,7 +54,21 @@ def compile_vae_encoder(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    # DEBUG: VRAM before VAE encoder compilation
+    import torch
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: Before VAE encoder compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     vae = vae.to(torch.device("cuda"))
+    
+    # DEBUG: VRAM after VAE encoder to CUDA
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After VAE encoder to CUDA: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
     builder.build(
         onnx_path,
@@ -63,6 +77,12 @@ def compile_vae_encoder(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    
+    # DEBUG: VRAM after VAE encoder compilation
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After VAE encoder compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
 
 def compile_vae_decoder(
@@ -74,7 +94,21 @@ def compile_vae_decoder(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    # DEBUG: VRAM before VAE decoder compilation
+    import torch
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: Before VAE decoder compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     vae = vae.to(torch.device("cuda"))
+    
+    # DEBUG: VRAM after VAE decoder to CUDA
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After VAE decoder to CUDA: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     builder = EngineBuilder(model_data, vae, device=torch.device("cuda"))
     builder.build(
         onnx_path,
@@ -83,6 +117,12 @@ def compile_vae_decoder(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    
+    # DEBUG: VRAM after VAE decoder compilation
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After VAE decoder compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
 def compile_safety_checker(
     safety_checker: StableDiffusionSafetyCheckerWrapper,
@@ -113,7 +153,21 @@ def compile_unet(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    # DEBUG: VRAM before UNet compilation
+    import torch
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: Before UNet compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     unet = unet.to(torch.device("cuda"), dtype=torch.float16)
+    
+    # DEBUG: VRAM after UNet to CUDA
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After UNet to CUDA: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     builder = EngineBuilder(model_data, unet, device=torch.device("cuda"))
     builder.build(
         onnx_path,
@@ -122,6 +176,12 @@ def compile_unet(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    
+    # DEBUG: VRAM after UNet compilation
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After UNet compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
 
 def compile_controlnet(
@@ -133,7 +193,21 @@ def compile_controlnet(
     opt_batch_size: int = 1,
     engine_build_options: dict = {},
 ):
+    # DEBUG: VRAM before ControlNet compilation
+    import torch
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: Before ControlNet compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     controlnet = controlnet.to(torch.device("cuda"), dtype=torch.float16)
+    
+    # DEBUG: VRAM after ControlNet to CUDA
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After ControlNet to CUDA: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+    
     builder = EngineBuilder(model_data, controlnet, device=torch.device("cuda"))
     builder.build(
         onnx_path,
@@ -142,3 +216,9 @@ def compile_controlnet(
         opt_batch_size=opt_batch_size,
         **engine_build_options,
     )
+    
+    # DEBUG: VRAM after ControlNet compilation
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        print(f"DEBUG_VRAM: After ControlNet compilation: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")

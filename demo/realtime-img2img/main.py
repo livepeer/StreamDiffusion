@@ -924,7 +924,9 @@ app = App(config).app
 
 if __name__ == "__main__":
     import uvicorn
+    import logging
 
+    # Option 1: Disable all access logs (simplest)
     uvicorn.run(
         "main:app",
         host=config.host,
@@ -932,4 +934,31 @@ if __name__ == "__main__":
         reload=config.reload,
         ssl_certfile=config.ssl_certfile,
         ssl_keyfile=config.ssl_keyfile,
+        access_log=False,
     )
+
+    # Option 2: Filter specific endpoints (uncomment to use instead of Option 1)
+    # class EndpointFilter(logging.Filter):
+    #     def __init__(self, excluded_paths):
+    #         super().__init__()
+    #         self.excluded_paths = excluded_paths
+    #
+    #     def filter(self, record):
+    #         if hasattr(record, 'args') and record.args and len(record.args) > 2:
+    #             request_path = record.args[2]
+    #             if request_path in self.excluded_paths:
+    #                 return False
+    #         return True
+    #
+    # # Apply filter to suppress /api/state logs
+    # uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    # uvicorn_access_logger.addFilter(EndpointFilter(excluded_paths=["/api/state"]))
+    #
+    # uvicorn.run(
+    #     "main:app",
+    #     host=config.host,
+    #     port=config.port,
+    #     reload=config.reload,
+    #     ssl_certfile=config.ssl_certfile,
+    #     ssl_keyfile=config.ssl_keyfile,
+    # )

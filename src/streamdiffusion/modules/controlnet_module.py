@@ -574,7 +574,14 @@ class ControlNetModule(OrchestratorUser):
     def _load_pytorch_controlnet_model(self, model_id: str, conditioning_channels: Optional[int] = None) -> ControlNetModel:
         from pathlib import Path
         import logging
+        import torch
         logger = logging.getLogger(__name__)
+        
+        # DEBUG: VRAM before ControlNet loading
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            reserved = torch.cuda.memory_reserved() / (1024**3)
+            print(f"DEBUG_VRAM: Before loading ControlNet {model_id}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         
         try:
             # Prepare loading kwargs
@@ -616,6 +623,13 @@ class ControlNetModule(OrchestratorUser):
                 setattr(controlnet, 'model_id', model_id)
             except Exception:
                 pass
+            
+            # DEBUG: VRAM after ControlNet loading
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                print(f"DEBUG_VRAM: After loading ControlNet {model_id}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            
             return controlnet
         except Exception as e:
             import logging, traceback
