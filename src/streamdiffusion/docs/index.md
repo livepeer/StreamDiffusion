@@ -1,5 +1,9 @@
 # StreamDiffusion Documentation
 
+## Getting Started
+
+- [Installation Guide](installation.md): Complete setup instructions for StreamDiffusion with TensorRT, ControlNet, and IPAdapter.
+
 ## Core Concepts
 
 - [Hook-Module System](hooks.md): Extensible pipeline hooks for modules.
