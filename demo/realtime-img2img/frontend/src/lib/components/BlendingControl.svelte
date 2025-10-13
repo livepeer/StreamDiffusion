@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onDestroy } from 'svelte';
   import Button from './Button.svelte';
 
   export let promptBlendingConfig: any = null;
@@ -26,6 +26,21 @@
 
   // UI state
   let activeTab: 'prompts' | 'seeds' = 'prompts';
+
+  // Debounce timers
+  let promptDebounceTimer: number | null = null;
+  let seedDebounceTimer: number | null = null;
+  const DEBOUNCE_DELAY = 300; // milliseconds
+
+  // Cleanup timers on component destroy
+  onDestroy(() => {
+    if (promptDebounceTimer !== null) {
+      clearTimeout(promptDebounceTimer);
+    }
+    if (seedDebounceTimer !== null) {
+      clearTimeout(seedDebounceTimer);
+    }
+  });
 
   // Helper functions for config hashing
   function getPromptConfigHash(config: any, current: string): string {
@@ -146,8 +161,18 @@
 
   function updatePromptText(index: number, value: string) {
     promptList[index][0] = value;
-    promptList = [...promptList];
-    updatePromptBlendingWithoutRefresh();
+    hasPendingPromptChanges = true;
+    
+    // Clear existing timer
+    if (promptDebounceTimer !== null) {
+      clearTimeout(promptDebounceTimer);
+    }
+    
+    // Set new debounced timer
+    promptDebounceTimer = setTimeout(() => {
+      updatePromptBlendingWithoutRefresh();
+      promptDebounceTimer = null;
+    }, DEBOUNCE_DELAY) as unknown as number;
   }
 
   function updatePromptWeight(index: number, value: number) {
@@ -225,8 +250,18 @@
 
   function updateSeedValue(index: number, value: number) {
     seedList[index][0] = value;
-    seedList = [...seedList];
-    updateSeedBlendingWithoutRefresh();
+    hasPendingSeedChanges = true;
+    
+    // Clear existing timer
+    if (seedDebounceTimer !== null) {
+      clearTimeout(seedDebounceTimer);
+    }
+    
+    // Set new debounced timer
+    seedDebounceTimer = setTimeout(() => {
+      updateSeedBlendingWithoutRefresh();
+      seedDebounceTimer = null;
+    }, DEBOUNCE_DELAY) as unknown as number;
   }
 
   function updateSeedWeight(index: number, value: number) {
@@ -370,7 +405,7 @@
 
             <textarea
               bind:value={promptList[index][0]}
-              on:input={() => updatePromptText(index, promptList[index][0])}
+              on:input={(e) => updatePromptText(index, e.currentTarget.value)}
               placeholder="Enter prompt..."
               rows="2"
               class="w-full p-2 border rounded resize-none dark:bg-gray-600 dark:border-gray-500"
@@ -463,7 +498,7 @@
               <input
                 type="number"
                 bind:value={seedList[index][0]}
-                on:input={() => updateSeedValue(index, seedList[index][0])}
+                on:input={(e) => updateSeedValue(index, Number(e.currentTarget.value))}
                 min="1"
                 max="999999"
                 class="flex-1 p-2 border rounded dark:bg-gray-600 dark:border-gray-500"
