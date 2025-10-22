@@ -636,6 +636,7 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = image
             if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
                 image = self.nsfw_fallback_img
+                logger.info(f"NSFW content detected, falling back to {self.nsfw_fallback_img} frame")
             elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
 
@@ -1487,6 +1488,7 @@ class StreamDiffusionWrapper:
                         cuda_stream,
                         use_cuda_graph=True,
                     )
+                    logger.info("Safety Checker engine loaded successfully")
                     
             if acceleration == "sfast":
                 from streamdiffusion.acceleration.sfast import (
