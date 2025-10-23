@@ -597,6 +597,7 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = image
             if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
                 image = self.nsfw_fallback_img
+                logger.info(f"NSFW content detected, falling back to {self.safety_checker_fallback_type} frame")
             elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
 
@@ -636,7 +637,7 @@ class StreamDiffusionWrapper:
                 denormalized_image_tensor = image
             if self.safety_checker(denormalized_image_tensor, self.safety_checker_threshold):
                 image = self.nsfw_fallback_img
-                logger.info(f"NSFW content detected, falling back to {self.nsfw_fallback_img} frame")
+                logger.info(f"NSFW content detected, falling back to {self.safety_checker_fallback_type} frame")
             elif self.safety_checker_fallback_type == "previous":
                 self.nsfw_fallback_img = image
 
