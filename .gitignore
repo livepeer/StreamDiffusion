@@ -219,3 +219,10 @@ configs/*.yml
 images/outputs/*
 images/inputs/*
 controlnet_test_*
+models/
+wandb/
+*.jpg
+*.jpeg
+*.png
+nohup.out
+checkpoint*

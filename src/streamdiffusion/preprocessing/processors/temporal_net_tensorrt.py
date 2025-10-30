@@ -374,8 +374,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         """
         # Convert to tensor and use tensor processing path for efficiency
         tensor = self.pil_to_tensor(image)
-        result_tensor = self._process_tensor_core(tensor)
-        return self.tensor_to_pil(result_tensor)
+        return self._process_tensor_core(tensor)
     
     def _process_tensor_core(self, tensor: torch.Tensor) -> torch.Tensor:
         """

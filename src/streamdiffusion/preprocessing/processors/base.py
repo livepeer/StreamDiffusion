@@ -49,7 +49,7 @@ class BasePreprocessor(ABC):
         """
         image = self.validate_input(image)
         processed = self._process_core(image)
-        return self._ensure_target_size(processed)
+        return self._ensure_target_size_tensor(processed)
     
     def process_tensor(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """

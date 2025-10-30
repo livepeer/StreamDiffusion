@@ -126,6 +126,8 @@ def process_video(config_path, input_video, output_dir, engine_only=False):
         
         frame_idx += 1
         if frame_idx % 10 == 0:
+            # if frame_idx == 60:
+            #     wrapper.update_stream_params(use_safety_checker=True)
             avg_fps = len(frame_times) / sum(frame_times) if frame_times else 0
             print(f"process_video: Processed {frame_idx}/{frame_count} frames (Avg FPS: {avg_fps:.2f})")
     

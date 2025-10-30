@@ -261,7 +261,7 @@ class PreprocessingOrchestrator(BaseOrchestrator[ControlImage, List[Optional[tor
             control_image = preprocessor.process(control_image)
         
         # Convert to tensor
-        return self._convert_to_tensor(control_image, target_width, target_height)
+        return control_image
      
     def _process_multiple_controlnets_sync(self,
                                          control_image: Union[str, Image.Image, np.ndarray, torch.Tensor],
