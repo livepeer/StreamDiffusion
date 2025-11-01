@@ -17,6 +17,7 @@
 import argparse
 import functools
 import gc
+import json
 import logging
 import math
 import os
@@ -34,7 +35,7 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, ProjectConfiguration, set_seed
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
@@ -113,18 +114,21 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
     else:
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
 
-    if len(args.validation_image) == len(args.validation_prompt):
-        validation_images = args.validation_image
+    if len(args.validation_prev_image) == len(args.validation_prompt):
+        validation_prev_images = args.validation_prev_image
+        validation_optical_flows = args.validation_optical_flow
         validation_prompts = args.validation_prompt
-    elif len(args.validation_image) == 1:
-        validation_images = args.validation_image * len(args.validation_prompt)
+    elif len(args.validation_prev_image) == 1:
+        validation_prev_images = args.validation_prev_image * len(args.validation_prompt)
+        validation_optical_flows = args.validation_optical_flow * len(args.validation_prompt)
         validation_prompts = args.validation_prompt
     elif len(args.validation_prompt) == 1:
-        validation_images = args.validation_image
-        validation_prompts = args.validation_prompt * len(args.validation_image)
+        validation_prev_images = args.validation_prev_image
+        validation_optical_flows = args.validation_optical_flow
+        validation_prompts = args.validation_prompt * len(args.validation_prev_image)
     else:
         raise ValueError(
-            "number of `args.validation_image` and `args.validation_prompt` should be checked in `parse_args`"
+            "number of `args.validation_prev_image` and `args.validation_prompt` should be checked in `parse_args`"
         )
 
     image_logs = []
@@ -133,8 +137,12 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
     else:
         autocast_ctx = torch.autocast(accelerator.device.type)
 
-    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
-        validation_image = Image.open(validation_image).convert("RGB")
+    for validation_prompt, validation_prev_img_path, validation_flow_path in zip(
+        validation_prompts, validation_prev_images, validation_optical_flows
+    ):
+        # Load previous frame and optical flow
+        validation_prev_img = Image.open(validation_prev_img_path).convert("RGB")
+        validation_flow = Image.open(validation_flow_path).convert("RGB")
 
         try:
             interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper())
@@ -154,10 +162,11 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
                 transforms.ToTensor(),
             ]
         )
-        validation_image_tensor = transform(validation_image)
+        prev_img_tensor = transform(validation_prev_img)
+        flow_tensor = transform(validation_flow)
         
-        # Stack the same conditioning image twice to create 6-channel input
-        validation_image = torch.cat([validation_image_tensor, validation_image_tensor], dim=0)
+        # Concatenate prev_frame + optical_flow to create 6-channel input
+        validation_image = torch.cat([prev_img_tensor, flow_tensor], dim=0)
 
         images = []
 
@@ -168,9 +177,9 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
                 ).images[0]
             images.append(image)
 
-        # For logging, we need to convert the stacked tensor back to a PIL image
-        # We'll use the first 3 channels (original image) for display
-        validation_image_pil = transforms.ToPILImage()(validation_image[:3])
+        # For logging, we need to convert back to PIL images
+        # Use the first 3 channels (prev frame) for display
+        validation_image_pil = transforms.ToPILImage()(prev_img_tensor)
         
         image_logs.append(
             {"validation_image": validation_image_pil, "images": images, "validation_prompt": validation_prompt}
@@ -333,7 +342,7 @@ def parse_args(input_args=None):
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument("--seed", type=int, default=786, help="A seed for reproducible training.")
     parser.add_argument(
         "--resolution",
         type=int,
@@ -406,7 +415,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=5e-6,
+        default=1e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -418,7 +427,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--lr_scheduler",
         type=str,
-        default="constant",
+        default="constant_with_warmup",
         help=(
             'The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial",'
             ' "constant", "constant_with_warmup"]'
@@ -573,20 +582,30 @@ def parse_args(input_args=None):
         nargs="+",
         help=(
             "A set of prompts evaluated every `--validation_steps` and logged to `--report_to`."
-            " Provide either a matching number of `--validation_image`s, a single `--validation_image`"
-            " to be used with all prompts, or a single prompt that will be used with all `--validation_image`s."
+            " Provide either a matching number of `--validation_prev_image`s, a single `--validation_prev_image`"
+            " to be used with all prompts, or a single prompt that will be used with all `--validation_prev_image`s."
         ),
     )
     parser.add_argument(
-        "--validation_image",
+        "--validation_prev_image",
         type=str,
         default=None,
         nargs="+",
         help=(
-            "A set of paths to the controlnet conditioning image be evaluated every `--validation_steps`"
+            "A set of paths to the previous frame images to be evaluated every `--validation_steps`"
             " and logged to `--report_to`. Provide either a matching number of `--validation_prompt`s, a"
-            " a single `--validation_prompt` to be used with all `--validation_image`s, or a single"
-            " `--validation_image` that will be used with all `--validation_prompt`s."
+            " a single `--validation_prompt` to be used with all `--validation_prev_image`s, or a single"
+            " `--validation_prev_image` that will be used with all `--validation_prompt`s."
+        ),
+    )
+    parser.add_argument(
+        "--validation_optical_flow",
+        type=str,
+        default=None,
+        nargs="+",
+        help=(
+            "A set of paths to the optical flow images to be evaluated every `--validation_steps`"
+            " and logged to `--report_to`. Must match the number of `--validation_prev_image`s."
         ),
     )
     parser.add_argument(
@@ -635,22 +654,37 @@ def parse_args(input_args=None):
     if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
         raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
 
-    if args.validation_prompt is not None and args.validation_image is None:
-        raise ValueError("`--validation_image` must be set if `--validation_prompt` is set")
+    if args.validation_prompt is not None and args.validation_prev_image is None:
+        raise ValueError("`--validation_prev_image` must be set if `--validation_prompt` is set")
 
-    if args.validation_prompt is None and args.validation_image is not None:
-        raise ValueError("`--validation_prompt` must be set if `--validation_image` is set")
+    if args.validation_prompt is None and args.validation_prev_image is not None:
+        raise ValueError("`--validation_prompt` must be set if `--validation_prev_image` is set")
+
+    if args.validation_prev_image is not None and args.validation_optical_flow is None:
+        raise ValueError("`--validation_optical_flow` must be set if `--validation_prev_image` is set")
+
+    if args.validation_prev_image is None and args.validation_optical_flow is not None:
+        raise ValueError("`--validation_prev_image` must be set if `--validation_optical_flow` is set")
 
     if (
-        args.validation_image is not None
+        args.validation_prev_image is not None
         and args.validation_prompt is not None
-        and len(args.validation_image) != 1
+        and len(args.validation_prev_image) != 1
         and len(args.validation_prompt) != 1
-        and len(args.validation_image) != len(args.validation_prompt)
+        and len(args.validation_prev_image) != len(args.validation_prompt)
     ):
         raise ValueError(
-            "Must provide either 1 `--validation_image`, 1 `--validation_prompt`,"
-            " or the same number of `--validation_prompt`s and `--validation_image`s"
+            "Must provide either 1 `--validation_prev_image`, 1 `--validation_prompt`,"
+            " or the same number of `--validation_prompt`s and `--validation_prev_image`s"
+        )
+
+    if (
+        args.validation_prev_image is not None
+        and args.validation_optical_flow is not None
+        and len(args.validation_prev_image) != len(args.validation_optical_flow)
+    ):
+        raise ValueError(
+            "`--validation_prev_image` and `--validation_optical_flow` must have the same number of images"
         )
 
     if args.resolution % 8 != 0:
@@ -662,11 +696,10 @@ def parse_args(input_args=None):
 
 
 def get_train_dataset(args, accelerator):
-    # Get the datasets: you can either provide your own training and evaluation files (see below)
-    # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
-
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
+    # Load JSONL dataset for TemporalNet2
+    # Expected format: {'video_id': str, 'prompt': str, 'negative_prompt': str, 
+    #                   'prev_img_path': str, 'curr_img_path': str, 'optical_flow_path': str}
+    
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         dataset = load_dataset(
@@ -675,54 +708,27 @@ def get_train_dataset(args, accelerator):
             cache_dir=args.cache_dir,
             data_dir=args.train_data_dir,
         )
+        train_dataset = dataset["train"]
     else:
         if args.train_data_dir is not None:
-            dataset = load_dataset(
-                args.train_data_dir,
-                cache_dir=args.cache_dir,
-            )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-
-    # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
-
-    # 6. Get the column names for input/target.
-    if args.image_column is None:
-        image_column = column_names[0]
-        logger.info(f"image column defaulting to {image_column}")
-    else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
-    if args.caption_column is None:
-        caption_column = column_names[1]
-        logger.info(f"caption column defaulting to {caption_column}")
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
-
-    if args.conditioning_image_column is None:
-        conditioning_image_column = column_names[2]
-        logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
-    else:
-        conditioning_image_column = args.conditioning_image_column
-        if conditioning_image_column not in column_names:
-            raise ValueError(
-                f"`--conditioning_image_column` value '{args.conditioning_image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-            )
+            # Load JSONL file
+            logger.info(f"Loading JSONL dataset from {args.train_data_dir}")
+            data_list = []
+            with open(args.train_data_dir, 'r') as f:
+                for line in f:
+                    data_list.append(json.loads(line.strip()))
+            
+            # Create HuggingFace Dataset from list
+            train_dataset = Dataset.from_list(data_list)
+            logger.info(f"Loaded {len(train_dataset)} samples from JSONL")
+        else:
+            raise ValueError("Must specify either --dataset_name or --train_data_dir")
 
     with accelerator.main_process_first():
-        train_dataset = dataset["train"].shuffle(seed=args.seed)
+        train_dataset = train_dataset.shuffle(seed=args.seed)
         if args.max_train_samples is not None:
             train_dataset = train_dataset.select(range(args.max_train_samples))
+    
     return train_dataset
 
 
@@ -767,52 +773,18 @@ def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prom
     return prompt_embeds, pooled_prompt_embeds
 
 
-def prepare_train_dataset(dataset, accelerator):
-    try:
-        interpolation_mode = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper())
-    except (AttributeError, KeyError):
-        supported_interpolation_modes = [
-            f.lower() for f in dir(transforms.InterpolationMode) if not f.startswith("__") and not f.endswith("__")
-        ]
-        raise ValueError(
-            f"Interpolation mode {args.image_interpolation_mode} is not supported. "
-            f"Please select one of the following: {', '.join(supported_interpolation_modes)}"
-        )
-
-    image_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=interpolation_mode),
-            transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-    )
-
-    conditioning_image_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=interpolation_mode),
-            transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-        ]
-    )
-
+def prepare_train_dataset(dataset, accelerator, args):
     def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[args.image_column]]
-        images = [image_transforms(image) for image in images]
-
-        conditioning_images = [image.convert("RGB") for image in examples[args.conditioning_image_column]]
-        conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
+        # Just load and return PIL images - resizing will happen in collate_fn
+        # to ensure all samples in a batch have the same resolution
+        curr_images = [Image.open(path).convert("RGB") for path in examples["curr_img_path"]]
+        prev_images = [Image.open(path).convert("RGB") for path in examples["prev_img_path"]]
+        optical_flows = [Image.open(path).convert("RGB") for path in examples["optical_flow_path"]]
         
-        # Stack the same conditioning image twice to create 6-channel input
-        stacked_conditioning_images = []
-        for img_tensor in conditioning_images:
-            # img_tensor is (3, H, W), stack it with itself to get (6, H, W)
-            stacked_img = torch.cat([img_tensor, img_tensor], dim=0)
-            stacked_conditioning_images.append(stacked_img)
-
-        examples["pixel_values"] = images
-        examples["conditioning_pixel_values"] = stacked_conditioning_images
-
+        examples["curr_image"] = curr_images
+        examples["prev_image"] = prev_images
+        examples["optical_flow"] = optical_flows
+        
         return examples
 
     with accelerator.main_process_first():
@@ -821,23 +793,83 @@ def prepare_train_dataset(dataset, accelerator):
     return dataset
 
 
-def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
+def collate_fn(examples, args=None, interpolation_mode=None, text_encoders=None, tokenizers=None, proportion_empty_prompts=0.0):
+    # Multi-resolution training settings
+    resolutions = [512, 640, 768, 896, 1024]
+    resolution_probs = [0.40, 0.15, 0.25, 0.05, 0.15]  # Must sum to 1.0
+    
+    # Randomly select resolution for this batch
+    batch_resolution = int(np.random.choice(resolutions, p=resolution_probs))
+    
+    # Get interpolation mode
+    if interpolation_mode is None:
+        interpolation_mode = transforms.InterpolationMode.LANCZOS
+    
+    # Create transforms for this batch resolution
+    image_transform = transforms.Compose([
+        transforms.Resize(batch_resolution, interpolation=interpolation_mode),
+        transforms.CenterCrop(batch_resolution),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
+    
+    conditioning_transform = transforms.Compose([
+        transforms.Resize(batch_resolution, interpolation=interpolation_mode),
+        transforms.CenterCrop(batch_resolution),
+        transforms.ToTensor(),
+    ])
+    
+    # Process all images in the batch with the same resolution
+    pixel_values_list = []
+    conditioning_pixel_values_list = []
+    prompts = []
+    
+    for example in examples:
+        # Process target image (current frame)
+        curr_img = example["curr_image"]
+        curr_img_tensor = image_transform(curr_img)
+        pixel_values_list.append(curr_img_tensor)
+        
+        # Process conditioning: prev_frame + optical_flow
+        prev_img = example["prev_image"]
+        flow_img = example["optical_flow"]
+        
+        prev_img_tensor = conditioning_transform(prev_img)
+        flow_tensor = conditioning_transform(flow_img)
+        
+        # Concatenate to create 6-channel conditioning
+        conditioning = torch.cat([prev_img_tensor, flow_tensor], dim=0)
+        conditioning_pixel_values_list.append(conditioning)
+        
+        # Collect prompts for on-the-fly encoding
+        prompts.append(example["prompt"])
+    
+    pixel_values = torch.stack(pixel_values_list)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
-    conditioning_pixel_values = torch.stack([example["conditioning_pixel_values"] for example in examples])
+    conditioning_pixel_values = torch.stack(conditioning_pixel_values_list)
     conditioning_pixel_values = conditioning_pixel_values.to(memory_format=torch.contiguous_format).float()
 
-    prompt_ids = torch.stack([torch.tensor(example["prompt_embeds"]) for example in examples])
-
-    add_text_embeds = torch.stack([torch.tensor(example["text_embeds"]) for example in examples])
-    add_time_ids = torch.stack([torch.tensor(example["time_ids"]) for example in examples])
+    # Compute text embeddings on-the-fly
+    prompt_embeds, pooled_prompt_embeds = encode_prompt(
+        prompts, text_encoders, tokenizers, proportion_empty_prompts, is_train=True
+    )
+    
+    # Compute add_time_ids based on the actual batch resolution
+    # Use resolution from args as reference for original/target size
+    original_size = (batch_resolution, batch_resolution)
+    target_size = (batch_resolution, batch_resolution)
+    crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
+    
+    add_time_ids = list(original_size + crops_coords_top_left + target_size)
+    add_time_ids = torch.tensor([add_time_ids])
+    add_time_ids = add_time_ids.repeat(len(prompts), 1)
 
     return {
         "pixel_values": pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
-        "prompt_ids": prompt_ids,
-        "unet_added_conditions": {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
+        "prompt_ids": prompt_embeds,
+        "unet_added_conditions": {"text_embeds": pooled_prompt_embeds, "time_ids": add_time_ids},
     }
 
 
@@ -1078,61 +1110,35 @@ def main(args):
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
 
-    # Here, we compute not just the text embeddings but also the additional embeddings
-    # needed for the SD XL UNet to operate.
-    def compute_embeddings(batch, proportion_empty_prompts, text_encoders, tokenizers, is_train=True):
-        original_size = (args.resolution, args.resolution)
-        target_size = (args.resolution, args.resolution)
-        crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
-        prompt_batch = batch[args.caption_column]
-
-        prompt_embeds, pooled_prompt_embeds = encode_prompt(
-            prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train
-        )
-        add_text_embeds = pooled_prompt_embeds
-
-        # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-        add_time_ids = list(original_size + crops_coords_top_left + target_size)
-        add_time_ids = torch.tensor([add_time_ids])
-
-        prompt_embeds = prompt_embeds.to(accelerator.device)
-        add_text_embeds = add_text_embeds.to(accelerator.device)
-        add_time_ids = add_time_ids.repeat(len(prompt_batch), 1)
-        add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
-        unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-
-        return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
-
-    # Let's first compute all the embeddings so that we can free up the text encoders
-    # from memory.
+    # Load the training dataset (no precomputing embeddings)
+    train_dataset = get_train_dataset(args, accelerator)
+    
+    # Prepare the dataset for training (load images on-the-fly)
+    train_dataset = prepare_train_dataset(train_dataset, accelerator, args)
+    
+    # Keep text encoders in memory for on-the-fly encoding
     text_encoders = [text_encoder_one, text_encoder_two]
     tokenizers = [tokenizer_one, tokenizer_two]
-    train_dataset = get_train_dataset(args, accelerator)
-    compute_embeddings_fn = functools.partial(
-        compute_embeddings,
+
+    # Create a partial collate function with interpolation mode, text encoders, and tokenizers
+    try:
+        interpolation_mode = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper())
+    except (AttributeError, KeyError):
+        interpolation_mode = transforms.InterpolationMode.LANCZOS
+    
+    collate_fn_partial = functools.partial(
+        collate_fn, 
+        args=args, 
+        interpolation_mode=interpolation_mode,
         text_encoders=text_encoders,
         tokenizers=tokenizers,
-        proportion_empty_prompts=args.proportion_empty_prompts,
+        proportion_empty_prompts=args.proportion_empty_prompts
     )
-    with accelerator.main_process_first():
-        from datasets.fingerprint import Hasher
-
-        # fingerprint used by the cache for the other processes to load the result
-        # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
-        new_fingerprint = Hasher.hash(args)
-        train_dataset = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
-
-    del text_encoders, tokenizers
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # Then get the training dataset ready to be passed to the dataloader.
-    train_dataset = prepare_train_dataset(train_dataset, accelerator)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=collate_fn_partial,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
@@ -1183,7 +1189,8 @@ def main(args):
 
         # tensorboard cannot handle list types for config
         tracker_config.pop("validation_prompt")
-        tracker_config.pop("validation_image")
+        tracker_config.pop("validation_prev_image")
+        tracker_config.pop("validation_optical_flow")
 
         accelerator.init_trackers(args.tracker_project_name, config=tracker_config)
 
