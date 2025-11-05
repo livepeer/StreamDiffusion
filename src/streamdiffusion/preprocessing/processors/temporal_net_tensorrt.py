@@ -116,6 +116,11 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             "display_name": "TemporalNet TensorRT",
             "description": "TensorRT-accelerated optical flow computation for temporal consistency in video generation.",
             "parameters": {
+                "engine_path": {
+                    "type": "str",
+                    "default": None,
+                    "description": "Path to pre-built TensorRT engine file. Use compile_raft_tensorrt.py to build one."
+                },
                 "flow_strength": {
                     "type": "float",
                     "default": 1.0,
@@ -128,23 +133,13 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                     "default": 512,
                     "range": [256, 1024],
                     "step": 64,
-                    "description": "Resolution for optical flow computation (affects quality vs speed)"
+                    "description": "Resolution for optical flow computation (must match engine resolution)"
                 },
                 "output_format": {
                     "type": "str", 
                     "default": "concat",
                     "options": ["concat", "warped_only"],
                     "description": "Output format: 'concat' for 6-channel (current+warped), 'warped_only' for 3-channel warped frame"
-                },
-                "enable_tensorrt": {
-                    "type": "bool",
-                    "default": True,
-                    "description": "Use TensorRT acceleration for optical flow computation"
-                },
-                "force_rebuild": {
-                    "type": "bool",
-                    "default": False,
-                    "description": "Force rebuild TensorRT engine even if it exists"
                 }
             },
             "use_cases": ["High-performance video generation", "Real-time temporal consistency", "GPU-optimized motion control"]
@@ -152,24 +147,23 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
     
     def __init__(self, 
                  pipeline_ref: Any,
+                 engine_path: str = None,
                  image_resolution: int = 512,
                  flow_strength: float = 1.0,
                  detect_resolution: int = 512,
                  output_format: str = "concat",
-                 enable_tensorrt: bool = True,
-                 force_rebuild: bool = False,
                  **kwargs):
         """
         Initialize TensorRT TemporalNet preprocessor
         
         Args:
             pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
+            engine_path: Path to pre-built TensorRT engine file (required). 
+                        Build one using: python -m streamdiffusion.tools.compile_raft_tensorrt
             image_resolution: Output image resolution
             flow_strength: Strength of optical flow warping
-            detect_resolution: Resolution for optical flow computation
+            detect_resolution: Resolution for optical flow computation (must match engine resolution)
             output_format: "concat" for 6-channel TemporalNetV2, "warped_only" for 3-channel
-            enable_tensorrt: Use TensorRT acceleration
-            force_rebuild: Force rebuild TensorRT engine
             **kwargs: Additional parameters passed to BasePreprocessor
         """
         if not TORCHVISION_AVAILABLE:
@@ -181,31 +175,38 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         if not TENSORRT_AVAILABLE:
             raise ImportError(
                 "TensorRT and polygraphy are required for TensorRT acceleration. "
-                "Install them with: pip install tensorrt polygraphy"
+                "Install them with: python -m streamdiffusion.tools.install-tensorrt"
+            )
+        if engine_path is None:
+            raise ValueError(
+                "engine_path is required for TemporalNetTensorRTPreprocessor. "
+                "Build a TensorRT engine using:\n"
+                "  python -m streamdiffusion.tools.compile_raft_tensorrt --resolution 512 --output_dir ./models/temporal_net\n"
+                "Then pass the engine path to this preprocessor."
             )
         
         super().__init__(
             pipeline_ref=pipeline_ref,
             image_resolution=image_resolution,
+            engine_path=engine_path,
             flow_strength=flow_strength,
             detect_resolution=detect_resolution,
             output_format=output_format,
-            enable_tensorrt=enable_tensorrt,
-            force_rebuild=force_rebuild,
             **kwargs
         )
         
         self.flow_strength = max(0.0, min(2.0, flow_strength))
         self.detect_resolution = detect_resolution
-        self.enable_tensorrt = enable_tensorrt and TENSORRT_AVAILABLE
-        self.force_rebuild = force_rebuild
         self._first_frame = True
         
-        # Model paths
-        self.models_dir = Path("models") / "temporal_net"
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.onnx_path = self.models_dir / "raft_small.onnx"
-        self.engine_path = self.models_dir / f"raft_small_{trt.__version__ if TENSORRT_AVAILABLE else 'notrt'}_{detect_resolution}.trt"
+        # Engine path
+        self.engine_path = Path(engine_path)
+        if not self.engine_path.exists():
+            raise FileNotFoundError(
+                f"TensorRT engine not found at: {self.engine_path}\n"
+                f"Build one using:\n"
+                f"  python -m streamdiffusion.tools.compile_raft_tensorrt --resolution {detect_resolution} --output_dir {self.engine_path.parent}"
+            )
         
         # Model state
         self.trt_engine = None
@@ -214,151 +215,26 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         self._grid_cache = {}
         self._tensor_cache = {}
         
-        # Initialize TensorRT engine
-        self._ensure_model_ready()
-    
-    def _ensure_model_ready(self):
-        """Ensure TensorRT engine is ready"""
-        if not self.enable_tensorrt:
-            raise RuntimeError("TemporalNetTensorRTPreprocessor requires TensorRT acceleration. Use the standard TemporalNetPreprocessor for PyTorch fallback.")
-        self._setup_tensorrt()
-    
-    def _load_raft_for_export(self):
-        """Load RAFT model temporarily for ONNX export only"""
-        logger.info("_load_raft_for_export: Loading RAFT Small model for ONNX export")
-        raft_model = raft_small(weights=Raft_Small_Weights.DEFAULT, progress=False)
-        raft_model = raft_model.to(device=self.device)
-        raft_model.eval()
-        return raft_model
-    
-    def _setup_tensorrt(self):
-        """Setup TensorRT engine"""
-        # Export to ONNX first if needed
-        if not self.onnx_path.exists() or self.force_rebuild:
-            self._export_to_onnx()
-        
-        # Build/load TensorRT engine
+        # Load TensorRT engine
         self._load_tensorrt_engine()
     
-    def _export_to_onnx(self):
-        """Export RAFT model to ONNX format"""
-        logger.info(f"_export_to_onnx: Exporting RAFT model to ONNX: {self.onnx_path}")
-        
-        # Load PyTorch model temporarily for export
-        raft_model = self._load_raft_for_export()
-        
-        # Create dummy inputs for export
-        dummy_frame1 = torch.randn(1, 3, self.detect_resolution, self.detect_resolution).to(self.device)
-        dummy_frame2 = torch.randn(1, 3, self.detect_resolution, self.detect_resolution).to(self.device)
-        
-        # Apply RAFT preprocessing if available
-        weights = Raft_Small_Weights.DEFAULT
-        if hasattr(weights, 'transforms') and weights.transforms is not None:
-            transforms = weights.transforms()
-            dummy_frame1, dummy_frame2 = transforms(dummy_frame1, dummy_frame2)
-        
-        dynamic_axes = {
-            "frame1": {0: "batch_size"},
-            "frame2": {0: "batch_size"},
-            "flow": {0: "batch_size"},
-        }
-        
-        with torch.no_grad():
-            torch.onnx.export(
-                raft_model,
-                (dummy_frame1, dummy_frame2),
-                str(self.onnx_path),
-                verbose=False,
-                input_names=['frame1', 'frame2'],
-                output_names=['flow'],
-                opset_version=17,
-                export_params=True,
-                dynamic_axes=dynamic_axes,
-            )
-        
-        # Clean up the temporary model
-        del raft_model
-        torch.cuda.empty_cache()
-        
-        logger.info(f"_export_to_onnx: Successfully exported ONNX model to {self.onnx_path}")
-    
     def _load_tensorrt_engine(self):
-        """Load or build TensorRT engine"""
-        if self.engine_path.exists() and not self.force_rebuild:
-            logger.info(f"_load_tensorrt_engine: Loading existing TensorRT engine: {self.engine_path}")
-            self._load_existing_engine()
-        else:
-            logger.info("_load_tensorrt_engine: Building new TensorRT engine")
-            self._build_tensorrt_engine()
-    
-    def _load_existing_engine(self):
-        """Load existing TensorRT engine"""
+        """Load pre-built TensorRT engine"""
+        logger.info(f"_load_tensorrt_engine: Loading TensorRT engine: {self.engine_path}")
         try:
             self.trt_engine = TensorRTEngine(str(self.engine_path))
             self.trt_engine.load()
             self.trt_engine.activate()
             self.trt_engine.allocate_buffers(device=self.device)
-            logger.info(f"_load_existing_engine: TensorRT engine loaded successfully from {self.engine_path}")
+            logger.info(f"_load_tensorrt_engine: TensorRT engine loaded successfully from {self.engine_path}")
         except Exception as e:
-            logger.error(f"_load_existing_engine: Failed to load TensorRT engine: {e}")
+            logger.error(f"_load_tensorrt_engine: Failed to load TensorRT engine: {e}")
             self.trt_engine = None
-            raise RuntimeError(f"Failed to load TensorRT engine: {e}")
-    
-    def _build_tensorrt_engine(self):
-        """Build TensorRT engine from ONNX model"""
-        if not self.onnx_path.exists():
-            logger.error("TemporalNetTensorRTPreprocessor._build_tensorrt_engine: ONNX model not found")
-            return
-        
-        logger.info("_build_tensorrt_engine: Building TensorRT engine... this may take several minutes")
-        
-        try:
-            # Create builder and network
-            builder = trt.Builder(trt.Logger(trt.Logger.WARNING))
-            network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-            parser = trt.OnnxParser(network, trt.Logger(trt.Logger.WARNING))
-            
-            # Parse ONNX model
-            with open(self.onnx_path, 'rb') as model:
-                if not parser.parse(model.read()):
-                    logger.error("_build_tensorrt_engine: Failed to parse ONNX model")
-                    for error in range(parser.num_errors):
-                        logger.error(f"_build_tensorrt_engine: {parser.get_error(error)}")
-                    return
-            
-            # Configure builder
-            config = builder.create_builder_config()
-            config.set_flag(trt.BuilderFlag.FP16)  # Enable FP16 for better performance
-            
-            # Set optimization profile for dynamic shapes
-            profile = builder.create_optimization_profile()
-            min_shape = (1, 3, self.detect_resolution, self.detect_resolution)
-            opt_shape = (1, 3, self.detect_resolution, self.detect_resolution)
-            max_shape = (1, 3, self.detect_resolution, self.detect_resolution)
-            
-            profile.set_shape("frame1", min_shape, opt_shape, max_shape)
-            profile.set_shape("frame2", min_shape, opt_shape, max_shape)
-            config.add_optimization_profile(profile)
-            
-            # Build engine
-            engine = builder.build_serialized_network(network, config)
-            
-            if engine is None:
-                logger.error("_build_tensorrt_engine: Failed to build TensorRT engine")
-                return
-            
-            # Save engine
-            with open(self.engine_path, 'wb') as f:
-                f.write(engine)
-            
-            # Load the built engine
-            self._load_existing_engine()
-            logger.info(f"_build_tensorrt_engine: Successfully built and saved TensorRT engine: {self.engine_path}")
-        
-        except Exception as e:
-            logger.error(f"_build_tensorrt_engine: Failed to build TensorRT engine: {e}")
-            self.trt_engine = None
-            raise RuntimeError(f"Failed to build TensorRT engine: {e}")
+            raise RuntimeError(
+                f"Failed to load TensorRT engine from {self.engine_path}: {e}\n"
+                f"Make sure the engine was built with the correct resolution ({self.detect_resolution}) using:\n"
+                f"  python -m streamdiffusion.tools.compile_raft_tensorrt --resolution {self.detect_resolution}"
+            )
     
 
     
