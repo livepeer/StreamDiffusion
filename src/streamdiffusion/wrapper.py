@@ -1148,9 +1148,9 @@ class StreamDiffusionWrapper:
                 traceback.print_exc()
             raise RuntimeError(error_msg)
         else:
-            if not compile_engines_only and hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
+            if hasattr(pipe, "text_encoder") and pipe.text_encoder is not None:
                 pipe.text_encoder = pipe.text_encoder.to(device=self.device)
-            if not compile_engines_only and hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
+            if hasattr(pipe, "text_encoder_2") and pipe.text_encoder_2 is not None:
                 pipe.text_encoder_2 = pipe.text_encoder_2.to(device=self.device)
             # Move main pipeline components to device, but skip UNet for TensorRT
             if hasattr(pipe, "unet") and pipe.unet is not None and acceleration != "tensorrt":
