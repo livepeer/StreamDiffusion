@@ -240,6 +240,53 @@ class ControlNetSDXLTRT(ControlNetTRT):
                 "down_block_04", "down_block_05", "down_block_06", "down_block_07", 
                 "down_block_08", "mid_block"]
 
+    def get_dynamic_axes(self) -> Dict[str, Dict[int, str]]:
+        """Get dynamic axes configuration for variable input shapes"""
+        return {
+            "sample": {0: "B", 2: "H", 3: "W"},
+            "encoder_hidden_states": {0: "B"},
+            "timestep": {0: "B"},
+            "controlnet_cond": {0: "B", 2: "H_ctrl", 3: "W_ctrl"},
+            "text_embeds": {0: "B"},
+            "time_ids": {0: "B"},
+            **{f"down_block_{i:02d}": {0: "B", 2: "H", 3: "W"} for i in range(9)},
+            "mid_block": {0: "B", 2: "H", 3: "W"}
+        }
+    
+    def get_input_profile(self, batch_size, image_height, image_width, 
+                         static_batch, static_shape):
+        """Override to provide SDXL-specific input profiles including text_embeds and time_ids"""
+        # Get base profiles from parent class
+        profile = super().get_input_profile(batch_size, image_height, image_width, 
+                                           static_batch, static_shape)
+        
+        # Add SDXL-specific input profiles with dynamic batch dimension
+        min_batch = batch_size if static_batch else self.min_batch
+        max_batch = batch_size if static_batch else self.max_batch
+        
+        # conditioning_scale is a scalar (empty shape)
+        profile["conditioning_scale"] = [
+            (),  # min
+            (),  # opt
+            (),  # max
+        ]
+        
+        # text_embeds has shape (batch, 1280)
+        profile["text_embeds"] = [
+            (min_batch, 1280),      # min
+            (batch_size, 1280),     # opt
+            (max_batch, 1280),      # max
+        ]
+        
+        # time_ids has shape (batch, 6)
+        profile["time_ids"] = [
+            (min_batch, 6),         # min
+            (batch_size, 6),        # opt
+            (max_batch, 6),         # max
+        ]
+        
+        return profile
+
 
 def create_controlnet_model(model_type: str = "sd15", 
                            unet=None, model_path: str = "",
