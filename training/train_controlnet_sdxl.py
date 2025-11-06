@@ -31,6 +31,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+import torch.multiprocessing as mp
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -48,6 +49,7 @@ from diffusers import (
     AutoencoderKL,
     ControlNetModel,
     DDPMScheduler,
+    EulerDiscreteScheduler,
     StableDiffusionXLControlNetPipeline,
     UNet2DConditionModel,
     UniPCMultistepScheduler,
@@ -102,12 +104,17 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             torch_dtype=weight_dtype,
         )
 
-    pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
+    # Use EulerDiscreteScheduler instead of UniPCMultistepScheduler to avoid CUDA solver errors
+    pipeline.scheduler = EulerDiscreteScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
+    
+    # Enable memory efficient attention and optimizations
+    pipeline.vae.enable_slicing()
+    pipeline.vae.enable_tiling()
 
     if args.seed is None:
         generator = None
@@ -167,14 +174,33 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         
         # Concatenate prev_frame + optical_flow to create 6-channel input
         validation_image = torch.cat([prev_img_tensor, flow_tensor], dim=0)
+        # Add batch dimension: [6, H, W] -> [1, 6, H, W]
+        validation_image = validation_image.unsqueeze(0).to(accelerator.device).to(weight_dtype)
 
         images = []
 
-        for _ in range(args.num_validation_images):
+        for i in range(args.num_validation_images):
+            logger.info(f"Generating validation image {i+1}/{args.num_validation_images} with prompt: {validation_prompt[:50]}...")
+            logger.info(f"Validation image shape: {validation_image.shape}, dtype: {validation_image.dtype}, range: [{validation_image.min():.3f}, {validation_image.max():.3f}]")
+            
             with autocast_ctx:
-                image = pipeline(
-                    prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
-                ).images[0]
+                # Pass the 6-channel image directly - the pipeline should handle it
+                # Make sure the image is in the right format [0, 1] range
+                try:
+                    image = pipeline(
+                        prompt=validation_prompt, 
+                        image=validation_image, 
+                        num_inference_steps=20, 
+                        generator=generator,
+                        controlnet_conditioning_scale=1.0,
+                        guidance_scale=7.5
+                    ).images[0]
+                    logger.info(f"Successfully generated validation image {i+1}/{args.num_validation_images}")
+                except Exception as e:
+                    logger.error(f"Error generating validation image: {e}")
+                    # Create a blank image as fallback
+                    image = Image.new('RGB', (args.resolution, args.resolution), color='red')
+            
             images.append(image)
 
         # For logging, we need to convert back to PIL images
@@ -219,10 +245,14 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         else:
             logger.warning(f"image logging not implemented for {tracker.name}")
 
+    # Cleanup
     del pipeline
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
     gc.collect()
-    torch.cuda.empty_cache()
 
+    logger.info(f"Validation complete! Generated {len(image_logs)} validation samples")
     return image_logs
 
 
@@ -716,7 +746,9 @@ def get_train_dataset(args, accelerator):
             data_list = []
             with open(args.train_data_dir, 'r') as f:
                 for line in f:
-                    data_list.append(json.loads(line.strip()))
+                    line = line.strip()
+                    if line:  # Skip empty lines
+                        data_list.append(json.loads(line))
             
             # Create HuggingFace Dataset from list
             train_dataset = Dataset.from_list(data_list)
@@ -773,20 +805,25 @@ def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prom
     return prompt_embeds, pooled_prompt_embeds
 
 
-def prepare_train_dataset(dataset, accelerator, args):
-    def preprocess_train(examples):
-        # Just load and return PIL images - resizing will happen in collate_fn
-        # to ensure all samples in a batch have the same resolution
-        curr_images = [Image.open(path).convert("RGB") for path in examples["curr_img_path"]]
-        prev_images = [Image.open(path).convert("RGB") for path in examples["prev_img_path"]]
-        optical_flows = [Image.open(path).convert("RGB") for path in examples["optical_flow_path"]]
-        
-        examples["curr_image"] = curr_images
-        examples["prev_image"] = prev_images
-        examples["optical_flow"] = optical_flows
-        
-        return examples
+def preprocess_train(examples):
+    """
+    Preprocessing function for the training dataset.
+    Defined at module level to be picklable for multiprocessing with 'spawn'.
+    """
+    # Just load and return PIL images - resizing will happen in collate_fn
+    # to ensure all samples in a batch have the same resolution
+    curr_images = [Image.open(path).convert("RGB") for path in examples["curr_img_path"]]
+    prev_images = [Image.open(path).convert("RGB") for path in examples["prev_img_path"]]
+    optical_flows = [Image.open(path).convert("RGB") for path in examples["optical_flow_path"]]
+    
+    examples["curr_image"] = curr_images
+    examples["prev_image"] = prev_images
+    examples["optical_flow"] = optical_flows
+    
+    return examples
 
+
+def prepare_train_dataset(dataset, accelerator, args):
     with accelerator.main_process_first():
         dataset = dataset.with_transform(preprocess_train)
 
@@ -794,9 +831,10 @@ def prepare_train_dataset(dataset, accelerator, args):
 
 
 def collate_fn(examples, args=None, interpolation_mode=None, text_encoders=None, tokenizers=None, proportion_empty_prompts=0.0):
-    # Multi-resolution training settings
+    # Multi-resolution training settings - adjusted for memory efficiency
+    # Using lower resolutions more frequently to reduce memory usage
     resolutions = [512, 640, 768, 896, 1024]
-    resolution_probs = [0.40, 0.15, 0.25, 0.05, 0.15]  # Must sum to 1.0
+    resolution_probs = [0.60, 0.20, 0.15, 0.04, 0.01]  # Must sum to 1.0
     
     # Randomly select resolution for this batch
     batch_resolution = int(np.random.choice(resolutions, p=resolution_probs))
@@ -874,6 +912,19 @@ def collate_fn(examples, args=None, interpolation_mode=None, text_encoders=None,
 
 
 def main(args):
+    # Set multiprocessing start method to 'spawn' to avoid CUDA reinitialization errors
+    # when using DataLoader with num_workers > 0 and CUDA operations in collate_fn
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Start method already set
+    
+    # Set CUDA preferred linalg library to avoid cusolver errors
+    try:
+        torch.backends.cuda.preferred_linalg_library("cusolver")
+    except Exception:
+        pass  # If this fails, continue anyway
+    
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
             "You cannot use both --report_to=wandb and --hub_token due to a security risk of exposing your token."
@@ -1141,6 +1192,7 @@ def main(args):
         collate_fn=collate_fn_partial,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
+        persistent_workers=True if args.dataloader_num_workers > 0 else False,
     )
 
     # Scheduler and math around the number of training steps.
@@ -1349,15 +1401,24 @@ def main(args):
                         logger.info(f"Saved state to {save_path}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                        image_logs = log_validation(
-                            vae=vae,
-                            unet=unet,
-                            controlnet=controlnet,
-                            args=args,
-                            accelerator=accelerator,
-                            weight_dtype=weight_dtype,
-                            step=global_step,
-                        )
+                        try:
+                            image_logs = log_validation(
+                                vae=vae,
+                                unet=unet,
+                                controlnet=controlnet,
+                                args=args,
+                                accelerator=accelerator,
+                                weight_dtype=weight_dtype,
+                                step=global_step,
+                            )
+                        except RuntimeError as e:
+                            if "out of memory" in str(e).lower():
+                                logger.warning(f"OOM during validation at step {global_step}, skipping...")
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                                gc.collect()
+                            else:
+                                raise e
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)

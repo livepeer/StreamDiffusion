@@ -226,3 +226,5 @@ wandb/
 *.png
 nohup.out
 checkpoint*
+*.jsonl
+*.json
