@@ -24,7 +24,8 @@ except ImportError:
 
 def export_raft_to_onnx(
     onnx_path: Path,
-    resolution: int = 512,
+    min_resolution: int = 512,
+    max_resolution: int = 512,
     device: str = "cuda"
 ) -> bool:
     """
@@ -32,7 +33,8 @@ def export_raft_to_onnx(
     
     Args:
         onnx_path: Path to save the ONNX model
-        resolution: Input resolution for the model
+        min_resolution: Minimum input resolution for the model
+        max_resolution: Maximum input resolution for the model
         device: Device to use for export
         
     Returns:
@@ -43,7 +45,7 @@ def export_raft_to_onnx(
         return False
     
     logger.info(f"Exporting RAFT model to ONNX: {onnx_path}")
-    logger.info(f"Resolution: {resolution}x{resolution}")
+    logger.info(f"Resolution range: {min_resolution}x{min_resolution} - {max_resolution}x{max_resolution}")
     
     try:
         # Load RAFT model
@@ -52,9 +54,9 @@ def export_raft_to_onnx(
         raft_model = raft_model.to(device=device)
         raft_model.eval()
         
-        # Create dummy inputs
-        dummy_frame1 = torch.randn(1, 3, resolution, resolution).to(device)
-        dummy_frame2 = torch.randn(1, 3, resolution, resolution).to(device)
+        # Create dummy inputs using max resolution for export
+        dummy_frame1 = torch.randn(1, 3, max_resolution, max_resolution).to(device)
+        dummy_frame2 = torch.randn(1, 3, max_resolution, max_resolution).to(device)
         
         # Apply RAFT preprocessing if available
         weights = Raft_Small_Weights.DEFAULT
@@ -62,10 +64,11 @@ def export_raft_to_onnx(
             transforms = weights.transforms()
             dummy_frame1, dummy_frame2 = transforms(dummy_frame1, dummy_frame2)
         
+        # Make batch, height, and width dimensions dynamic
         dynamic_axes = {
-            "frame1": {0: "batch_size"},
-            "frame2": {0: "batch_size"},
-            "flow": {0: "batch_size"},
+            "frame1": {0: "batch_size", 2: "height", 3: "width"},
+            "frame2": {0: "batch_size", 2: "height", 3: "width"},
+            "flow": {0: "batch_size", 2: "height", 3: "width"},
         }
         
         logger.info("Exporting to ONNX...")
@@ -98,7 +101,8 @@ def export_raft_to_onnx(
 def build_tensorrt_engine(
     onnx_path: Path,
     engine_path: Path,
-    resolution: int = 512,
+    min_resolution: int = 512,
+    max_resolution: int = 512,
     fp16: bool = True,
     workspace_size_gb: int = 4
 ) -> bool:
@@ -108,7 +112,8 @@ def build_tensorrt_engine(
     Args:
         onnx_path: Path to the ONNX model
         engine_path: Path to save the TensorRT engine
-        resolution: Input resolution for optimization
+        min_resolution: Minimum input resolution for optimization
+        max_resolution: Maximum input resolution for optimization
         fp16: Enable FP16 precision mode
         workspace_size_gb: Maximum workspace size in GB
         
@@ -125,7 +130,7 @@ def build_tensorrt_engine(
     
     logger.info(f"Building TensorRT engine from ONNX model: {onnx_path}")
     logger.info(f"Output path: {engine_path}")
-    logger.info(f"Resolution: {resolution}x{resolution}")
+    logger.info(f"Resolution range: {min_resolution}x{min_resolution} - {max_resolution}x{max_resolution}")
     logger.info(f"FP16 mode: {fp16}")
     logger.info("This may take several minutes...")
     
@@ -151,10 +156,13 @@ def build_tensorrt_engine(
             config.set_flag(trt.BuilderFlag.FP16)
             logger.info("FP16 mode enabled")
         
+        # Calculate optimal resolution (middle point)
+        opt_resolution = (min_resolution + max_resolution) // 2
+        
         profile = builder.create_optimization_profile()
-        min_shape = (1, 3, resolution, resolution)
-        opt_shape = (1, 3, resolution, resolution)
-        max_shape = (1, 3, resolution, resolution)
+        min_shape = (1, 3, min_resolution, min_resolution)
+        opt_shape = (1, 3, opt_resolution, opt_resolution)
+        max_shape = (1, 3, max_resolution, max_resolution)
         
         profile.set_shape("frame1", min_shape, opt_shape, max_shape)
         profile.set_shape("frame2", min_shape, opt_shape, max_shape)
@@ -174,6 +182,15 @@ def build_tensorrt_engine(
         
         logger.info(f"Successfully built and saved TensorRT engine: {engine_path}")
         logger.info(f"Engine size: {engine_path.stat().st_size / (1024*1024):.2f} MB")
+        
+        # Delete ONNX file after successful engine creation
+        try:
+            if onnx_path.exists():
+                onnx_path.unlink()
+                logger.info(f"Deleted ONNX file: {onnx_path}")
+        except Exception as e:
+            logger.warning(f"Failed to delete ONNX file: {e}")
+        
         return True
         
     except Exception as e:
@@ -184,7 +201,8 @@ def build_tensorrt_engine(
 
 
 def compile_raft(
-    resolution: int = 512,
+    min_resolution: int = 512,
+    max_resolution: int = 512,
     output_dir: str = "./models/temporal_net",
     device: str = "cuda",
     fp16: bool = True,
@@ -195,7 +213,8 @@ def compile_raft(
     Main function to compile RAFT model to TensorRT engine
     
     Args:
-        resolution: Input resolution for the model (default: 512)
+        min_resolution: Minimum input resolution for the model (default: 512)
+        max_resolution: Maximum input resolution for the model (default: 512)
         output_dir: Directory to save the models (default: ./models/temporal_net)
         device: Device to use for export (default: cuda)
         fp16: Enable FP16 precision mode (default: True)
@@ -215,13 +234,16 @@ def compile_raft(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    onnx_path = output_path / "raft_small.onnx"
-    engine_path = output_path / f"raft_small.trt"
+    # Add resolution suffix to filenames
+    resolution_suffix = f"min_{min_resolution}_max_{max_resolution}"
+    onnx_path = output_path / f"raft_small_{resolution_suffix}.onnx"
+    engine_path = output_path / f"raft_small_{resolution_suffix}.engine"
     
     logger.info("="*80)
     logger.info("RAFT TensorRT Compilation")
     logger.info("="*80)
     logger.info(f"Output directory: {output_path.absolute()}")
+    logger.info(f"Resolution range: {min_resolution}x{min_resolution} - {max_resolution}x{max_resolution}")
     logger.info(f"ONNX path: {onnx_path}")
     logger.info(f"Engine path: {engine_path}")
     logger.info("="*80)
@@ -233,14 +255,14 @@ def compile_raft(
     
     if not onnx_path.exists() or force_rebuild:
         logger.info("\n[Step 1/2] Exporting RAFT to ONNX...")
-        if not export_raft_to_onnx(onnx_path, resolution, device):
+        if not export_raft_to_onnx(onnx_path, min_resolution, max_resolution, device):
             logger.error("Failed to export ONNX model")
             return
     else:
         logger.info(f"\n[Step 1/2] ONNX model already exists: {onnx_path}")
     
     logger.info("\n[Step 2/2] Building TensorRT engine...")
-    if not build_tensorrt_engine(onnx_path, engine_path, resolution, fp16, workspace_size_gb):
+    if not build_tensorrt_engine(onnx_path, engine_path, min_resolution, max_resolution, fp16, workspace_size_gb):
         logger.error("Failed to build TensorRT engine")
         return
     

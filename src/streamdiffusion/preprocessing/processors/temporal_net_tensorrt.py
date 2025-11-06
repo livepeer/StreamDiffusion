@@ -66,15 +66,36 @@ class TensorRTEngine:
         self.context = self.engine.create_execution_context()
         self._cuda_stream = torch.cuda.current_stream().cuda_stream
 
-    def allocate_buffers(self, device="cuda"):
-        """Allocate input/output buffers"""
+    def allocate_buffers(self, device="cuda", input_shape=None):
+        """
+        Allocate input/output buffers
+        
+        Args:
+            device: Device to allocate tensors on
+            input_shape: Shape for input tensors (B, C, H, W). Required for engines with dynamic shapes.
+        """
         for idx in range(self.engine.num_io_tensors):
             name = self.engine.get_tensor_name(idx)
             shape = self.context.get_tensor_shape(name)
             dtype = trt.nptype(self.engine.get_tensor_dtype(name))
             
             if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                # For dynamic shapes, use provided input_shape
+                if input_shape is not None and any(dim == -1 for dim in shape):
+                    shape = input_shape
                 self.context.set_input_shape(name, shape)
+                # Update shape after setting it
+                shape = self.context.get_tensor_shape(name)
+            else:
+                # For output tensors, get shape after input shapes are set
+                shape = self.context.get_tensor_shape(name)
+            
+            # Verify shape has no dynamic dimensions
+            if any(dim == -1 for dim in shape):
+                raise RuntimeError(
+                    f"Tensor '{name}' still has dynamic dimensions {shape} after setting input shapes. "
+                    f"Please provide input_shape parameter to allocate_buffers()."
+                )
             
             tensor = torch.empty(
                 tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
@@ -85,6 +106,37 @@ class TensorRTEngine:
         """Run inference with optional stream parameter"""
         if stream is None:
             stream = self._cuda_stream
+        
+        # Check if we need to update tensor shapes for dynamic dimensions
+        need_realloc = False
+        for name, buf in feed_dict.items():
+            if name in self.tensors:
+                if self.tensors[name].shape != buf.shape:
+                    need_realloc = True
+                    break
+        
+        # Reallocate buffers if input shape changed
+        if need_realloc:
+            # Update input shapes
+            for name, buf in feed_dict.items():
+                # Check if this tensor is an input tensor
+                try:
+                    if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                        self.context.set_input_shape(name, buf.shape)
+                except:
+                    # Tensor name might not be in engine, skip
+                    pass
+            
+            # Reallocate all tensors with new shapes
+            for idx in range(self.engine.num_io_tensors):
+                name = self.engine.get_tensor_name(idx)
+                shape = self.context.get_tensor_shape(name)
+                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+                
+                tensor = torch.empty(
+                    tuple(shape), dtype=numpy_to_torch_dtype_dict[dtype]
+                ).to(device=self.tensors[name].device)
+                self.tensors[name] = tensor
             
         # Copy input data to tensors
         for name, buf in feed_dict.items():
@@ -184,7 +236,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             raise ValueError(
                 "engine_path is required for TemporalNetTensorRTPreprocessor. "
                 "Build a TensorRT engine using:\n"
-                "  python -m streamdiffusion.tools.compile_raft_tensorrt --resolution 512 --output_dir ./models/temporal_net\n"
+                "  python -m streamdiffusion.tools.compile_raft_tensorrt --min_resolution 512 --max_resolution 1024 --output_dir ./models/temporal_net\n"
                 "Then pass the engine path to this preprocessor."
             )
         
@@ -231,15 +283,20 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             self.trt_engine = TensorRTEngine(str(self.engine_path))
             self.trt_engine.load()
             self.trt_engine.activate()
-            self.trt_engine.allocate_buffers(device=self.device)
+            
+            # For dynamic shapes, provide the input shape based on detect_resolution
+            input_shape = (1, 3, self.detect_resolution, self.detect_resolution)
+            self.trt_engine.allocate_buffers(device=self.device, input_shape=input_shape)
+            
             logger.info(f"_load_tensorrt_engine: TensorRT engine loaded successfully from {self.engine_path}")
+            logger.info(f"_load_tensorrt_engine: Using resolution: {self.detect_resolution}x{self.detect_resolution}")
         except Exception as e:
             logger.error(f"_load_tensorrt_engine: Failed to load TensorRT engine: {e}")
             self.trt_engine = None
             raise RuntimeError(
                 f"Failed to load TensorRT engine from {self.engine_path}: {e}\n"
-                f"Make sure the engine was built with the correct resolution ({self.detect_resolution}) using:\n"
-                f"  python -m streamdiffusion.tools.compile_raft_tensorrt --resolution {self.detect_resolution}"
+                f"Make sure the engine was built with a resolution range that includes {self.detect_resolution}.\n"
+                f"For example: python -m streamdiffusion.tools.compile_raft_tensorrt --min_resolution 512 --max_resolution 1024"
             )
     
 
