@@ -183,7 +183,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                     "step": 0.1,
                     "description": "Strength multiplier for optical flow visualization (1.0 = normal, higher = more pronounced flow)"
                 },
-                "detect_resolution": {
+                "image_resolution": {
                     "type": "int",
                     "default": 512,
                     "range": [256, 1024],
@@ -205,7 +205,6 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
                  engine_path: str = None,
                  image_resolution: int = 512,
                  flow_strength: float = 1.0,
-                 detect_resolution: int = 512,
                  output_format: str = "concat",
                  **kwargs):
         """
@@ -215,9 +214,8 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
             engine_path: Path to pre-built TensorRT engine file (required). 
                         Build one using: python -m streamdiffusion.tools.compile_raft_tensorrt
-            image_resolution: Output image resolution
+            image_resolution: Resolution for optical flow computation (must be within engine's min/max range)
             flow_strength: Strength multiplier for optical flow visualization
-            detect_resolution: Resolution for optical flow computation (must match engine resolution)
             output_format: "concat" for 6-channel [prev_input+flow_RGB], "warped_only" for 3-channel flow RGB only
             **kwargs: Additional parameters passed to BasePreprocessor
         """
@@ -245,13 +243,12 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             image_resolution=image_resolution,
             engine_path=engine_path,
             flow_strength=flow_strength,
-            detect_resolution=detect_resolution,
             output_format=output_format,
             **kwargs
         )
         
         self.flow_strength = max(0.0, min(2.0, flow_strength))
-        self.detect_resolution = detect_resolution
+        self.image_resolution = image_resolution
         self._first_frame = True
         
         # Store previous input frame for flow computation
@@ -263,7 +260,7 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             raise FileNotFoundError(
                 f"TensorRT engine not found at: {self.engine_path}\n"
                 f"Build one using:\n"
-                f"  python -m streamdiffusion.tools.compile_raft_tensorrt --resolution {detect_resolution} --output_dir {self.engine_path.parent}"
+                f"  python -m streamdiffusion.tools.compile_raft_tensorrt --min_resolution {image_resolution} --max_resolution {image_resolution} --output_dir {self.engine_path.parent}"
             )
         
         # Model state
@@ -284,18 +281,18 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
             self.trt_engine.load()
             self.trt_engine.activate()
             
-            # For dynamic shapes, provide the input shape based on detect_resolution
-            input_shape = (1, 3, self.detect_resolution, self.detect_resolution)
+            # For dynamic shapes, provide the input shape based on image_resolution
+            input_shape = (1, 3, self.image_resolution, self.image_resolution)
             self.trt_engine.allocate_buffers(device=self.device, input_shape=input_shape)
             
             logger.info(f"_load_tensorrt_engine: TensorRT engine loaded successfully from {self.engine_path}")
-            logger.info(f"_load_tensorrt_engine: Using resolution: {self.detect_resolution}x{self.detect_resolution}")
+            logger.info(f"_load_tensorrt_engine: Using resolution: {self.image_resolution}x{self.image_resolution}")
         except Exception as e:
             logger.error(f"_load_tensorrt_engine: Failed to load TensorRT engine: {e}")
             self.trt_engine = None
             raise RuntimeError(
                 f"Failed to load TensorRT engine from {self.engine_path}: {e}\n"
-                f"Make sure the engine was built with a resolution range that includes {self.detect_resolution}.\n"
+                f"Make sure the engine was built with a resolution range that includes {self.image_resolution}.\n"
                 f"For example: python -m streamdiffusion.tools.compile_raft_tensorrt --min_resolution 512 --max_resolution 1024"
             )
     
@@ -427,16 +424,16 @@ class TemporalNetTensorRTPreprocessor(PipelineAwareProcessor):
         current_tensor = current_input_tensor.to(device=self.device, dtype=torch.float32)
         
         # Resize for flow computation if needed (keep on GPU)
-        if current_tensor.shape[-1] != self.detect_resolution or current_tensor.shape[-2] != self.detect_resolution:
+        if current_tensor.shape[-1] != self.image_resolution or current_tensor.shape[-2] != self.image_resolution:
             prev_resized = F.interpolate(
                 prev_tensor.unsqueeze(0),
-                size=(self.detect_resolution, self.detect_resolution), 
+                size=(self.image_resolution, self.image_resolution), 
                 mode='bilinear',
                 align_corners=False
             ).squeeze(0)
             current_resized = F.interpolate(
                 current_tensor.unsqueeze(0), 
-                size=(self.detect_resolution, self.detect_resolution),
+                size=(self.image_resolution, self.image_resolution),
                 mode='bilinear', 
                 align_corners=False
             ).squeeze(0)
