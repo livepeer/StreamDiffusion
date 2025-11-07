@@ -131,9 +131,9 @@ def get_preprocessor(name: str, pipeline_ref: Any = None, params: Any = None) ->
     if hasattr(processor_class, 'requires_sync_processing') and processor_class.requires_sync_processing:
         if pipeline_ref is None:
             raise ValueError(f"Processor '{name}' requires a pipeline_ref")
-        return processor_class(pipeline_ref=pipeline_ref, _registry_name=name, **params)
+        return processor_class(pipeline_ref=pipeline_ref, _registry_name=name, **(params or {}))
     else:
-        return processor_class(_registry_name=name, **params)
+        return processor_class(_registry_name=name, **(params or {}))
 
 
 def register_preprocessor(name: str, preprocessor_class):
