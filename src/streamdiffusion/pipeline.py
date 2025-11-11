@@ -157,6 +157,11 @@ class StreamDiffusion:
         # Get sampler-specific configuration
         sampler_params = sampler_config.get(sampler_type, {})
         
+        # Set original_inference_steps to 100 to allow flexible num_inference_steps updates
+        # This prevents "original_steps x strength < num_inference_steps" errors when
+        # dynamically changing num_inference_steps in production without pipeline restarts
+        sampler_params['original_inference_steps'] = 100
+        
         if scheduler_type == "lcm":
             return LCMScheduler.from_config(config, **sampler_params)
         elif scheduler_type == "tcd":
