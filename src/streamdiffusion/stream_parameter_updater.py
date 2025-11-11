@@ -258,16 +258,45 @@ class StreamParameterUpdater(OrchestratorUser):
         """Update streaming parameters efficiently in a single call."""
 
         with self._update_lock:
-            if t_index_list is not None:
-                self._recalculate_timestep_dependent_params(t_index_list)
-                
+            # First, update num_inference_steps if needed (this changes the timesteps array size)
             if num_inference_steps is not None:
+                # Safety check: Ensure num_inference_steps is at least as large as max t_index value
+                if t_index_list is None:
+                    # Check against current t_list
+                    max_t_index = max(self.stream.t_list) if self.stream.t_list else 0
+                    if num_inference_steps <= max_t_index:
+                        logger.warning(
+                            f"update_stream_params: num_inference_steps ({num_inference_steps}) is too small for "
+                            f"current t_list (max index: {max_t_index}). Adjusting to {max_t_index + 1}."
+                        )
+                        num_inference_steps = max_t_index + 1
+                else:
+                    # Check against provided t_index_list
+                    max_t_index = max(t_index_list) if t_index_list else 0
+                    if num_inference_steps <= max_t_index:
+                        logger.warning(
+                            f"update_stream_params: num_inference_steps ({num_inference_steps}) is too small for "
+                            f"provided t_index_list (max index: {max_t_index}). Adjusting to {max_t_index + 1}."
+                        )
+                        num_inference_steps = max_t_index + 1
+                
+                old_num_steps = len(self.stream.timesteps)
                 self.stream.scheduler.set_timesteps(num_inference_steps, self.stream.device)
                 self.stream.timesteps = self.stream.scheduler.timesteps.to(self.stream.device)
-
-            if num_inference_steps is not None and t_index_list is None:
-                max_step = num_inference_steps - 1
-                t_index_list = [min(t, max_step) for t in self.stream.t_list]
+                
+                # If t_index_list wasn't explicitly provided, rescale existing t_list proportionally
+                if t_index_list is None and old_num_steps > 0:
+                    # Rescale each index proportionally to the new number of steps
+                    # e.g., if t_list = [0, 16, 32, 45] with 50 steps -> [0, 3, 6, 8] with 9 steps
+                    scale_factor = (num_inference_steps - 1) / (old_num_steps - 1) if old_num_steps > 1 else 1.0
+                    t_index_list = [
+                        min(round(t * scale_factor), num_inference_steps - 1) 
+                        for t in self.stream.t_list
+                    ]
+            
+            # Now update timestep-dependent parameters with the correct t_index_list
+            if t_index_list is not None:
+                self._recalculate_timestep_dependent_params(t_index_list)
 
             if guidance_scale is not None:
                 if self.stream.cfg_type == "none" and guidance_scale > 1.0:
