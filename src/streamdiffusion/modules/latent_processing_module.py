@@ -42,7 +42,8 @@ class LatentProcessingModule(OrchestratorUser):
         enabled = proc_config.get('enabled', True)
         
         # Create processor using existing registry (same as ControlNet)
-        processor = get_preprocessor(processor_type, pipeline_ref=self._stream)
+        # LatentProcessingModule uses 'latent' normalization context (works in latent space)
+        processor = get_preprocessor(processor_type, pipeline_ref=self._stream, normalization_context='latent')
         
         # Apply parameters (same pattern as ControlNet)
         processor_params = proc_config.get('params', {})

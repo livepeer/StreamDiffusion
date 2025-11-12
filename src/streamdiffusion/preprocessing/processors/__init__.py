@@ -111,13 +111,17 @@ def get_preprocessor_class(name: str) -> type:
     return _preprocessor_registry[name]
 
 
-def get_preprocessor(name: str, pipeline_ref: Any = None) -> BasePreprocessor:
+def get_preprocessor(name: str, pipeline_ref: Any = None, normalization_context: str = 'controlnet') -> BasePreprocessor:
     """
     Get a preprocessor by name
     
     Args:
         name: Name of the preprocessor
         pipeline_ref: Pipeline reference for pipeline-aware processors (required for some processors)
+        normalization_context: Context for normalization handling
+            - 'controlnet': Expects/produces [0,1] range for ControlNet conditioning
+            - 'pipeline': Expects/produces [-1,1] range for pipeline image processing
+            - 'latent': Works in latent space (no normalization needed)
         
     Returns:
         Preprocessor instance
@@ -131,9 +135,9 @@ def get_preprocessor(name: str, pipeline_ref: Any = None) -> BasePreprocessor:
     if hasattr(processor_class, 'requires_sync_processing') and processor_class.requires_sync_processing:
         if pipeline_ref is None:
             raise ValueError(f"Processor '{name}' requires a pipeline_ref")
-        return processor_class(pipeline_ref=pipeline_ref, _registry_name=name)
+        return processor_class(pipeline_ref=pipeline_ref, normalization_context=normalization_context, _registry_name=name)
     else:
-        return processor_class(_registry_name=name)
+        return processor_class(normalization_context=normalization_context, _registry_name=name)
 
 
 def register_preprocessor(name: str, preprocessor_class):

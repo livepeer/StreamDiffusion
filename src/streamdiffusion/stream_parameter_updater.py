@@ -1463,9 +1463,18 @@ class StreamParameterUpdater(OrchestratorUser):
                     try:
                         from streamdiffusion.preprocessing.processors import get_preprocessor
                         
-                        # Pass pipeline reference for pipeline-aware processors
-                        pipeline_ref = getattr(hook_module, '_stream', None)
-                        new_processor = get_preprocessor(processor_type, pipeline_ref=pipeline_ref)
+                        # Determine normalization context from hook type
+                        if 'latent' in hook_type:
+                            normalization_context = 'latent'
+                        else:
+                            # Image preprocessing/postprocessing uses 'pipeline' context
+                            normalization_context = 'pipeline'
+                        
+                        new_processor = get_preprocessor(
+                            processor_type, 
+                            pipeline_ref=getattr(self, 'stream', None),
+                            normalization_context=normalization_context
+                        )
                         
                         # Copy attributes from old processor
                         setattr(new_processor, 'order', getattr(existing_processor, 'order', i))

@@ -41,6 +41,7 @@ class LatentFeedbackPreprocessor(PipelineAwareProcessor):
     
     def __init__(self, 
                  pipeline_ref: Any,
+                 normalization_context: str = 'latent',
                  feedback_strength: float = 0.15,
                  **kwargs):
         """
@@ -48,11 +49,13 @@ class LatentFeedbackPreprocessor(PipelineAwareProcessor):
         
         Args:
             pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
+            normalization_context: Context for normalization handling (latent space doesn't need normalization)
             feedback_strength: Strength of feedback blend (0.0 = pure input, 0.40 = max safe value, values > 0.4 produce garbage)
             **kwargs: Additional parameters passed to BasePreprocessor
         """
         super().__init__(
             pipeline_ref=pipeline_ref,
+            normalization_context=normalization_context,
             feedback_strength=feedback_strength,
             **kwargs
         )
