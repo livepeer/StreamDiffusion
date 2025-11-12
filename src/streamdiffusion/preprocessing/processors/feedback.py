@@ -148,8 +148,11 @@ class FeedbackPreprocessor(PipelineAwareProcessor):
                 if input_tensor.max() > 1.0:
                     input_tensor = input_tensor / 255.0
             elif self.normalization_context == 'pipeline':
-                # Pipeline context: both prev_output and input are [-1, 1]
-                # No normalization conversion needed - both are in the same range
+                # Pipeline context: both prev_output and input_tensor are in [-1, 1] range
+                # - prev_output comes from VAE decode (always [-1, 1])
+                # - input_tensor arrives as [-1, 1] from image_processor.preprocess()
+                # - validate_tensor_input() preserves [-1, 1] since max() <= 1.0
+                # No normalization conversion needed - blend directly in [-1, 1] space
                 pass
             else:
                 # Unknown context - log warning and assume controlnet behavior for backward compatibility

@@ -112,7 +112,10 @@ class BasePreprocessor(ABC):
             image_tensor: Input tensor
             
         Returns:
-            Normalized tensor in CHW format, range [0,1], on correct device
+            Tensor in CHW format, on correct device
+            Range: [0,1] if input was [0,255], otherwise preserves input range
+            
+        Note: This preserves [-1,1] tensors (from pipeline) since max() <= 1.0
         """
         # Handle batch dimension
         if image_tensor.dim() == 4:
@@ -126,7 +129,8 @@ class BasePreprocessor(ABC):
         # Ensure correct device and dtype
         image_tensor = image_tensor.to(device=self.device, dtype=self.dtype)
         
-        # Normalize to [0,1] range if needed
+        # Normalize to [0,1] range only if tensor is in [0,255] uint8 range
+        # Preserves [-1,1] and [0,1] ranges (max <= 1.0)
         if image_tensor.max() > 1.0:
             image_tensor = image_tensor / 255.0
         
