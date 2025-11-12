@@ -1449,16 +1449,23 @@ class StreamParameterUpdater(OrchestratorUser):
             if i < len(hook_module.processors):
                 # Modify existing processor
                 existing_processor = hook_module.processors[i]
-                current_type = existing_processor.__class__.__name__
+                
+                # Get the current processor type from registry name if available, otherwise use class name
+                current_type = existing_processor.params.get('_registry_name') if hasattr(existing_processor, 'params') else None
+                if not current_type:
+                    current_type = existing_processor.__class__.__name__
                 
                 logger.info(f"_update_hook_config: Modifying existing processor {i}: {current_type} -> {processor_type}")
                 
                 # If processor type changed, replace it
-                if current_type.lower() != processor_type.lower() and not current_type.lower().startswith(processor_type.lower()):
+                if current_type.lower() != processor_type.lower():
                     logger.info(f"_update_hook_config: Type changed, replacing processor {i}")
                     try:
                         from streamdiffusion.preprocessing.processors import get_preprocessor
-                        new_processor = get_preprocessor(processor_type)
+                        
+                        # Pass pipeline reference for pipeline-aware processors
+                        pipeline_ref = getattr(hook_module, '_stream', None)
+                        new_processor = get_preprocessor(processor_type, pipeline_ref=pipeline_ref)
                         
                         # Copy attributes from old processor
                         setattr(new_processor, 'order', getattr(existing_processor, 'order', i))
