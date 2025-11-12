@@ -21,7 +21,6 @@
   let lastEmittedProcessor = '';
   $: {
     if (currentProcessor && currentProcessor !== lastEmittedProcessor && currentProcessor !== 'passthrough' && processorsInfo[currentProcessor] && !loading) {
-      console.log(`ProcessorSelector: currentProcessor prop changed to:`, currentProcessor);
       lastEmittedProcessor = currentProcessor;
       
       // Emit processor info when prop changes
@@ -30,7 +29,6 @@
           const paramsResponse = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
           if (paramsResponse.ok) {
             const paramsData = await paramsResponse.json();
-            console.log(`ProcessorSelector: Current params loaded for prop change:`, paramsData);
             
             dispatch('processorChanged', {
               processor_index: processorIndex,
@@ -48,7 +46,6 @@
           }
         } catch (err) {
           console.warn(`ProcessorSelector: Failed to load current params for prop change:`, err);
-          // Fallback without current params
           dispatch('processorChanged', {
             processor_index: processorIndex,
             processor: currentProcessor,
@@ -78,19 +75,13 @@
       processorsInfo = data.preprocessors || {};
       availableProcessors = data.available || [];
       
-      console.log(`ProcessorSelector: Loaded ${processorType}s:`, availableProcessors);
-      console.log(`ProcessorSelector: ${processorType}s info:`, processorsInfo);
-      
       // Emit initial processor info if we have a current processor
       if (currentProcessor && currentProcessor !== 'passthrough' && processorsInfo[currentProcessor]) {
-        console.log(`ProcessorSelector: Emitting initial ${processorType} info for:`, currentProcessor);
-        
         // Fetch current parameter values
         try {
           const paramsResponse = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
           if (paramsResponse.ok) {
             const paramsData = await paramsResponse.json();
-            console.log(`ProcessorSelector: Current params loaded:`, paramsData);
             
             dispatch('processorChanged', {
               processor_index: processorIndex,
@@ -108,7 +99,6 @@
           }
         } catch (err) {
           console.warn(`ProcessorSelector: Failed to load current params:`, err);
-          // Fallback without current params
           dispatch('processorChanged', {
             processor_index: processorIndex,
             processor: currentProcessor,
@@ -126,8 +116,6 @@
 
   async function handleProcessorChange() {
     try {
-      console.log(`ProcessorSelector: Switching to ${currentProcessor} for ${processorType} ${processorIndex}`);
-      
       const response = await fetch(`${apiEndpoint}/switch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -144,16 +132,13 @@
       }
 
       const result = await response.json();
-      console.log(`ProcessorSelector: Successfully switched ${processorType}:`, result);
       
-      // Fetch current parameter values after switching
       let currentParams = {};
       try {
         const paramsResponse = await fetch(`${apiEndpoint}/current-params/${processorIndex}`);
         if (paramsResponse.ok) {
           const paramsData = await paramsResponse.json();
           currentParams = paramsData.parameters || {};
-          console.log(`ProcessorSelector: Current params after switch:`, currentParams);
         }
       } catch (paramErr) {
         console.warn(`ProcessorSelector: Failed to load current params after switch:`, paramErr);

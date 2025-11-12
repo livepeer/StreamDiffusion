@@ -61,10 +61,6 @@
     }
   });
   
-  $: {
-    console.log('VideoInput: selectedDevice', selectedDevice);
-  }
-  
   onDestroy(() => {
     if (videoFrameCallbackId) videoEl.cancelVideoFrameCallback(videoFrameCallbackId);
   });

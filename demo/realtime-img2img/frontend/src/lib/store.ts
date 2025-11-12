@@ -107,16 +107,13 @@ export function startStatePolling(intervalMs: number = 5000) {
     // Initial fetch
     fetchAppState();
     
-    // Set up polling
     pollingInterval = setInterval(fetchAppState, intervalMs);
-    console.log(`startStatePolling: Started polling every ${intervalMs}ms`);
 }
 
 export function stopStatePolling() {
     if (pollingInterval) {
         clearInterval(pollingInterval);
         pollingInterval = null;
-        console.log('stopStatePolling: Stopped state polling');
     }
 }
 

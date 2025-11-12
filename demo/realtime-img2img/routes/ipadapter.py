@@ -86,13 +86,19 @@ async def update_ipadapter_enabled(request: Request, app_instance=Depends(get_ap
         data = await handle_api_request(request, "update_ipadapter_enabled", ["enabled"])
         enabled = data.get("enabled")
         
-        validate_pipeline(app_instance.pipeline, "update_ipadapter_enabled")
-        validate_config_mode(app_instance.pipeline, "ipadapters")
+        # Update AppState as single source of truth (works before pipeline creation)
+        app_instance.app_state.ipadapter_info["enabled"] = bool(enabled)
+        logging.info(f"update_ipadapter_enabled: Updated AppState ipadapter enabled to {enabled}")
         
-        # Update IPAdapter enabled state in the pipeline
-        app_instance.pipeline.stream.update_stream_params(
-            ipadapter_config={'enabled': bool(enabled)}
-        )
+        # Sync to pipeline if active
+        if app_instance.pipeline:
+            validate_config_mode(app_instance.pipeline, "ipadapters")
+            
+            # Update IPAdapter enabled state in the pipeline
+            app_instance.pipeline.stream.update_stream_params(
+                ipadapter_config={'enabled': bool(enabled)}
+            )
+            logging.info(f"update_ipadapter_enabled: Synced to active pipeline")
         
         return create_success_response(f"IPAdapter {'enabled' if enabled else 'disabled'} successfully")
         

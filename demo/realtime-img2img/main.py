@@ -632,8 +632,53 @@ class App:
         # Initialize input source manager for modular input routing
         from input_sources import InputSourceManager
         self.input_source_manager = InputSourceManager()
+        
+        # Preemptively initialize input sources to avoid config upload delay
+        self._preload_input_sources()
+        
         self.init_app()
 
+    def _preload_input_sources(self):
+        """Preemptively initialize input sources and preprocessors to avoid delays during config upload"""
+        try:
+            logger.info("_preload_input_sources: Preemptively initializing input sources and preprocessors to avoid config upload delay")
+            
+            # Preload base input source
+            self.input_source_manager.get_source_info('base')
+            
+            # Preload IPAdapter input source
+            self.input_source_manager.get_source_info('ipadapter')
+            
+            # Preload potential ControlNet input sources (up to 5)
+            for i in range(5):
+                self.input_source_manager.get_source_info('controlnet', index=i)
+            
+            # Preload preprocessors to trigger controlnet_aux imports
+            # This is what causes the delay - the first time a preprocessor is accessed,
+            # all the controlnet_aux modules get imported
+            logger.info("_preload_input_sources: Triggering preprocessor imports...")
+            try:
+                from streamdiffusion.preprocessing.processors import list_preprocessors, get_preprocessor_class
+                # List all available preprocessors - this triggers the lazy imports
+                available = list_preprocessors()
+                logger.info(f"_preload_input_sources: Found {len(available)} preprocessors, loading metadata...")
+                
+                # Access at least one preprocessor class to ensure all imports complete
+                if available:
+                    for processor_name in available[:3]:  # Load first 3 to trigger most imports
+                        try:
+                            _ = get_preprocessor_class(processor_name)
+                        except Exception as e:
+                            logger.debug(f"_preload_input_sources: Could not load {processor_name}: {e}")
+                
+                logger.info("_preload_input_sources: Preprocessor imports completed")
+            except Exception as prep_error:
+                logger.warning(f"_preload_input_sources: Could not preload preprocessors: {prep_error}")
+            
+            logger.info("_preload_input_sources: Input sources and preprocessors preloaded successfully")
+        except Exception as e:
+            logger.error(f"_preload_input_sources: Error during preload: {e}")
+    
     def cleanup(self):
         """Cleanup resources when app is shutting down"""
         logger.info("App cleanup: Starting application cleanup...")

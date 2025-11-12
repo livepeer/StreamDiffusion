@@ -133,10 +133,6 @@
       // Use centralized state fetching
       const state = await fetch('/api/state').then(r => r.json());
       
-      // Prompt initialization is now handled by centralized state management
-      console.log('getSettings: Prompt from centralized state:', state.config_prompt);
-      
-      console.log('getSettings: Legacy function called - using centralized state');
       toggleQueueChecker(true);
       
     } catch (error) {
@@ -153,18 +149,13 @@
   function handleControlNetUpdate(event: CustomEvent) {
     controlnetInfo = event.detail.controlnet;
     
-    // Prompt updates are now handled by centralized state management
     if (event.detail.config_prompt) {
-      console.log('handleControlNetUpdate: Config prompt updated:', event.detail.config_prompt);
+      // Config prompt updated via centralized state
     }
     
-    // Update t_index_list if available
     if (event.detail.t_index_list) {
       tIndexList = [...event.detail.t_index_list];
     }
-    
-    console.log('handleControlNetUpdate: ControlNet updated:', controlnetInfo);
-    console.log('handleControlNetUpdate: T-Index List updated:', tIndexList);
   }
 
   async function handleTIndexListUpdate(newTIndexList: number[]) {
@@ -180,8 +171,7 @@
       });
 
       if (response.ok) {
-        tIndexList = [...newTIndexList]; // Update local state
-        console.log('handleTIndexListUpdate: T-Index List updated:', tIndexList);
+        tIndexList = [...newTIndexList];
       } else {
         const result = await response.json();
         console.error('handleTIndexListUpdate: Failed to update t_index_list:', result.detail);
@@ -204,8 +194,7 @@
       });
 
       if (response.ok) {
-        skipDiffusion = enabled; // Update local state
-        console.log('handleSkipDiffusionUpdate: Skip diffusion updated:', skipDiffusion);
+        skipDiffusion = enabled;
         
         // Show success message
         successMessage = `Skip diffusion ${enabled ? 'enabled' : 'disabled'}. ${enabled ? 'Only pre/post processing will run.' : 'Full diffusion pipeline restored.'}`;
@@ -235,7 +224,6 @@
       
       if (response.ok) {
         const result = await response.json();
-        console.log('handleResolutionUpdate: Resolution updated successfully:', result.message);
         
         // Show success toast/message instead of warning
         if (result.message) {
@@ -341,12 +329,10 @@
       
       if (data.prompt_blending) {
         promptBlendingConfig = data.prompt_blending;
-        console.log('refreshBlendingConfigs: Updated prompt blending:', promptBlendingConfig);
       }
       
       if (data.seed_blending) {
         seedBlendingConfig = data.seed_blending;
-        console.log('refreshBlendingConfigs: Updated seed blending:', seedBlendingConfig);
       }
       
       if (data.normalize_prompt_weights !== undefined) {
@@ -356,8 +342,6 @@
       if (data.normalize_seed_weights !== undefined) {
         normalizeSeedWeights = data.normalize_seed_weights;
       }
-      
-      console.log('refreshBlendingConfigs: Blending configs refreshed');
     } catch (error) {
       console.error('refreshBlendingConfigs: Failed to refresh blending configs:', error);
     }
@@ -441,60 +425,42 @@
       const result = await response.json();
 
       if (response.ok) {
-        console.log('uploadConfig: Full response received:', result);
-        console.log('uploadConfig: controls_updated flag:', result.controls_updated);
-        
         // If pipeline is running, stop it first
         if (isLCMRunning) {
-          console.log('uploadConfig: Stopping active pipeline before applying config...');
-          await toggleLcmLive(); // Stop the current pipeline
+          await toggleLcmLive();
           successMessage = 'Configuration uploaded successfully! Pipeline stopped and reset to config.';
         } else {
           successMessage = 'Configuration uploaded successfully! Pipeline will load when you start streaming.';
         }
         fileInput.value = '';
         
-        // Update ControlNet info
         if (result.controlnet) {
           controlnetInfo = result.controlnet;
-          console.log('uploadConfig: Updated controlnetInfo to:', controlnetInfo);
         }
         
-        // Update IPAdapter info
         if (result.ipadapter) {
           ipadapterInfo = result.ipadapter;
           ipadapterScale = result.ipadapter.scale || 1.0;
         }
-        // Update model badge if present
+        
         if (result.model_id) {
           selectedModelId = result.model_id;
         }
         
-        // Update streaming parameters
         if (result.t_index_list) {
           tIndexList = [...result.t_index_list];
-          console.log('uploadConfig: Updated tIndexList to:', tIndexList);
         }
         if (result.guidance_scale !== undefined) {
           guidanceScale = result.guidance_scale;
-          console.log('uploadConfig: Updated guidanceScale to:', guidanceScale);
         }
         if (result.delta !== undefined) {
           delta = result.delta;
-          console.log('uploadConfig: Updated delta to:', delta);
         }
         if (result.num_inference_steps !== undefined) {
           numInferenceSteps = result.num_inference_steps;
-          console.log('uploadConfig: Updated numInferenceSteps to:', numInferenceSteps);
         }
         if (result.seed !== undefined) {
           seed = result.seed;
-          console.log('uploadConfig: Updated seed to:', seed);
-        }
-        
-        // Config values are now handled by centralized state management
-        if (result.config_values) {
-          console.log('uploadConfig: Config values updated via centralized state');
         }
 
         // Update normalization settings
@@ -508,51 +474,27 @@
           skipDiffusion = result.skip_diffusion;
         }
         
-        // Update blending configurations
         if (result.prompt_blending) {
           promptBlendingConfig = result.prompt_blending;
-          showPromptBlending = true;  // Auto-expand if config has blending data
-          console.log('uploadConfig: Updated prompt blending config:', promptBlendingConfig);
+          showPromptBlending = true;
         }
         if (result.seed_blending) {
           seedBlendingConfig = result.seed_blending;
-          console.log('uploadConfig: Updated seed blending config:', seedBlendingConfig);
         }
         
-        // Prompt and resolution updates are now handled by centralized state management
-        if (result.config_prompt) {
-          console.log('uploadConfig: Config prompt updated via centralized state:', result.config_prompt);
-        } else if (result.prompt) {
-          console.log('uploadConfig: Prompt updated via centralized state:', result.prompt);
-        }
-        
-        if (result.negative_prompt !== undefined) {
-          console.log('uploadConfig: Negative prompt updated via centralized state:', result.negative_prompt);
-        }
-        
-        if (result.current_resolution) {
-          console.log('uploadConfig: Resolution updated via centralized state:', result.current_resolution);
-        }
-        
-        // Force complete refresh of all pipeline hook components by generating new keys
         const configUploadTimestamp = Date.now();
         
-        // Update pipeline hooks info with forced refresh
         if (result.image_preprocessing) {
           imagePreprocessingInfo = result.image_preprocessing;
-          console.log('uploadConfig: Updated image preprocessing info:', imagePreprocessingInfo);
         }
         if (result.image_postprocessing) {
           imagePostprocessingInfo = result.image_postprocessing;
-          console.log('uploadConfig: Updated image postprocessing info:', imagePostprocessingInfo);
         }
         if (result.latent_preprocessing) {
           latentPreprocessingInfo = result.latent_preprocessing;
-          console.log('uploadConfig: Updated latent preprocessing info:', latentPreprocessingInfo);
         }
         if (result.latent_postprocessing) {
           latentPostprocessingInfo = result.latent_postprocessing;
-          console.log('uploadConfig: Updated latent postprocessing info:', latentPostprocessingInfo);
         }
         
         // Trigger complete re-initialization of all components by updating the config refresh key
@@ -662,7 +604,6 @@
 
   function handleBaseInputSourceChanged(event: CustomEvent) {
     const { componentType, sourceType, sourceData } = event.detail;
-    console.log('Main page: Base input source changed:', event.detail);
   }
 
   // Component references for resetting input sources
@@ -678,7 +619,6 @@
       
       if (response.ok) {
         const result = await response.json();
-        console.log('toggleDebugMode: Debug mode toggled:', result.message);
       } else {
         const error = await response.json();
         warningMessage = `Failed to toggle debug mode: ${error.detail}`;
@@ -695,8 +635,6 @@
       
       if (response.ok) {
         const result = await response.json();
-        console.log('stepFrame: Frame step requested:', result.message);
-        // Immediately refresh state to update button disabled state
         await fetchAppState();
       } else {
         const error = await response.json();
@@ -708,27 +646,19 @@
     }
   }
 
-  // Function to reset all input source selectors
   async function resetAllInputSourceSelectors() {
-    console.log('resetAllInputSourceSelectors: Resetting all input source selectors');
-    
     try {
-      // Reset base input source selector
       if (baseInputSourceSelector && baseInputSourceSelector.resetToDefaults) {
         baseInputSourceSelector.resetToDefaults();
       }
       
-      // Reset ControlNet input source selectors (handled by ControlNetConfig component)
       if (controlNetConfigComponent && controlNetConfigComponent.resetInputSources) {
         controlNetConfigComponent.resetInputSources();
       }
       
-      // Reset IPAdapter input source selector (handled by IPAdapterConfig component)
       if (ipAdapterConfigComponent && ipAdapterConfigComponent.resetInputSource) {
         ipAdapterConfigComponent.resetInputSource();
       }
-      
-      console.log('resetAllInputSourceSelectors: All input source selectors reset');
     } catch (error) {
       console.error('resetAllInputSourceSelectors: Error resetting input source selectors:', error);
     }
