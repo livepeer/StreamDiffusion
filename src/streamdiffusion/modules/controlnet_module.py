@@ -574,6 +574,7 @@ class ControlNetModule(OrchestratorUser):
     def _load_pytorch_controlnet_model(self, model_id: str, conditioning_channels: Optional[int] = None) -> ControlNetModel:
         from pathlib import Path
         import logging
+        import os
         logger = logging.getLogger(__name__)
         
         try:
@@ -581,6 +582,9 @@ class ControlNetModule(OrchestratorUser):
             load_kwargs = {"torch_dtype": self.dtype}
             if conditioning_channels is not None:
                 load_kwargs["conditioning_channels"] = conditioning_channels
+            
+            # Check if offline mode is enabled via environment variables
+            is_offline = os.environ.get("HF_HUB_OFFLINE", "0") == "1" or os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1"
             
             if Path(model_id).exists():
                 model_path = Path(model_id)
@@ -601,6 +605,11 @@ class ControlNetModule(OrchestratorUser):
                     load_kwargs["local_files_only"] = True
                     controlnet = ControlNetModel.from_pretrained(model_id, **load_kwargs)
             else:
+                # Loading from HuggingFace Hub - respect offline mode
+                if is_offline:
+                    load_kwargs["local_files_only"] = True
+                    logger.info(f"ControlNetModule._load_pytorch_controlnet_model: Offline mode enabled, loading '{model_id}' from cache only")
+                
                 if "/" in model_id and model_id.count("/") > 1:
                     parts = model_id.split("/")
                     repo_id = "/".join(parts[:2])
