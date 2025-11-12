@@ -269,7 +269,7 @@
                   max={getMaxValue(paramInfo as any)}
                 />
               </div>
-              {#key `${paramsKey}-${paramName}-${currentParams[paramName]}`}
+              {#key `${paramsKey}-${paramName}`}
               <input
                 class="w-full h-2 cursor-pointer appearance-none rounded-lg bg-gray-200 dark:bg-gray-600"
                 bind:value={currentParams[paramName]}
