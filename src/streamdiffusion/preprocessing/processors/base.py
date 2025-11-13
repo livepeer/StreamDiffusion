@@ -12,14 +12,19 @@ class BasePreprocessor(ABC):
     """
     
     
-    def __init__(self, **kwargs):
+    def __init__(self, normalization_context: str = 'controlnet', **kwargs):
         """
         Initialize the preprocessor
         
         Args:
+            normalization_context: Context for normalization handling.
+                - 'controlnet': Expects/produces [0,1] range for ControlNet conditioning
+                - 'pipeline': Expects/produces [-1,1] range for pipeline image processing
+                - 'latent': Works in latent space (no normalization needed)
             **kwargs: Preprocessor-specific parameters
         """
         self.params = kwargs
+        self.normalization_context = normalization_context
         self.device = kwargs.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         self.dtype = kwargs.get('dtype', torch.float16)
     
@@ -107,7 +112,10 @@ class BasePreprocessor(ABC):
             image_tensor: Input tensor
             
         Returns:
-            Normalized tensor in CHW format, range [0,1], on correct device
+            Tensor in CHW format, on correct device
+            Range: [0,1] if input was [0,255], otherwise preserves input range
+            
+        Note: This preserves [-1,1] tensors (from pipeline) since max() <= 1.0
         """
         # Handle batch dimension
         if image_tensor.dim() == 4:
@@ -121,7 +129,8 @@ class BasePreprocessor(ABC):
         # Ensure correct device and dtype
         image_tensor = image_tensor.to(device=self.device, dtype=self.dtype)
         
-        # Normalize to [0,1] range if needed
+        # Normalize to [0,1] range only if tensor is in [0,255] uint8 range
+        # Preserves [-1,1] and [0,1] ranges (max <= 1.0)
         if image_tensor.max() > 1.0:
             image_tensor = image_tensor / 255.0
         
@@ -281,15 +290,16 @@ class PipelineAwareProcessor(BasePreprocessor):
     # Class attribute to mark processors as requiring sync processing
     requires_sync_processing = True
     
-    def __init__(self, pipeline_ref: Any, **kwargs):
+    def __init__(self, pipeline_ref: Any, normalization_context: str = 'controlnet', **kwargs):
         """
         Initialize pipeline-aware functionality
         
         Args:
             pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
+            normalization_context: Context for normalization handling
             **kwargs: Additional parameters passed to base class
         """
         if pipeline_ref is None:
             raise ValueError(f"{self.__class__.__name__} requires a pipeline_ref")
-        super().__init__(**kwargs)
+        super().__init__(normalization_context=normalization_context, **kwargs)
         self.pipeline_ref = pipeline_ref 

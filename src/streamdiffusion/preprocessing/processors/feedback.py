@@ -42,6 +42,7 @@ class FeedbackPreprocessor(PipelineAwareProcessor):
     
     def __init__(self, 
                  pipeline_ref: Any,
+                 normalization_context: str = 'controlnet',
                  image_resolution: int = 512,
                  feedback_strength: float = 0.5,
                  **kwargs):
@@ -50,12 +51,14 @@ class FeedbackPreprocessor(PipelineAwareProcessor):
         
         Args:
             pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
+            normalization_context: Context for normalization handling
             image_resolution: Output image resolution
             feedback_strength: Strength of feedback blend (0.0 = pure input, 1.0 = pure feedback, 0.5 = 50/50)
             **kwargs: Additional parameters passed to BasePreprocessor
         """
         super().__init__(
             pipeline_ref=pipeline_ref,
+            normalization_context=normalization_context,
             image_resolution=image_resolution,
             feedback_strength=feedback_strength,
             **kwargs
@@ -88,15 +91,25 @@ class FeedbackPreprocessor(PipelineAwareProcessor):
             if prev_output_tensor.dim() == 4:
                 prev_output_tensor = prev_output_tensor[0]  # Remove batch dimension
             
-            # CRITICAL FIX: Convert from [-1, 1] (VAE output) to [0, 1] (ControlNet input)
-            prev_output_tensor = (prev_output_tensor / 2.0 + 0.5).clamp(0, 1)
+            # Context-aware normalization handling
+            if self.normalization_context == 'controlnet':
+                # ControlNet context: Convert from [-1, 1] (VAE output) to [0, 1] (ControlNet input)
+                prev_output_tensor = (prev_output_tensor / 2.0 + 0.5).clamp(0, 1)
+            elif self.normalization_context == 'pipeline':
+                # Pipeline context: prev_output is already [-1, 1], but pil_to_tensor produces [0, 1]
+                # So we need to convert input to [-1, 1] to match prev_output
+                # Convert prev_output to [0, 1] for blending in standard image space
+                prev_output_tensor = (prev_output_tensor / 2.0 + 0.5).clamp(0, 1)
+            else:
+                # Unknown context - assume controlnet for backward compatibility
+                prev_output_tensor = (prev_output_tensor / 2.0 + 0.5).clamp(0, 1)
             
             # Convert both to tensors for blending
             prev_output_pil = self.tensor_to_pil(prev_output_tensor)
             input_tensor = self.pil_to_tensor(image).squeeze(0)  # Remove batch dim for blending
             prev_tensor = self.pil_to_tensor(prev_output_pil).squeeze(0)
             
-            # Blend with configurable strength
+            # Blend with configurable strength (both tensors now in [0, 1] range)
             blended_tensor = (1 - self.feedback_strength) * input_tensor + self.feedback_strength * prev_tensor
             
             # Convert back to PIL
@@ -124,13 +137,30 @@ class FeedbackPreprocessor(PipelineAwareProcessor):
             not self._first_frame):
             
             prev_output = self.pipeline_ref.prev_image_result
-            # CRITICAL FIX: Convert from [-1, 1] (VAE output) to [0, 1] (ControlNet input)
-            prev_output = (prev_output / 2.0 + 0.5).clamp(0, 1)
-            
-            # Normalize input tensor to [0, 1] if needed
             input_tensor = tensor
-            if input_tensor.max() > 1.0:
-                input_tensor = input_tensor / 255.0
+            
+            # Context-aware normalization handling
+            if self.normalization_context == 'controlnet':
+                # ControlNet context: prev_output is [-1, 1] from VAE, input is [0, 1]
+                # Convert prev_output from [-1, 1] to [0, 1] to match input
+                prev_output = (prev_output / 2.0 + 0.5).clamp(0, 1)
+                # Normalize input tensor to [0, 1] if needed
+                if input_tensor.max() > 1.0:
+                    input_tensor = input_tensor / 255.0
+            elif self.normalization_context == 'pipeline':
+                # Pipeline context: both prev_output and input_tensor are in [-1, 1] range
+                # - prev_output comes from VAE decode (always [-1, 1])
+                # - input_tensor arrives as [-1, 1] from image_processor.preprocess()
+                # - validate_tensor_input() preserves [-1, 1] since max() <= 1.0
+                # No normalization conversion needed - blend directly in [-1, 1] space
+                pass
+            else:
+                # Unknown context - log warning and assume controlnet behavior for backward compatibility
+                import logging
+                logging.warning(f"FeedbackPreprocessor: Unknown normalization_context '{self.normalization_context}', using controlnet behavior")
+                prev_output = (prev_output / 2.0 + 0.5).clamp(0, 1)
+                if input_tensor.max() > 1.0:
+                    input_tensor = input_tensor / 255.0
             
             # Ensure both tensors have same format for blending
             if prev_output.dim() == 4 and prev_output.shape[0] == 1:

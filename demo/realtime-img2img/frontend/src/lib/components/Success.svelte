@@ -3,7 +3,6 @@
 
   let timeout = 0;
   $: if (message !== '') {
-    console.log('success message', message);
     clearTimeout(timeout);
     timeout = setTimeout(() => {
       message = '';

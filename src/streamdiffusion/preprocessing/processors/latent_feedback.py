@@ -15,8 +15,8 @@ class LatentFeedbackPreprocessor(PipelineAwareProcessor):
     
     Examples:
     - feedback_strength = 0.0: Pure passthrough (input only)
-    - feedback_strength = 0.5: 50/50 blend (default)
-    - feedback_strength = 1.0: Pure feedback (previous latent only)
+    - feedback_strength = 0.15: Default safe blend
+    - feedback_strength = 0.40: Maximum safe feedback (values > 0.4 produce garbage)
     
     The preprocessor accesses the pipeline's prev_latent_result to get the previous latent output.
     For the first frame (when no previous output exists), it falls back to the input latent.
@@ -30,10 +30,10 @@ class LatentFeedbackPreprocessor(PipelineAwareProcessor):
             "parameters": {
                 "feedback_strength": {
                     "type": "float",
-                    "default": 0.5,
+                    "default": 0.15,
                     "range": [0.0, 0.40],
                     "step": 0.01,
-                    "description": "Strength of latent feedback blend (0.0 = pure input, 1.0 = pure feedback)"
+                    "description": "Strength of latent feedback blend (0.0 = pure input, .40 = more feedback)"
                 }
             },
             "use_cases": ["Latent temporal consistency", "Latent space transitions", "Efficient feedback", "Latent preprocessing", "Temporal stability"]
@@ -41,22 +41,25 @@ class LatentFeedbackPreprocessor(PipelineAwareProcessor):
     
     def __init__(self, 
                  pipeline_ref: Any,
-                 feedback_strength: float = 0.5,
+                 normalization_context: str = 'latent',
+                 feedback_strength: float = 0.15,
                  **kwargs):
         """
         Initialize latent feedback preprocessor
         
         Args:
             pipeline_ref: Reference to the StreamDiffusion pipeline instance (required)
-            feedback_strength: Strength of feedback blend (0.0 = pure input, 1.0 = pure feedback, 0.5 = 50/50)
+            normalization_context: Context for normalization handling (latent space doesn't need normalization)
+            feedback_strength: Strength of feedback blend (0.0 = pure input, 0.40 = max safe value, values > 0.4 produce garbage)
             **kwargs: Additional parameters passed to BasePreprocessor
         """
         super().__init__(
             pipeline_ref=pipeline_ref,
+            normalization_context=normalization_context,
             feedback_strength=feedback_strength,
             **kwargs
         )
-        self.feedback_strength = max(0.0, min(1.0, feedback_strength))  # Clamp to [0, 1]
+        self.feedback_strength = max(0.0, min(0.40, feedback_strength))  # Clamp to [0, 0.40] - values > 0.4 produce garbage
         self._first_frame = True
     
     def _get_previous_data(self):

@@ -9,6 +9,9 @@
   export let currentEnabled: boolean = true;
 
   const dispatch = createEventDispatcher();
+  
+  // Track when user initiates a change to prevent reactive sync from interfering
+  let pendingEnabledChange: boolean = false;
 
 
   // Collapsible toggle handled internally for consistency
@@ -85,6 +88,7 @@
   }
 
   async function updateIPAdapterEnabled(enabled: boolean) {
+    pendingEnabledChange = true;
     try {
       const response = await fetch('/api/ipadapter/update-enabled', {
         method: 'POST',
@@ -99,9 +103,18 @@
       if (!response.ok) {
         const result = await response.json();
         console.error('updateIPAdapterEnabled: Failed to update enabled state:', result.detail);
+        // Revert on error
+        currentEnabled = !enabled;
       }
     } catch (error) {
       console.error('updateIPAdapterEnabled: Update failed:', error);
+      // Revert on error
+      currentEnabled = !enabled;
+    } finally {
+      // Wait a bit for state polling to catch up before allowing reactive sync
+      setTimeout(() => {
+        pendingEnabledChange = false;
+      }, 1000);
     }
   }
 
@@ -117,22 +130,12 @@
 
   function handleInputSourceChanged(event: CustomEvent) {
     const { componentType, sourceType, sourceData } = event.detail;
-    console.log('IPAdapterConfig: Input source changed:', event.detail);
-    
-    // The InputSourceSelector handles all input routing
-    // The backend will automatically handle:
-    // - Image mode: uses config image or default demo image
-    // - Webcam mode: uses live camera feed
-    // - Video mode: cycles through video frames
   }
 
   // Store reference to InputSourceSelector component
   let inputSourceSelector: any;
 
-  // Expose reset function for parent components
   export function resetInputSource() {
-    console.log('IPAdapterConfig: resetInputSource called');
-    
     if (inputSourceSelector && inputSourceSelector.resetToDefaults) {
       inputSourceSelector.resetToDefaults();
     }
@@ -145,7 +148,8 @@
   $: if (ipadapterInfo?.weight_type !== undefined) {
     currentWeightType = ipadapterInfo.weight_type;
   }
-  $: if (ipadapterInfo?.enabled !== undefined) {
+  // Only sync enabled state from server if not waiting for a user change to complete
+  $: if (ipadapterInfo?.enabled !== undefined && !pendingEnabledChange) {
     currentEnabled = ipadapterInfo.enabled;
   }
 </script>

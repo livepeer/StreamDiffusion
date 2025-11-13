@@ -47,8 +47,6 @@
         const result = await response.json();
         console.error(`addProcessor: Failed to add processor:`, result.detail);
       } else {
-        console.log(`addProcessor: Successfully added processor`);
-        // Refresh the hook info
         dispatch('refresh');
       }
     } catch (error) {
@@ -66,7 +64,6 @@
         const result = await response.json();
         console.error(`removeProcessor: Failed to remove processor:`, result.detail);
       } else {
-        console.log(`removeProcessor: Successfully removed processor`);
         // Clean up local state
         delete currentProcessors[index];
         delete processorInfos[index];
@@ -102,8 +99,6 @@
         const result = await response.json();
         console.error(`updateProcessorEnabled: Failed to update processor enabled state:`, result.detail);
       } else {
-        console.log(`updateProcessorEnabled: Successfully updated processor enabled state`);
-        
         // Update local state immediately for UI responsiveness
         if (hookInfo && hookInfo.processors && hookInfo.processors[index]) {
           hookInfo.processors[index].enabled = enabled;
@@ -117,13 +112,11 @@
   }
 
   function toggleSkipDiffusion(enabled: boolean) {
-    console.log(`PipelineHooksConfig: Skip diffusion toggle requested:`, enabled);
     dispatch('skipDiffusionChanged', enabled);
   }
 
   function handleProcessorChanged(event: CustomEvent) {
     const { processor_index, processor, processor_info, current_params } = event.detail;
-    console.log(`PipelineHooksConfig: handleProcessorChanged called with:`, event.detail);
     
     currentProcessors[processor_index] = processor;
     processorInfos[processor_index] = processor_info;
@@ -150,24 +143,17 @@
         }
       }
       processorParams[processor_index] = newParams;
-      console.log(`PipelineHooksConfig: Initialized params for processor`, processor_index, ':', newParams);
     }
     
     // Force reactivity by creating new objects
     currentProcessors = { ...currentProcessors };
     processorInfos = { ...processorInfos };
     processorParams = { ...processorParams };
-    
-    console.log(`PipelineHooksConfig: State after change:`, { 
-      processorInfos: Object.keys(processorInfos), 
-      processorParams: Object.keys(processorParams) 
-    });
   }
 
   function handleParametersUpdated(event: CustomEvent) {
     const { processor_index, parameters } = event.detail;
     processorParams[processor_index] = { ...processorParams[processor_index], ...parameters };
-    console.log(`PipelineHooksConfig: Parameters updated:`, { processor_index, parameters });
   }
   
   // Clear processor state when hook info changes (e.g., new YAML uploaded)
@@ -179,11 +165,7 @@
     // Create a signature based on processor names and indices to detect changes
     const currentSignature = hookInfo.processors.map((p: any) => `${p.index}:${p.name}`).join(',');
     
-    // If the signature changed, clear state (including initial load)
     if (currentSignature !== lastHookSignature) {
-      console.log(`PipelineHooksConfig: Hook configuration changed, clearing processor state`);
-      console.log(`PipelineHooksConfig: Old signature:`, lastHookSignature);
-      console.log(`PipelineHooksConfig: New signature:`, currentSignature);
       currentProcessors = {};
       processorInfos = {};
       processorParams = {};
@@ -193,13 +175,11 @@
       hookInfo.processors.forEach((processor: any, index: number) => {
         if (processor.name) {
           currentProcessors[index] = processor.name;
-          console.log(`PipelineHooksConfig: Initialized processor ${index} with name:`, processor.name);
         }
       });
       
       // Force reactivity for processors after all are set
       currentProcessors = { ...currentProcessors };
-      console.log(`PipelineHooksConfig: Final currentProcessors state:`, currentProcessors);
     }
   }
 </script>

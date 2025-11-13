@@ -203,7 +203,6 @@
         });
       }
       
-      // TODO: Fix preprocessor parameter controls - currently disabled due to feedback preprocessor detection issues
       // ControlNet preprocessor parameters - get metadata for proper ranges
       // const preprocessorMetadata = await fetchPreprocessorMetadata();
       // 
@@ -459,7 +458,6 @@
         if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.endsWith('_strength')) {
           await updateControlNetParameter(control, scaledValue);
         } else if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.includes('_preprocessor_')) {
-          // TODO: Re-enable when preprocessor parameter update is fixed
           // await updatePreprocessorParameter(control, scaledValue);
         } else if (control.parameter_name.startsWith('prompt_weight_')) {
           await updatePromptWeightParameter(control, scaledValue);
@@ -600,7 +598,6 @@
       return '/api/controlnet/update-strength';
     }
     
-    // TODO: Re-enable when preprocessor parameter update is fixed
     // Handle ControlNet preprocessor parameters
     // if (parameterName.startsWith('controlnet_') && parameterName.includes('_preprocessor_')) {
     //   return '/api/preprocessors/update-params';
@@ -745,7 +742,6 @@
           if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.endsWith('_strength')) {
             await updateControlNetParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.includes('_preprocessor_')) {
-            // TODO: Re-enable when preprocessor parameter update is fixed
             // await updatePreprocessorParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('prompt_weight_')) {
             await updatePromptWeightParameter(control, control.pendingValue);
@@ -804,7 +800,6 @@
           if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.endsWith('_strength')) {
             await updateControlNetParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('controlnet_') && control.parameter_name.includes('_preprocessor_')) {
-            // TODO: Re-enable when preprocessor parameter update is fixed
             // await updatePreprocessorParameter(control, control.pendingValue);
           } else if (control.parameter_name.startsWith('prompt_weight_')) {
             await updatePromptWeightParameter(control, control.pendingValue);

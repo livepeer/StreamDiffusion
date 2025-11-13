@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, tick } from 'svelte';
   
   // Simple debounce function
   function debounce(func: Function, wait: number) {
@@ -24,11 +24,9 @@
 
   let error = '';
   
-  // Immediate UI update with debounced server update
   const debouncedServerUpdate = debounce(async (updatedParams: { [key: string]: any }) => {
     try {
       error = '';
-      console.log(`ProcessorParams: Updating params for ${processorType} ${processorIndex}:`, updatedParams);
       
       // Use different parameter names based on the endpoint
       let requestBody: any;
@@ -55,19 +53,15 @@
       if (!response.ok) {
         const result = await response.json();
         
-        // Check if this is a "no processors configured" error
         if (result.detail && result.detail.includes('No processors configured')) {
-          // This is expected - processor hasn't been added yet, just show a helpful message
-          console.log(`ProcessorParams: Processor not configured yet - ${result.detail}`);
           error = 'Add a processor first before configuring parameters';
-          return; // Don't throw error, just show message
+          return;
         }
         
         throw new Error(result.detail || 'Failed to update parameters');
       }
 
       const result = await response.json();
-      console.log(`ProcessorParams: Successfully updated parameters:`, result);
 
     } catch (err) {
       console.error(`ProcessorParams: Failed to update parameters:`, err);
@@ -142,11 +136,10 @@
   // Initialize parameters when component mounts or processorInfo changes
   let lastProcessorName = '';
   let initialized = false;
+  let paramsKey = 0; // Key to force re-render when params are loaded
   
   async function initializeParams() {
     if (!processorInfo || !processorInfo.parameters || initialized) return;
-    
-    console.log(`ProcessorParams: Initializing parameters for processor ${processorIndex}...`);
     
     // Always try to fetch current values from server first (config is source of truth)
     let serverParams: { [key: string]: any } = {};
@@ -156,7 +149,6 @@
         const data = await response.json();
         if (data.parameters && Object.keys(data.parameters).length > 0) {
           serverParams = { ...data.parameters };
-          console.log(`ProcessorParams: Loaded current params from server:`, serverParams);
         }
       }
     } catch (err) {
@@ -172,12 +164,10 @@
       // Priority: server value > current value > default value > type default
       if (serverParams[paramName] !== undefined) {
         completeParams[paramName] = serverParams[paramName];
-        console.log(`ProcessorParams: Using server value for ${paramName}:`, serverParams[paramName]);
       } else if (currentParams[paramName] !== undefined) {
         completeParams[paramName] = currentParams[paramName];
       } else if (paramData.default !== undefined) {
         completeParams[paramName] = paramData.default;
-        console.log(`ProcessorParams: Using default value for ${paramName}:`, paramData.default);
       } else {
         // Fallback to type-based defaults
         completeParams[paramName] = getDefaultValue(paramData);
@@ -186,18 +176,16 @@
     
     // Update currentParams completely
     currentParams = { ...completeParams };
-    console.log(`ProcessorParams: Final initialized params:`, currentParams);
+    
+    // Wait for Svelte to process the reactive update, then force re-render
+    await tick();
+    paramsKey++;
     
     initialized = true;
   }
   
   $: {
     if (processorInfo && processorInfo.display_name && processorInfo.display_name !== lastProcessorName) {
-      console.log(`ProcessorParams: processorInfo changed:`, processorInfo);
-      console.log(`ProcessorParams: currentParams:`, currentParams);
-      if (processorInfo.parameters) {
-        console.log(`ProcessorParams: Available parameters:`, Object.keys(processorInfo.parameters));
-      }
       lastProcessorName = processorInfo.display_name;
       initialized = false;
       initializeParams();
@@ -206,7 +194,6 @@
   
   // Also trigger initialization when component is mounted fresh (config upload scenario)
   $: if (processorInfo && processorInfo.parameters && !initialized) {
-    console.log(`ProcessorParams: Fresh initialization triggered for processor ${processorIndex}`);
     initializeParams();
   }
 
@@ -226,6 +213,7 @@
       Processor Parameters
     </h4>
     
+    {#key paramsKey}
     {#each Object.entries(processorInfo.parameters) as [paramName, paramInfo]}
       {#if paramName !== 'device' && paramName !== 'dtype' && paramName !== 'image_width' && paramName !== 'image_height'}
         <div class="parameter-control">
@@ -281,16 +269,18 @@
                   max={getMaxValue(paramInfo as any)}
                 />
               </div>
+              {#key `${paramsKey}-${paramName}`}
               <input
                 class="w-full h-2 cursor-pointer appearance-none rounded-lg bg-gray-200 dark:bg-gray-600"
-                value={parameterValues[paramName] !== undefined ? parameterValues[paramName] : getDisplayValue(paramName, paramInfo as any)}
-                on:input={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
+                bind:value={currentParams[paramName]}
+                on:change={(e) => handleParameterChange(paramName, (paramInfo as any).type === 'int' ? parseInt((e.target as HTMLInputElement).value) : parseFloat((e.target as HTMLInputElement).value))}
                 type="range"
                 id="param-{processorIndex}-{paramName}"
                 min={getMinValue(paramInfo as any)}
                 max={getMaxValue(paramInfo as any)}
                 step={getStepValue(paramInfo as any)}
               />
+              {/key}
             </div>
             
           {:else}
@@ -318,6 +308,7 @@
         </div>
       {/if}
     {/each}
+    {/key}
   </div>
 {:else}
   <div class="text-sm text-gray-500 dark:text-gray-400">

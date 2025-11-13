@@ -32,9 +32,6 @@
   }
 
   async function updateResolution() {
-    console.log('updateResolution: Starting update with selectedWidth:', selectedWidth, 'selectedHeight:', selectedHeight);
-    
-    // Notify parent that this is a user-initiated resolution change
     dispatch('userResolutionChange');
     
     const aspectRatio = selectedWidth / selectedHeight;
@@ -47,7 +44,6 @@
     }
     
     const resolutionString = `${selectedWidth}x${selectedHeight} (${aspectRatioString})`;
-    console.log('updateResolution: Sending resolution string:', resolutionString);
     
     try {
       const response = await fetch('/api/params', {
@@ -60,15 +56,7 @@
         }),
       });
       
-      console.log('updateResolution: API response status:', response.status);
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log('updateResolution: API response result:', result);
-        
-        // State will be updated automatically by the polling mechanism
-        // No need to manually fetch state here to avoid potential double-triggering
-      } else {
+      if (!response.ok) {
         const result = await response.json();
         console.error('updateResolution: Failed to update resolution:', result.detail);
       }

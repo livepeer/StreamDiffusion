@@ -33,7 +33,7 @@ export function snapImage(imageEl: HTMLImageElement, info: IImageInfo) {
         a.download = `lcm_txt_2_img${Date.now()}.png`;
         a.click();
     } catch (err) {
-        console.log(err);
+        console.error('snapImage: Failed to save image with EXIF data:', err);
     }
 }
 

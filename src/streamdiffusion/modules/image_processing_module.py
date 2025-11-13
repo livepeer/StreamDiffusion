@@ -43,7 +43,8 @@ class ImageProcessingModule(OrchestratorUser):
         enabled = proc_config.get('enabled', True)
         
         # Create processor using existing registry (same as ControlNet)
-        processor = get_preprocessor(processor_type, pipeline_ref=getattr(self, '_stream', None))
+        # ImageProcessingModule uses 'pipeline' normalization context
+        processor = get_preprocessor(processor_type, pipeline_ref=getattr(self, '_stream', None), normalization_context='pipeline')
         
         # Apply parameters (same pattern as ControlNet)
         processor_params = proc_config.get('params', {})

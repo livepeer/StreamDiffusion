@@ -251,6 +251,23 @@ async def get_component_source_info(
         # Get source info
         source_info = manager.get_source_info(component, index)
         
+        # Make sure source_data is JSON serializable (remove PIL Image objects)
+        if source_info and 'source_data' in source_info:
+            source_data = source_info['source_data']
+            # If source_data is a PIL Image, just indicate it's present rather than trying to serialize it
+            if hasattr(source_data, '__class__') and source_data.__class__.__name__ == 'Image':
+                source_info['source_data'] = 'image_present'
+            elif isinstance(source_data, str):
+                # Keep strings (file paths) as-is
+                pass
+            else:
+                # For other non-serializable objects, convert to string representation
+                try:
+                    import json
+                    json.dumps(source_data)  # Test if it's serializable
+                except (TypeError, ValueError):
+                    source_info['source_data'] = str(type(source_data).__name__)
+        
         return create_success_response({
             'component': component,
             'index': index,

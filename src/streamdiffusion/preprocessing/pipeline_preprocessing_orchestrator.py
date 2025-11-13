@@ -10,11 +10,14 @@ class PipelinePreprocessingOrchestrator(BaseOrchestrator[torch.Tensor, torch.Ten
     Orchestrates pipeline input preprocessing with parallelization and pipelining.
     
     Handles preprocessing of input tensors before they enter the diffusion pipeline.
-    Accepts only tensors in [0,1] range (processor format) and returns tensors in [0,1] range.
     
-    The wrapper handles conversion:
-    - Pipeline tensors: [-1, 1] range (diffusion convention)
-    - Processor tensors: [0, 1] range (standard image processing)
+    Tensor ranges:
+    - Input: Receives [-1, 1] tensors from image_processor.preprocess()
+    - Processors: Work in [-1, 1] space when normalization_context='pipeline'
+    - Output: Returns [-1, 1] tensors for pipeline processing
+    
+    Note: Processors created with normalization_context='pipeline' expect and preserve
+    [-1, 1] range. No automatic conversion happens in this orchestrator.
     """
     
     def __init__(self, device: str = "cuda", dtype: torch.dtype = torch.float16, max_workers: int = 4, pipeline_ref: Optional[Any] = None):
