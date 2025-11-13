@@ -65,19 +65,20 @@ Feel free to explore each feature by following the provided links to learn more 
 }
 ```
 
-## Livepeer Extensions
+## Daydream Extensions
 
 - **Composable processor pipelines:** `StreamDiffusionWrapper` now accepts `image_preprocessing`, `image_postprocessing`, `latent_preprocessing`, and `latent_postprocessing` configs, letting you chain multiple processors (e.g. `temporal_net_tensorrt`, `latent_feedback`, `realesrgan_trt`) or run them standalone with `skip_diffusion`. Refer to `src/streamdiffusion/preprocessing/processors` and the [schema overview](https://github.com/livepeer/ai-runner/blob/main/docs/streamdiffusion-schema-update.md) for examples.
 - **Prompt and seed blending at runtime:** The wrapper supports weighted prompt lists, seed interpolation, caching, and on-the-fly updates through `update_stream_params`, enabling smooth transitions without reloading models.
-- **ControlNet and IP-Adapter orchestration:** Multiple ControlNets or IP-Adapters can be attached, reconfigured, and TensorRT-accelerated, with TemporalNet v2 setups captured in the YAML files under `configs/`.
-- **TensorRT-first deployment tooling:** Enhanced engine management exposes min/max batch sizes, compile-only flows, an optional TensorRT safety checker, and extras flags so you can `pip install streamdiffusion[tensorrt,controlnet,ipadapter]` to grab only what you need.
+- **TemporalNet ControlNet support:** Built-in configs for TemporalNet v2 (optical-flow driven ControlNet) help keep motion coherent across frames; see `configs/*.yaml` for pairings and tuning guidance.
+- **ControlNet and IP-Adapter orchestration:** Multiple ControlNets or IP-Adapters can be attached, reconfigured, and TensorRT-accelerated, with live updates handled via the wrapper’s parameter updater.
+- **TensorRT-first deployment tooling:** Enhanced engine management supports dynamic engines that span resolution ranges, min/max batch sizing, compile-only flows, an optional TensorRT safety checker, and extras flags so you can `pip install streamdiffusion[tensorrt,controlnet,ipadapter]` to grab only what you need.
 
 ## Installation
 
 ### Step0: clone this repository
 
 ```bash
-git clone https://github.com/livepeer/StreamDiffusion.git
+git clone https://github.com/daydreamlive/StreamDiffusion.git
 ```
 
 ### Step1: Make Environment
@@ -125,13 +126,10 @@ Install StreamDiffusion with the extras you need (omit any extras you do not pla
 
 ```bash
 # Latest (recommended)
-pip install "git+https://github.com/livepeer/StreamDiffusion.git@main#egg=streamdiffusion[tensorrt,controlnet,ipadapter]"
-
-# or the released package
-pip install "streamdiffusion[tensorrt,controlnet,ipadapter]"
+pip install "git+https://github.com/daydreamlive/StreamDiffusion.git@main#egg=streamdiffusion[tensorrt,controlnet,ipadapter]"
 ```
 
-You can install only the extras you need, e.g. `pip install streamdiffusion[tensorrt]` or `pip install streamdiffusion[controlnet]`.
+You can install only the extras you need, e.g. `pip install "git+https://github.com/daydreamlive/StreamDiffusion.git@main#egg=streamdiffusion[tensorrt]"` or `...#egg=streamdiffusion[controlnet]`.
 
 Install TensorRT extension
 
@@ -140,12 +138,6 @@ python -m streamdiffusion.tools.install-tensorrt
 ```
 
 This script installs the TensorRT runtime and plugins we validate with our demos; rerun it whenever CUDA or driver versions change.
-
-(Only for Windows) You may need to install pywin32 additionally if you install the release package with the `tensorrt` extra.
-
-```bash
-pip install --force-reinstall pywin32
-```
 
 #### For Developer
 
@@ -158,7 +150,7 @@ python -m streamdiffusion.tools.install-tensorrt
 ### Docker Installation (TensorRT Ready)
 
 ```bash
-git clone https://github.com/livepeer/StreamDiffusion.git
+git clone https://github.com/daydreamlive/StreamDiffusion.git
 cd StreamDiffusion
 docker build -t stream-diffusion:latest -f Dockerfile .
 docker run --gpus all -it -v $(pwd):/home/ubuntu/streamdiffusion stream-diffusion:latest
