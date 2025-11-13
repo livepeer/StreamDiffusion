@@ -408,6 +408,6 @@ SD-Turbo is also available on [Hugging Face Space](https://huggingface.co/stabil
 
 ## Contributors
 
-<a href="https://github.com/cumulo-autumn/StreamDiffusion/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=cumulo-autumn/StreamDiffusion" />
+<a href="https://github.com/daydreamlive/StreamDiffusion/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=daydreamlive/StreamDiffusion" />
 </a>
