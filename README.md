@@ -67,7 +67,7 @@ Feel free to explore each feature by following the provided links to learn more 
 
 ## Daydream Extensions
 
-- **Composable processor pipelines:** `StreamDiffusionWrapper` now accepts `image_preprocessing`, `image_postprocessing`, `latent_preprocessing`, and `latent_postprocessing` configs, letting you chain multiple processors (e.g. `temporal_net_tensorrt`, `latent_feedback`, `realesrgan_trt`) or run them standalone with `skip_diffusion`. Refer to `src/streamdiffusion/preprocessing/processors` and the [schema overview](https://github.com/livepeer/ai-runner/blob/main/docs/streamdiffusion-schema-update.md) for examples.
+- **Composable processor pipelines:** `StreamDiffusionWrapper` now accepts `image_preprocessing`, `image_postprocessing`, `latent_preprocessing`, and `latent_postprocessing` configs, letting you chain multiple processors (e.g. `latent_feedback`, `realesrgan_trt` upscaler, `blur`, etc) or run them standalone with `skip_diffusion`. Refer to `src/streamdiffusion/preprocessing/processors` for documentation on available processors.
 - **Prompt and seed blending at runtime:** The wrapper supports weighted prompt lists, seed interpolation, caching, and on-the-fly updates through `update_stream_params`, enabling smooth transitions without reloading models.
 - **TemporalNet ControlNet support:** Built-in configs for TemporalNet v2 (optical-flow driven ControlNet) help keep motion coherent across frames; see `configs/*.yaml` for pairings and tuning guidance.
 - **ControlNet and IP-Adapter orchestration:** Multiple ControlNets or IP-Adapters can be attached, reconfigured, and TensorRT-accelerated, with live updates handled via the wrapper’s parameter updater.
