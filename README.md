@@ -67,6 +67,7 @@ Feel free to explore each feature by following the provided links to learn more 
 
 ## Daydream Extensions
 
+- **SDXL Support:** Full Stable Diffusion XL support with automatic detection, dual text encoder handling, optimized `text_embeds`/`time_ids` conditioning with caching, SDXL-specific VAE (`taesdxl`), 2048-dim embeddings, and TensorRT acceleration. Models are automatically configured—simply pass an SDXL model path or Hugging Face ID.
 - **Composable processor pipelines:** `StreamDiffusionWrapper` now accepts `image_preprocessing`, `image_postprocessing`, `latent_preprocessing`, and `latent_postprocessing` configs, letting you chain multiple processors (e.g. `latent_feedback`, `realesrgan_trt` upscaler, `blur`, etc) or run them standalone with `skip_diffusion`. Refer to `src/streamdiffusion/preprocessing/processors` for documentation on available processors.
 - **Prompt and seed blending at runtime:** The wrapper supports weighted prompt lists, seed interpolation, caching, and on-the-fly updates through `update_stream_params`, enabling smooth transitions without reloading models.
 - **ControlNet and IP-Adapter orchestration:** Multiple ControlNets or IP-Adapters can be attached, reconfigured, and TensorRT-accelerated, with live updates handled via the wrapper’s parameter updater.
