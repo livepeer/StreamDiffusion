@@ -41,7 +41,7 @@ def install(cu: Optional[Literal["11", "12"]] = get_cuda_major()):
         )
     if platform.system() == 'Windows' and not is_installed("triton"):
         run_pip(
-            "install triton-windows<3.5"
+            "install triton-windows==3.4.0.post21"
         )
 
 
