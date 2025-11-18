@@ -226,3 +226,6 @@ wandb/
 *.png
 nohup.out
 checkpoint*
+*.md
+*.jsonl
+diffusers/
