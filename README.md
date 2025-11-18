@@ -103,21 +103,38 @@ source .venv/bin/activate
 
 ### Step2: Install PyTorch
 
-Select the appropriate version for your system.
+**Important:** StreamDiffusion depends on `diffusers`, which requires PyTorch ≥ 2.2. For official installation instructions and the latest PyTorch versions, see the [PyTorch Getting Started Guide](https://pytorch.org/get-started/locally/).
 
-CUDA 11.8
+The commands below are **suggested starting points** based on common CUDA configurations. Your mileage may vary—feel free to set up your system however works best for you, as long as you meet the PyTorch ≥ 2.2 requirement.
 
-```bash
-pip3 install torch==2.1.0 torchvision==0.16.0 xformers --index-url https://download.pytorch.org/whl/cu118
-```
-
-CUDA 12.1
+<details>
+<summary><b>CUDA 11.8</b></summary>
 
 ```bash
-pip3 install torch==2.1.0 torchvision==0.16.0 xformers --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.7.1+cu118 torchvision==0.22.0+cu118 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu118
 ```
 
-details: https://pytorch.org/
+</details>
+
+<details>
+<summary><b>CUDA 12.8</b></summary>
+
+```bash
+pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 torchaudio==2.8.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+```
+
+</details>
+
+<details>
+<summary><b>CUDA 12.9</b></summary>
+
+```bash
+pip install torch==2.8.0+cu129 torchvision==0.23.0+cu129 torchaudio==2.8.0+cu129 --index-url https://download.pytorch.org/whl/cu129
+```
+
+</details>
+
+For other CUDA targets or future PyTorch releases, consult https://pytorch.org/get-started/previous-versions/.
 
 ### Step3: Install StreamDiffusion
 
