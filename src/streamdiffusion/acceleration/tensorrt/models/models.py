@@ -21,6 +21,7 @@ import onnx_graphsurgeon as gs
 import torch
 from onnx import shape_inference
 from polygraphy.backend.onnx.loader import fold_constants
+from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 
 
 class Optimizer:
@@ -324,6 +325,7 @@ class NSFWDetector(BaseModel):
 class UNet(BaseModel):
     def __init__(
         self,
+        unet: UNet2DConditionModel,
         fp16=False,
         device="cuda",
         max_batch_size=4,
@@ -338,6 +340,10 @@ class UNet(BaseModel):
         use_ipadapter=False,
         num_image_tokens=4,
         num_ip_layers: int = None,
+        use_cached_attn: bool = True,
+        cache_maxframes: int = 1,
+        min_cache_maxframes: int = 1,
+        max_cache_maxframes: int = 4,
     ):
         super(UNet, self).__init__(
             fp16=fp16,
@@ -347,6 +353,7 @@ class UNet(BaseModel):
             embedding_dim=embedding_dim,
             text_maxlen=text_maxlen,
         )
+        self.unet = unet
         self.unet_dim = unet_dim
         self.name = "UNet"
         self.image_height = image_height
@@ -374,6 +381,14 @@ class UNet(BaseModel):
             self._add_control_inputs()
         else:
             self.control_inputs = {}
+
+        self.use_cached_attn = use_cached_attn
+        self.cache_maxframes = cache_maxframes
+        self.min_cache_maxframes = min_cache_maxframes
+        self.max_cache_maxframes = max_cache_maxframes
+        if self.use_cached_attn:
+            from .utils import get_kvo_cache_info
+            self.kvo_cache_shapes, self.kvo_cache_structure, self.kvo_cache_count = get_kvo_cache_info(self.unet, image_height, image_width)
 
     def get_control(self, image_height: int = 512, image_width: int = 512) -> dict:
         """Generate ControlNet input configurations with dynamic spatial dimensions based on input resolution."""
@@ -455,6 +470,9 @@ class UNet(BaseModel):
         
         return control_inputs
 
+    def get_kvo_cache_names(self, in_out: str):
+        return [f"kvo_cache_{in_out}_{idx}" for idx in range(self.kvo_cache_count)]
+
     def _add_control_inputs(self):
         """Add ControlNet inputs to the model's input/output specifications"""
         if not self.control_inputs:
@@ -478,11 +496,23 @@ class UNet(BaseModel):
                 pass
         if self.use_control and self.control_inputs:
             control_names = sorted(self.control_inputs.keys())
-            return base_names + control_names
+            base_names = base_names + control_names
+        if self.use_cached_attn:
+            base_names = base_names + self.get_kvo_cache_names("in")
         return base_names
 
     def get_output_names(self):
-        return ["latent"]
+        base_names = ["latent"]
+        if self.use_cached_attn:
+            base_names = base_names + self.get_kvo_cache_names("out")
+        return base_names
+
+    def get_kvo_cache_input_profile(self, min_batch, batch_size, max_batch):
+        profiles = []
+        for shape in self.kvo_cache_shapes:
+            profile = [(3, self.min_cache_maxframes, min_batch, shape[0], shape[1]), (3, self.cache_maxframes, batch_size, shape[0], shape[1]), (3, self.max_cache_maxframes, max_batch, shape[0], shape[1])]
+            profiles.append(profile)
+        return profiles
 
     def get_dynamic_axes(self):
         base_axes = {
@@ -509,6 +539,10 @@ class UNet(BaseModel):
                     2: f"H_{spatial_suffix}", 
                     3: f"W_{spatial_suffix}"
                 }
+        if self.use_cached_attn:
+            for i in range(self.kvo_cache_count):
+                base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B"}
+                base_axes[f"kvo_cache_out_{i}"] = {1: "C", 2: "2B"}
         
         return base_axes
 
@@ -602,6 +636,9 @@ class UNet(BaseModel):
                     (batch_size, channels, opt_control_h, opt_control_w),   # opt  
                     (max_batch, channels, max_control_h, max_control_w),    # max
                 ]
+        if self.use_cached_attn:
+            for name, _profile in zip(self.get_kvo_cache_names("in"), self.get_kvo_cache_input_profile(min_batch, batch_size, max_batch)):
+                profile[name] = _profile
         
         return profile
 
@@ -628,6 +665,12 @@ class UNet(BaseModel):
                 control_height = shape_spec["height"]
                 control_width = shape_spec["width"]
                 shape_dict[name] = (2 * batch_size, channels, control_height, control_width)
+
+        if self.use_cached_attn:
+            for in_name, out_name, shape in zip(self.get_kvo_cache_names("in"), self.get_kvo_cache_names("out"), self.get_kvo_cache_shapes):
+                shape_dict[in_name] = (3, self.cache_maxframes, batch_size, shape[0], shape[1])
+                shape_dict[out_name] = (3, self.cache_maxframes, batch_size, shape[0], shape[1])
+
         
         return shape_dict
 
@@ -656,7 +699,8 @@ class UNet(BaseModel):
             torch.randn(2 * export_batch_size, self.text_maxlen, self.embedding_dim, dtype=dtype, device=self.device),
         ]
         
-        
+        if self.use_ipadapter:
+            base_inputs.append(torch.ones(self.num_ip_layers, dtype=torch.float32, device=self.device))
         
         if self.use_control and self.control_inputs:
             control_inputs = []
@@ -682,13 +726,10 @@ class UNet(BaseModel):
                 if len(control_inputs) % 4 == 0:
                     torch.cuda.empty_cache()
             
-            # Append ipadapter_scale if needed
-            if self.use_ipadapter:
-                base_inputs.append(torch.ones(self.num_ip_layers, dtype=torch.float32, device=self.device))
-            return tuple(base_inputs + control_inputs)
+            base_inputs = base_inputs + control_inputs
         
-        if self.use_ipadapter:
-            base_inputs.append(torch.ones(self.num_ip_layers, dtype=torch.float32, device=self.device))
+        if self.use_cached_attn:
+            base_inputs = base_inputs + [torch.randn(3, self.cache_maxframes, 2 * export_batch_size, shape[0], shape[1], dtype=torch.float16).to(self.device) for shape in self.kvo_cache_shapes]
         return tuple(base_inputs)
 
 

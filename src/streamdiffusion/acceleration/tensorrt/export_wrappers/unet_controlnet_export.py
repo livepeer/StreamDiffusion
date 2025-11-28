@@ -116,7 +116,7 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
             unet_kwargs['mid_block_additional_residual'] = adapted_mid_control
         
         try:
-            result = self.unet(**unet_kwargs)
+            result = self.unet(**unet_kwargs)[0]
             return result
         except Exception as e:
             print(f"❌ DEBUG: UNet forward failed: {e}")
@@ -267,7 +267,7 @@ class MultiControlNetUNetExportWrapper(torch.nn.Module):
         if combined_mid_control is not None:
             unet_kwargs['mid_block_additional_residual'] = combined_mid_control
         
-        return self.unet(**unet_kwargs)
+        return self.unet(**unet_kwargs)[0]
 
 
 def create_controlnet_wrapper(unet: UNet2DConditionModel, 

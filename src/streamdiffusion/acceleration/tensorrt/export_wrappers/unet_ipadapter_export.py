@@ -54,6 +54,12 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
     
     def _ensure_processor_dtype_consistency(self):
         """Ensure existing IPAdapter processors have correct dtype for ONNX export"""
+        if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
+            from diffusers.models.attention_processor import AttnProcessor2_0 as AttnProcessor
+            IPProcClass = TRTIPAttnProcessor2_0
+        else:
+            from diffusers.models.attention_processor import AttnProcessor
+            IPProcClass = TRTIPAttnProcessor
         try:
             processors = self.unet.attn_processors
             updated_processors = {}
@@ -74,12 +80,6 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
                     hidden_size = getattr(processor, 'hidden_size', None)
                     cross_attention_dim = getattr(processor, 'cross_attention_dim', None)
                     num_tokens = getattr(processor, 'num_tokens', self.num_image_tokens)
-                    if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
-                        from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor2_0 as AttnProcessor
-                        IPProcClass = TRTIPAttnProcessor2_0
-                    else:
-                        from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor
-                        IPProcClass = TRTIPAttnProcessor
                     proc = IPProcClass(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim, num_tokens=num_tokens)
                     # Copy IP projection weights if present
                     if hasattr(processor, 'to_k_ip') and hasattr(processor, 'to_v_ip') and hasattr(proc, 'to_k_ip'):
@@ -92,8 +92,7 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
                     ip_layer_index += 1
                     updated_processors[name] = proc
                 else:
-                    # Keep standard processors as-is
-                    updated_processors[name] = processor
+                    updated_processors[name] = AttnProcessor()
             
             # Update all processors to ensure consistency
             self.unet.set_attn_processor(updated_processors)
@@ -112,10 +111,10 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         # Import IPAdapter attention processors from installed package
         try:
             if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
-                from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor2_0 as AttnProcessor
+                from diffusers.models.attention_processor import AttnProcessor2_0 as AttnProcessor
                 IPProcClass = TRTIPAttnProcessor2_0
             else:
-                from diffusers_ipadapter.ip_adapter.attention_processor import AttnProcessor
+                from diffusers.models.attention_processor import AttnProcessor
                 IPProcClass = TRTIPAttnProcessor
             
             # Install attention processors with proper configuration
@@ -231,7 +230,7 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
             timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
             return_dict=False
-        )
+        )[0]
 
 
 def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, install_processors: bool = True) -> IPAdapterUNetExportWrapper:

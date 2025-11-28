@@ -51,6 +51,7 @@ class UNet2DConditionModelEngine:
         latent_model_input: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
+        kvo_cache: List[torch.Tensor] = [],
         down_block_additional_residuals: Optional[List[torch.Tensor]] = None,
         mid_block_additional_residual: Optional[torch.Tensor] = None,
         controlnet_conditioning: Optional[Dict[str, List[torch.Tensor]]] = None,
@@ -61,18 +62,25 @@ class UNet2DConditionModelEngine:
         if timestep.dtype != torch.float32:
             timestep = timestep.float()
 
+        kvo_cache_in_shape_dict = {f"kvo_cache_in_{i}": _kvo_cache.shape for i, _kvo_cache in enumerate(kvo_cache)}
+        kvo_cache_out_shape_dict = {f"kvo_cache_out_{i}": _kvo_cache.shape for i, _kvo_cache in enumerate(kvo_cache)}
+        kvo_cache_in_dict = {f"kvo_cache_in_{i}": _kvo_cache for i, _kvo_cache in enumerate(kvo_cache)}
+
         # Prepare base shape and input dictionaries
         shape_dict = {
             "sample": latent_model_input.shape,
             "timestep": timestep.shape,
             "encoder_hidden_states": encoder_hidden_states.shape,
             "latent": latent_model_input.shape,
+            **kvo_cache_in_shape_dict,
+            **kvo_cache_out_shape_dict,
         }
         
         input_dict = {
             "sample": latent_model_input,
             "timestep": timestep,
             "encoder_hidden_states": encoder_hidden_states,
+            **kvo_cache_in_dict,
         }
 
         
@@ -153,11 +161,9 @@ class UNet2DConditionModelEngine:
        
         
         noise_pred = outputs["latent"]
-      
-        
-
-        
-        return UNet2DConditionOutput(sample=noise_pred)
+        kvo_cache_out = [outputs[f"kvo_cache_out_{i}"] for i in range(len(kvo_cache))]
+        print(kvo_cache_out)     
+        return noise_pred, kvo_cache_out
 
     def _add_controlnet_conditioning_dict(self, 
                                         controlnet_conditioning: Dict[str, List[torch.Tensor]], 

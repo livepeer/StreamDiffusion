@@ -41,6 +41,7 @@ class StreamDiffusion:
         normalize_seed_weights: bool = True,
         scheduler: Literal["lcm", "tcd"] = "lcm",
         sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
+        kvo_cache: List[torch.Tensor] = [],
     ) -> None:
         self.device = torch.device(device)
         self.dtype = torch_dtype
@@ -139,6 +140,8 @@ class StreamDiffusion:
         self._cached_batch_size: Optional[int] = None
         self._cached_cfg_type: Optional[str] = None
         self._cached_guidance_scale: Optional[float] = None
+
+        self.kvo_cache = kvo_cache
 
     def _initialize_scheduler(self, scheduler_type: str, sampler_type: str, config):
         """Initialize scheduler based on type and sampler configuration."""
@@ -738,14 +741,15 @@ class StreamDiffusion:
                     if hook_mid_res is not None:
                         extra_kwargs['mid_block_additional_residual'] = hook_mid_res
 
-                    model_pred = self.unet(
+                    model_pred, self.kvo_cache = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
                         unet_kwargs['timestep'],                  # timestep (positional)
                         unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
+                        kvo_cache=self.kvo_cache,
                         **extra_kwargs,
                         # For TRT engines, ensure SDXL cond shapes match engine builds; if engine expects 81 tokens (77+4), append dummy image tokens when none
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
-                    )[0]
+                    )
                 else:
                     # PyTorch UNet expects diffusers-style named arguments. Any processor scaling is handled by IP-Adapter hook
 
@@ -784,13 +788,14 @@ class StreamDiffusion:
             if hook_mid_res is not None:
                 ip_scale_kw['mid_block_additional_residual'] = hook_mid_res
 
-            model_pred = self.unet(
+            model_pred, self.kvo_cache = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
                 encoder_hidden_states=self.prompt_embeds,
+                kvo_cache=self.kvo_cache,
                 return_dict=False,
                 **ip_scale_kw,
-            )[0]
+            )
 
         
 

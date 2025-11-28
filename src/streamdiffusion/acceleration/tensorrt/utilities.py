@@ -607,6 +607,7 @@ def export_onnx(
             input_names=model_data.get_input_names(),
             output_names=model_data.get_output_names(),
             dynamic_axes=model_data.get_dynamic_axes(),
+            dynamo=False,
         )
         
         # Convert to external data format for large models (SDXL)

@@ -104,7 +104,9 @@ class EngineManager:
                        ipadapter_scale: Optional[float] = None,
                        ipadapter_tokens: Optional[int] = None,
                        controlnet_model_id: Optional[str] = None,
-                       is_faceid: Optional[bool] = None) -> Path:
+                       is_faceid: Optional[bool] = None,
+                       use_cached_attn: bool = True
+                       ) -> Path:
         """
         Generate engine path using wrapper.py's current logic.
         
@@ -143,6 +145,9 @@ class EngineManager:
             # Fused Loras - use concise hashed signature to avoid long/invalid paths
             if lora_dict is not None and len(lora_dict) > 0:
                 prefix += f"--lora-{self._lora_signature(lora_dict)}"
+
+            if engine_type == EngineType.UNET:
+                prefix += f"--use_cached_attn-{use_cached_attn}"
             
             prefix += f"--mode-{mode}"
             
