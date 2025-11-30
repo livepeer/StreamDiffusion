@@ -325,7 +325,7 @@ class NSFWDetector(BaseModel):
 class UNet(BaseModel):
     def __init__(
         self,
-        unet: UNet2DConditionModel,
+        unet: UNet2DConditionModel = None,
         fp16=False,
         device="cuda",
         max_batch_size=4,
@@ -386,7 +386,7 @@ class UNet(BaseModel):
         self.cache_maxframes = cache_maxframes
         self.min_cache_maxframes = min_cache_maxframes
         self.max_cache_maxframes = max_cache_maxframes
-        if self.use_cached_attn:
+        if self.use_cached_attn and self.unet is not None:
             from .utils import get_kvo_cache_info
             self.kvo_cache_shapes, self.kvo_cache_structure, self.kvo_cache_count = get_kvo_cache_info(self.unet, image_height, image_width)
 

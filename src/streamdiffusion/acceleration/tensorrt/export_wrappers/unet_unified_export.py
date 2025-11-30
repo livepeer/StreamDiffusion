@@ -23,7 +23,6 @@ class UnifiedExportWrapper(torch.nn.Module):
         self.controlnet_wrapper = None
         self.ipadapter_wrapper = None
         self.unet = unet
-        self.num_controlnet_args = len(control_input_names) if control_input_names else 0
         self.kvo_cache_structure = kvo_cache_structure
         
         # Apply IPAdapter first (installs processors into UNet)
@@ -40,7 +39,7 @@ class UnifiedExportWrapper(torch.nn.Module):
         if use_controlnet and control_input_names:
             controlnet_kwargs = {k: v for k, v in kwargs.items() if k in ['num_controlnets', 'conditioning_scales']}
 
-            self.controlnet_wrapper = create_controlnet_wrapper(self.unet, control_input_names, **controlnet_kwargs)
+            self.controlnet_wrapper = create_controlnet_wrapper(self.unet, control_input_names, kvo_cache_structure, **controlnet_kwargs)
         
     def _basic_unet_forward(self, sample, timestep, encoder_hidden_states, *kvo_cache, **kwargs):
         """Basic UNet forward that passes through all parameters to handle any model type"""
@@ -90,15 +89,11 @@ class UnifiedExportWrapper(torch.nn.Module):
             # assign per-layer scale tensors into processors
             self.ipadapter_wrapper.set_ipadapter_scale(ipadapter_scale)
             # remove it from control args before passing to controlnet wrapper
-            control_args = args[1: self.num_controlnet_args + 1]
-            kvo_cache = args[self.num_controlnet_args + 1:]
-        else:
-            control_args = args[:self.num_controlnet_args]
-            kvo_cache = args[self.num_controlnet_args:]
+            args = args[1:]
 
         if self.controlnet_wrapper:
             # ControlNet wrapper handles the UNet call with all parameters
-            return self.controlnet_wrapper(sample, timestep, encoder_hidden_states, *control_args, **kwargs)
+            return self.controlnet_wrapper(sample, timestep, encoder_hidden_states, *args, **kwargs)
         else:
             # Basic UNet call with all parameters passed through
-            return self._basic_unet_forward(sample, timestep, encoder_hidden_states, *kvo_cache, **kwargs) 
+            return self._basic_unet_forward(sample, timestep, encoder_hidden_states, *args, **kwargs) 
