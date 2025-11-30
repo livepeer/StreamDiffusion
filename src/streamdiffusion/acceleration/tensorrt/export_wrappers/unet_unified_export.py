@@ -91,8 +91,11 @@ class UnifiedExportWrapper(torch.nn.Module):
             self.ipadapter_wrapper.set_ipadapter_scale(ipadapter_scale)
             # remove it from control args before passing to controlnet wrapper
             control_args = args[1: self.num_controlnet_args + 1]
+            kvo_cache = args[self.num_controlnet_args + 1:]
+        else:
+            control_args = args[:self.num_controlnet_args]
+            kvo_cache = args[self.num_controlnet_args:]
 
-        kvo_cache = args[self.num_controlnet_args + 1:]
         if self.controlnet_wrapper:
             # ControlNet wrapper handles the UNet call with all parameters
             return self.controlnet_wrapper(sample, timestep, encoder_hidden_states, *control_args, **kwargs)

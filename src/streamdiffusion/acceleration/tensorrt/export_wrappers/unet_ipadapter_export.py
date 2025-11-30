@@ -185,7 +185,7 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
         scale_vec = ipadapter_scale.to(dtype=torch.float32)
         try:
             import logging
-            logging.getLogger(__name__).debug(f"IPAdapterUNetExportWrapper: scale_vec min={float(scale_vec.min().item())}, max={float(scale_vec.max().item())}")
+            logging.getLogger(__name__).debug(f"IPAdapterUNetExportWrapper: scale_vec min={scale_vec.min()}, max={scale_vec.max()}")
         except Exception:
             pass
         for proc in self._ip_trt_processors:

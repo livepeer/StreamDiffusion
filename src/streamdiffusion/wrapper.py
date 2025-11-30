@@ -118,7 +118,9 @@ class StreamDiffusionWrapper:
         safety_checker_fallback_type: Literal["blank", "previous"] = "previous",
         safety_checker_threshold: float = 0.5,
         use_cached_attn: bool = True,
-        cache_maxframes: int = 1,
+        cache_maxframes: int = 2,
+        min_cache_maxframes: int = 1,
+        max_cache_maxframes: int = 4,
     ):
         """
         Initializes the StreamDiffusionWrapper.
@@ -320,6 +322,8 @@ class StreamDiffusionWrapper:
             compile_engines_only=compile_engines_only,
             use_cached_attn=use_cached_attn,
             cache_maxframes=cache_maxframes,
+            min_cache_maxframes=min_cache_maxframes,
+            max_cache_maxframes=max_cache_maxframes,
         )
 
         # Store skip_diffusion on wrapper for execution flow control
@@ -987,6 +991,8 @@ class StreamDiffusionWrapper:
         compile_engines_only: bool = False,
         use_cached_attn: bool = True,
         cache_maxframes: int = 1,
+        min_cache_maxframes: int = 1,
+        max_cache_maxframes: int = 4,
     ) -> StreamDiffusion:
         """
         Loads the model.
@@ -1581,6 +1587,9 @@ class StreamDiffusionWrapper:
                     image_height=self.height,
                     image_width=self.width,
                     use_cached_attn=use_cached_attn,
+                    cache_maxframes=cache_maxframes,
+                    min_cache_maxframes=min_cache_maxframes,
+                    max_cache_maxframes=max_cache_maxframes,
                 )
 
                 # Use ControlNet wrapper if ControlNet support is enabled
