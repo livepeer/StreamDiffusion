@@ -161,7 +161,10 @@ class UNet2DConditionModelEngine:
        
         
         noise_pred = outputs["latent"]
-        kvo_cache_out = [outputs[f"kvo_cache_out_{i}"] for i in range(len(kvo_cache))]
+        if len(kvo_cache) > 0:
+            kvo_cache_out = [outputs[f"kvo_cache_out_{i}"] for i in range(len(kvo_cache))]
+        else:
+            kvo_cache_out = []
         return noise_pred, kvo_cache_out
 
     def _add_controlnet_conditioning_dict(self, 

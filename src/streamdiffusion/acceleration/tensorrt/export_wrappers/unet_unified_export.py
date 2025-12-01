@@ -44,13 +44,12 @@ class UnifiedExportWrapper(torch.nn.Module):
     def _basic_unet_forward(self, sample, timestep, encoder_hidden_states, *kvo_cache, **kwargs):
         """Basic UNet forward that passes through all parameters to handle any model type"""
         formatted_kvo_cache = []
-        idx = 0
-        for num_layers in self.kvo_cache_structure:
-            block = []
-            for _ in range(num_layers):
-                block.append([kvo_cache[idx]])
-                idx += 1
-            formatted_kvo_cache.append(block)
+        if len(kvo_cache) > 0:
+            kvo_iter = iter(kvo_cache)
+            formatted_kvo_cache = [
+                [[next(kvo_iter)] for _ in range(num_layers)]
+                for num_layers in self.kvo_cache_structure
+            ]
 
         unet_kwargs = {
             'sample': sample,
@@ -60,7 +59,11 @@ class UnifiedExportWrapper(torch.nn.Module):
             'kvo_cache': formatted_kvo_cache,
             **kwargs  # Pass through all additional parameters (SDXL, future model types, etc.)
         }
-        return self.unet(**unet_kwargs)
+        res = self.unet(**unet_kwargs)
+        if len(kvo_cache) > 0:
+            return res
+        else:
+            return res[0]
         
     def forward(self, 
                 sample: torch.Tensor,

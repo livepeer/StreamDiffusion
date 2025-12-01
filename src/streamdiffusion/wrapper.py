@@ -1216,13 +1216,17 @@ class StreamDiffusionWrapper:
                 self.use_lcm_lora = None
                 logger.info(f"use_lcm_lora has been removed from self")
 
-        kvo_cache, kvo_cache_structure = create_kvo_cache(pipe.unet, 
-                                                          batch_size=self.batch_size, 
-                                                          cache_maxframes=cache_maxframes, 
-                                                          height=self.height, 
-                                                          width=self.width, 
-                                                          device=self.device, 
-                                                          dtype=self.dtype)
+        if use_cached_attn:
+            kvo_cache, kvo_cache_structure = create_kvo_cache(pipe.unet, 
+                                                            batch_size=self.batch_size, 
+                                                            cache_maxframes=cache_maxframes, 
+                                                            height=self.height, 
+                                                            width=self.width, 
+                                                            device=self.device, 
+                                                            dtype=self.dtype)
+        else:
+            kvo_cache = []
+            kvo_cache_structure = []
 
 
         stream = StreamDiffusion(
