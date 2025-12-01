@@ -389,6 +389,9 @@ class UNet(BaseModel):
         if self.use_cached_attn and self.unet is not None:
             from .utils import get_kvo_cache_info
             self.kvo_cache_shapes, self.kvo_cache_structure, self.kvo_cache_count = get_kvo_cache_info(self.unet, image_height, image_width)
+            
+            self.min_kvo_cache_shapes, _, _ = get_kvo_cache_info(self.unet, image_height, image_width)
+            self.max_kvo_cache_shapes, _, _ = get_kvo_cache_info(self.unet, image_height, image_width)
 
     def get_control(self, image_height: int = 512, image_width: int = 512) -> dict:
         """Generate ControlNet input configurations with dynamic spatial dimensions based on input resolution."""
@@ -509,8 +512,8 @@ class UNet(BaseModel):
 
     def get_kvo_cache_input_profile(self, min_batch, batch_size, max_batch):
         profiles = []
-        for shape in self.kvo_cache_shapes:
-            profile = [(3, self.min_cache_maxframes, min_batch, shape[0], shape[1]), (3, self.cache_maxframes, batch_size, shape[0], shape[1]), (3, self.max_cache_maxframes, max_batch, shape[0], shape[1])]
+        for min_shape, shape, max_shape in zip(self.min_kvo_cache_shapes, self.kvo_cache_shapes, self.max_kvo_cache_shapes):
+            profile = [(3, self.min_cache_maxframes, min_batch, min_shape[0], min_shape[1]), (3, self.cache_maxframes, batch_size, shape[0], shape[1]), (3, self.max_cache_maxframes, max_batch, max_shape[0], max_shape[1])]
             profiles.append(profile)
         return profiles
 
@@ -540,9 +543,12 @@ class UNet(BaseModel):
                     3: f"W_{spatial_suffix}"
                 }
         if self.use_cached_attn:
-            for i in range(self.kvo_cache_count):
-                base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B"}
-                base_axes[f"kvo_cache_out_{i}"] = {1: "C", 2: "2B"}
+            i = 0
+            for idx, num_layers in enumerate(self.kvo_cache_structure):
+                for _ in range(num_layers):
+                    base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B", 3: f"L_{idx}"}
+                    base_axes[f"kvo_cache_out_{i}"] = {1: "C", 2: "2B", 3: f"L_{idx}"}
+                    i += 1
         
         return base_axes
 
