@@ -230,7 +230,7 @@ class IPAdapterUNetExportWrapper(torch.nn.Module):
             timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
             return_dict=False
-        )[0]
+        )
 
 
 def create_ipadapter_wrapper(unet: UNet2DConditionModel, num_tokens: int = 4, install_processors: bool = True) -> IPAdapterUNetExportWrapper:

@@ -340,7 +340,7 @@ class UNet(BaseModel):
         use_ipadapter=False,
         num_image_tokens=4,
         num_ip_layers: int = None,
-        use_cached_attn: bool = True,
+        use_cached_attn: bool = False,
         cache_maxframes: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,

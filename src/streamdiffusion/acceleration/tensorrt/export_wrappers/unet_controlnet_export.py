@@ -15,7 +15,6 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         self.control_input_names = control_input_names
         self.kvo_cache_structure = kvo_cache_structure
         
-        # Identify control inputs and their order
         self.control_names = []
         for name in control_input_names:
             if "input_control" in name or "output_control" in name or "middle_control" in name:
@@ -47,33 +46,19 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
     def forward(self, sample, timestep, encoder_hidden_states, *args, **kwargs):
         """Forward pass that organizes control inputs and calls UNet"""
         
-        # Robustly split arguments
-        # args contains [control_inputs..., kvo_cache...]
-        
-        if len(args) < self.num_controlnet_args:
-            # This should not happen if models.py logic is correct
-            # Fallback: assume args are just kvo_cache if too few
-            print(f"⚠️ Warning: ControlNetUNetExportWrapper received {len(args)} args, expected at least {self.num_controlnet_args} control args.")
-            control_args = []
-            kvo_cache = args
-        else:
-            control_args = args[:self.num_controlnet_args]
-            kvo_cache = args[self.num_controlnet_args:]
+        control_args = args[:self.num_controlnet_args]
+        kvo_cache = args[self.num_controlnet_args:]
         
         down_block_controls = []
         mid_block_control = None
         
         if control_args:
-            # Map control_args to names
-            # control_args corresponds 1:1 with self.control_names
-            
             all_control_tensors = []
             middle_tensor = None
             
             for tensor, name in zip(control_args, self.control_names):
                 if "input_control" in name:
-                    # Check if it's the middle block control
-                    if "middle" in name: # "input_control_middle"
+                    if "middle" in name:
                         middle_tensor = tensor
                     else:
                         all_control_tensors.append(tensor)
@@ -116,6 +101,10 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
         if down_block_controls:
             # Adapt control tensor shapes for SDXL if needed
             adapted_controls = self._adapt_control_tensors(down_block_controls, sample)
+
+            # Control tensors are now generated in the correct order to match UNet's down_block_res_samples
+            # For SDXL: [88x88, 88x88, 88x88, 44x44, 44x44, 44x44, 22x22, 22x22, 22x22]
+            # This directly aligns with UNet's: [initial_sample] + [block0_residuals] + [block1_residuals] + [block2_residuals]
             unet_kwargs['down_block_additional_residuals'] = adapted_controls
         
         if mid_block_control is not None:
@@ -229,7 +218,6 @@ class MultiControlNetUNetExportWrapper(torch.nn.Module):
         self.conditioning_scales = conditioning_scales or [1.0] * num_controlnets
         self.kvo_cache_structure = kvo_cache_structure
         
-        # Identify control inputs and their order
         self.control_names = []
         for name in control_input_names:
             if "input_control" in name or "output_control" in name or "middle_control" in name:
@@ -263,8 +251,6 @@ class MultiControlNetUNetExportWrapper(torch.nn.Module):
             if not cn_controls:
                 continue
             
-            # This part assumes structure of controls within a single net
-            # Needs to be robust like single controlnet wrapper
             num_down = len(cn_controls) - 1
             down_controls = cn_controls[:num_down]
             mid_control = cn_controls[num_down] if num_down < len(cn_controls) else None
@@ -333,4 +319,4 @@ def organize_control_tensors(control_tensors: List[torch.Tensor],
         elif "middle_control" in name:
             organized['middle'].append(tensor)
     
-    return organized
+    return organized 

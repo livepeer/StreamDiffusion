@@ -105,7 +105,7 @@ class EngineManager:
                        ipadapter_tokens: Optional[int] = None,
                        controlnet_model_id: Optional[str] = None,
                        is_faceid: Optional[bool] = None,
-                       use_cached_attn: bool = True
+                       use_cached_attn: bool = False
                        ) -> Path:
         """
         Generate engine path using wrapper.py's current logic.

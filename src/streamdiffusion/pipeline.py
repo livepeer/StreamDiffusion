@@ -1140,7 +1140,7 @@ class StreamDiffusion:
                 self.sub_timesteps_tensor,
                 encoder_hidden_states=self.prompt_embeds,
                 return_dict=False,
-            )[0]
+            )
             
         x_0_pred_out = (
             x_t_latent - self.beta_prod_t_sqrt * model_pred
