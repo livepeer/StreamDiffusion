@@ -118,7 +118,7 @@ class StreamDiffusionWrapper:
         safety_checker_fallback_type: Literal["blank", "previous"] = "previous",
         safety_checker_threshold: float = 0.5,
         use_cached_attn: bool = True,
-        cache_maxframes: int = 2,
+        cache_maxframes: int = 1,
         cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
@@ -549,6 +549,8 @@ class StreamDiffusionWrapper:
         latent_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
         use_safety_checker: Optional[bool] = None,
         safety_checker_threshold: Optional[float] = None,
+        cache_maxframes: Optional[int] = None,
+        cache_interval: Optional[int] = None,
     ) -> None:
         """
         Update streaming parameters efficiently in a single call.
@@ -615,6 +617,8 @@ class StreamDiffusionWrapper:
             image_postprocessing_config=image_postprocessing_config,
             latent_preprocessing_config=latent_preprocessing_config,
             latent_postprocessing_config=latent_postprocessing_config,
+            cache_maxframes=cache_maxframes,
+            cache_interval=cache_interval,
         )
         if use_safety_checker is not None:
             self.use_safety_checker = use_safety_checker and (self._acceleration == "tensorrt")
@@ -1252,6 +1256,7 @@ class StreamDiffusionWrapper:
             sampler=sampler,
             kvo_cache=kvo_cache,
             cache_interval=cache_interval,
+            cache_maxframes=cache_maxframes,
         )
 
         

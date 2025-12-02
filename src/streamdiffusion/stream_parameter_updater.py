@@ -254,6 +254,8 @@ class StreamParameterUpdater(OrchestratorUser):
         image_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
         latent_preprocessing_config: Optional[List[Dict[str, Any]]] = None,
         latent_postprocessing_config: Optional[List[Dict[str, Any]]] = None,
+        cache_maxframes: Optional[int] = None,
+        cache_interval: Optional[int] = None,
     ) -> None:
         """Update streaming parameters efficiently in a single call."""
 
@@ -360,6 +362,34 @@ class StreamParameterUpdater(OrchestratorUser):
             if latent_postprocessing_config is not None:
                 logger.info(f"update_stream_params: Updating latent postprocessing configuration")
                 self._update_hook_config('latent_postprocessing', latent_postprocessing_config)
+
+            if self.stream.kvo_cache:
+                if cache_interval is not None:
+                    self.stream.cache_interval = cache_interval
+                    logger.info(f"update_stream_params: Cache interval set to {cache_interval}")
+
+                if cache_maxframes is not None:
+                    old_cache_maxframes = self.stream.cache_maxframes
+                    self.stream.cache_maxframes = cache_maxframes
+                    if old_cache_maxframes != cache_maxframes:
+                        for i, cache_tensor in enumerate(self.stream.kvo_cache):
+                            current_shape = cache_tensor.shape
+                            new_shape = (current_shape[0], cache_maxframes, current_shape[2], current_shape[3], current_shape[4])
+                            new_cache_tensor = torch.zeros(
+                                new_shape,
+                                dtype=cache_tensor.dtype,
+                                device=cache_tensor.device
+                            )
+                    
+                            if cache_maxframes > old_cache_maxframes:
+                                new_cache_tensor[:, :old_cache_maxframes] = cache_tensor
+                            else:
+                                new_cache_tensor[:, :] = cache_tensor[:, -cache_maxframes:]
+                            
+                            self.stream.kvo_cache[i] = new_cache_tensor
+                        logger.info(f"update_stream_params: Cache maxframes updated from {old_cache_maxframes} to {cache_maxframes}, kvo_cache tensors resized")
+                    else:
+                        logger.info(f"update_stream_params: Cache maxframes set to {cache_maxframes}")
 
     @torch.no_grad()
     def update_prompt_weights(

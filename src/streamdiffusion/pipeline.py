@@ -43,6 +43,7 @@ class StreamDiffusion:
         sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
         kvo_cache: List[torch.Tensor] = [],
         cache_interval: int = 1,
+        cache_maxframes: int = 1,
     ) -> None:
         self.device = torch.device(device)
         self.dtype = torch_dtype
@@ -144,6 +145,7 @@ class StreamDiffusion:
 
         self.kvo_cache = kvo_cache
         self.cache_interval = cache_interval
+        self.cache_maxframes = cache_maxframes
         self.frame_idx = 0
 
     def _initialize_scheduler(self, scheduler_type: str, sampler_type: str, config):
