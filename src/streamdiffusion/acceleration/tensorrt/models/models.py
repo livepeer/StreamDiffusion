@@ -543,11 +543,10 @@ class UNet(BaseModel):
                     3: f"W_{spatial_suffix}"
                 }
         if self.use_cached_attn:
-            i = 0
-            for idx in range(self.kvo_cache_count):
-                    base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B", 3: f"L_{idx}"}
-                    base_axes[f"kvo_cache_out_{i}"] = {1: "C", 2: "2B", 3: f"L_{idx}"}
-                    i += 1
+            # hardcoded resolution for now due to VRAM limitations
+            for i in range(self.kvo_cache_count):
+                base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B"}
+                base_axes[f"kvo_cache_out_{i}"] = {1: "C", 2: "2B"}
         
         return base_axes
 
