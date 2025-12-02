@@ -513,7 +513,7 @@ class UNet(BaseModel):
     def get_kvo_cache_input_profile(self, min_batch, batch_size, max_batch):
         profiles = []
         for min_shape, shape, max_shape in zip(self.min_kvo_cache_shapes, self.kvo_cache_shapes, self.max_kvo_cache_shapes):
-            profile = [(3, self.min_cache_maxframes, min_batch, min_shape[0], min_shape[1]), (3, self.cache_maxframes, batch_size, shape[0], shape[1]), (3, self.max_cache_maxframes, max_batch, max_shape[0], max_shape[1])]
+            profile = [(2, self.min_cache_maxframes, min_batch, min_shape[0], min_shape[1]), (2, self.cache_maxframes, batch_size, shape[0], shape[1]), (2, self.max_cache_maxframes, max_batch, max_shape[0], max_shape[1])]
             profiles.append(profile)
         return profiles
 
@@ -546,7 +546,7 @@ class UNet(BaseModel):
             # hardcoded resolution for now due to VRAM limitations
             for i in range(self.kvo_cache_count):
                 base_axes[f"kvo_cache_in_{i}"] = {1: "C", 2: "2B"}
-                base_axes[f"kvo_cache_out_{i}"] = {1: "C", 2: "2B"}
+                base_axes[f"kvo_cache_out_{i}"] = {1: "2B"}
         
         return base_axes
 
@@ -672,9 +672,8 @@ class UNet(BaseModel):
 
         if self.use_cached_attn:
             for in_name, out_name, shape in zip(self.get_kvo_cache_names("in"), self.get_kvo_cache_names("out"), self.get_kvo_cache_shapes):
-                shape_dict[in_name] = (3, self.cache_maxframes, batch_size, shape[0], shape[1])
-                shape_dict[out_name] = (3, self.cache_maxframes, batch_size, shape[0], shape[1])
-
+                shape_dict[in_name] = (2, self.cache_maxframes, batch_size, shape[0], shape[1])
+                shape_dict[out_name] = (2, batch_size, shape[0], shape[1])
         
         return shape_dict
 
@@ -733,7 +732,7 @@ class UNet(BaseModel):
             base_inputs = base_inputs + control_inputs
         
         if self.use_cached_attn:
-            base_inputs = base_inputs + [torch.randn(3, self.cache_maxframes, 2 * export_batch_size, shape[0], shape[1], dtype=torch.float16).to(self.device) for shape in self.kvo_cache_shapes]
+            base_inputs = base_inputs + [torch.randn(2, self.cache_maxframes, 2 * export_batch_size, shape[0], shape[1], dtype=torch.float16).to(self.device) for shape in self.kvo_cache_shapes]
         return tuple(base_inputs)
 
 

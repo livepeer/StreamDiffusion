@@ -119,6 +119,7 @@ class StreamDiffusionWrapper:
         safety_checker_threshold: float = 0.5,
         use_cached_attn: bool = True,
         cache_maxframes: int = 2,
+        cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
     ):
@@ -237,6 +238,8 @@ class StreamDiffusionWrapper:
             Whether to use cached attention or not, by default True.
         cache_maxframes : int, optional
             The maximum number of frames to cache, by default 1.
+        cache_interval : int, optional
+            The interval to cache the frames, by default 1.
         """
         if compile_engines_only:
             logger.info("compile_engines_only is True, will only compile engines and not load the model")
@@ -322,6 +325,7 @@ class StreamDiffusionWrapper:
             compile_engines_only=compile_engines_only,
             use_cached_attn=use_cached_attn,
             cache_maxframes=cache_maxframes,
+            cache_interval=cache_interval,
             min_cache_maxframes=min_cache_maxframes,
             max_cache_maxframes=max_cache_maxframes,
         )
@@ -991,6 +995,7 @@ class StreamDiffusionWrapper:
         compile_engines_only: bool = False,
         use_cached_attn: bool = True,
         cache_maxframes: int = 1,
+        cache_interval: int = 1,
         min_cache_maxframes: int = 1,
         max_cache_maxframes: int = 4,
     ) -> StreamDiffusion:
@@ -1246,6 +1251,7 @@ class StreamDiffusionWrapper:
             scheduler=scheduler,
             sampler=sampler,
             kvo_cache=kvo_cache,
+            cache_interval=cache_interval,
         )
 
         
@@ -1619,7 +1625,7 @@ class StreamDiffusionWrapper:
                     processors = stream.unet.attn_processors
                     for name, processor in processors.items():
                         if isinstance(processor, AttnProcessor2_0):
-                            processor = CachedSTAttnProcessor2_0()
+                            processor = CachedSTAttnProcessor2_0(name=name)
                             processors[name] = processor
                     stream.unet.set_attn_processor(processors)
 

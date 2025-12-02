@@ -1,80 +1,19 @@
 from typing import Optional
-from collections import deque
 
 import torch
 import torch.nn.functional as F
 
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
-
-from .utils import get_nn_feats, random_bipartite_soft_matching
     
 class CachedSTAttnProcessor2_0:
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
     """
 
-    def __init__(self, name=None, use_feature_injection=False,
-                 feature_injection_strength=0.8, 
-                 feature_similarity_threshold=0.98,
-                 interval=1, 
-                 max_frames=4, 
-                 use_tome_cache=True, 
-                 tome_metric="keys", 
-                 use_grid=False, 
-                 tome_ratio=0.5):
+    def __init__(self):
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
-        self.name = name
-        self.use_feature_injection = use_feature_injection
-        self.fi_strength = feature_injection_strength
-        self.threshold = feature_similarity_threshold
-        self.frame_id = 0
-        self.interval = interval
-        self.max_frames = max_frames
-        self.cached_key = deque(maxlen=max_frames)
-        self.cached_value = deque(maxlen=max_frames)
-        self.cached_output = deque(maxlen=max_frames)
-        self.use_tome_cache = use_tome_cache
-        self.tome_metric = tome_metric
-        self.use_grid = use_grid
-        self.tome_ratio = tome_ratio
-    
-    def _tome_step_kvout(self, keys, values, outputs):
-        if len(self.cached_value) == 1:
-            keys = torch.cat(list(self.cached_key) + [keys], dim=1)
-            values = torch.cat(list(self.cached_value) + [values], dim=1)
-            outputs = torch.cat(list(self.cached_output) + [outputs], dim=1)
-            m_kv_out, _, _= random_bipartite_soft_matching(metric=eval(self.tome_metric), use_grid=self.use_grid, ratio=self.tome_ratio)
-            compact_keys, compact_values, compact_outputs = m_kv_out(keys, values, outputs)
-            self.cached_key.append(compact_keys)
-            self.cached_value.append(compact_values)
-            self.cached_output.append(compact_outputs)
-        else:
-            self.cached_key.append(keys)
-            self.cached_value.append(values)
-            self.cached_output.append(outputs)
-
-    def _tome_step_kv(self, keys, values):
-        if len(self.cached_value) == 1:
-            keys = torch.cat(list(self.cached_key) + [keys], dim=1)
-            values = torch.cat(list(self.cached_value) + [values], dim=1)
-            _, m_kv, _= random_bipartite_soft_matching(metric=eval(self.tome_metric), use_grid=self.use_grid, ratio=self.tome_ratio)
-            compact_keys, compact_values = m_kv(keys, values)
-            self.cached_key.append(compact_keys)
-            self.cached_value.append(compact_values)
-        else:
-            self.cached_key.append(keys)
-            self.cached_value.append(values)
-            
-    def _tome_step_out(self, outputs):
-        if len(self.cached_value) == 1:
-            outputs = torch.cat(list(self.cached_output) + [outputs], dim=1)
-            _, _, m_out= random_bipartite_soft_matching(metric=outputs, use_grid=self.use_grid, ratio=self.tome_ratio)
-            compact_outputs = m_out(outputs)
-            self.cached_output.append(compact_outputs)
-        else:
-            self.cached_output.append(outputs)
         
     def __call__(
         self,
@@ -126,9 +65,8 @@ class CachedSTAttnProcessor2_0:
         if kvo_cache is not None:
             cached_key = kvo_cache[0]
             cached_value = kvo_cache[1]
-            cached_output = kvo_cache[2]
         else:
-            cached_key, cached_value, cached_output = None, None, None
+            cached_key, cached_value = None, None
 
         if is_selfattn:
             curr_key = key.clone()
@@ -169,26 +107,7 @@ class CachedSTAttnProcessor2_0:
             hidden_states = hidden_states + residual
 
         hidden_states = hidden_states / attn.rescale_output_factor
-
-        if is_selfattn:
-            curr_output = hidden_states.clone()
-
-            if self.use_feature_injection and ("up_blocks.0" in self.name or "up_blocks.1" in self.name or 'mid_block' in self.name):
-                if cached_output is not None:
-                    cached_output_reshaped = cached_output.transpose(0, 1).contiguous().flatten(1, 2)
-                    nn_hidden_states = get_nn_feats(hidden_states, cached_output_reshaped, threshold=self.threshold)
-                    hidden_states = hidden_states * (1-self.fi_strength) + self.fi_strength * nn_hidden_states
-
-        if is_selfattn:
-            if self.max_frames == 1:
-                cached_key = curr_key.unsqueeze(0)
-                cached_value = curr_value.unsqueeze(0)
-                cached_output = curr_output.unsqueeze(0)
-            else:
-                cached_key = torch.cat([cached_key[1:], curr_key.unsqueeze(0)], dim=0)
-                cached_value = torch.cat([cached_value[1:], curr_value.unsqueeze(0)], dim=0)
-                cached_output = torch.cat([cached_output[1:], curr_output.unsqueeze(0)], dim=0)
             
-            kvo_cache = torch.stack([cached_key, cached_value, cached_output], dim=0)
+        kvo_cache = torch.stack([curr_key, curr_value], dim=0)
                 
         return hidden_states, kvo_cache

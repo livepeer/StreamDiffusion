@@ -42,6 +42,7 @@ class StreamDiffusion:
         scheduler: Literal["lcm", "tcd"] = "lcm",
         sampler: Literal["simple", "sgm uniform", "normal", "ddim", "beta", "karras"] = "normal",
         kvo_cache: List[torch.Tensor] = [],
+        cache_interval: int = 1,
     ) -> None:
         self.device = torch.device(device)
         self.dtype = torch_dtype
@@ -142,6 +143,8 @@ class StreamDiffusion:
         self._cached_guidance_scale: Optional[float] = None
 
         self.kvo_cache = kvo_cache
+        self.cache_interval = cache_interval
+        self.frame_idx = 0
 
     def _initialize_scheduler(self, scheduler_type: str, sampler_type: str, config):
         """Initialize scheduler based on type and sampler configuration."""
@@ -741,7 +744,7 @@ class StreamDiffusion:
                     if hook_mid_res is not None:
                         extra_kwargs['mid_block_additional_residual'] = hook_mid_res
 
-                    model_pred, self.kvo_cache = self.unet(
+                    model_pred, kvo_cache_out = self.unet(
                         unet_kwargs['sample'],                    # latent_model_input (positional)
                         unet_kwargs['timestep'],                  # timestep (positional)
                         unet_kwargs['encoder_hidden_states'],     # encoder_hidden_states (positional)
@@ -750,6 +753,7 @@ class StreamDiffusion:
                         # For TRT engines, ensure SDXL cond shapes match engine builds; if engine expects 81 tokens (77+4), append dummy image tokens when none
                         **added_cond_kwargs                       # SDXL conditioning as kwargs
                     )
+                    self.update_kvo_cache(kvo_cache_out)
                 else:
                     # PyTorch UNet expects diffusers-style named arguments. Any processor scaling is handled by IP-Adapter hook
 
@@ -788,7 +792,7 @@ class StreamDiffusion:
             if hook_mid_res is not None:
                 ip_scale_kw['mid_block_additional_residual'] = hook_mid_res
 
-            model_pred, self.kvo_cache = self.unet(
+            model_pred, kvo_cache_out = self.unet(
                 x_t_latent_plus_uc,
                 t_list,
                 encoder_hidden_states=self.prompt_embeds,
@@ -796,8 +800,7 @@ class StreamDiffusion:
                 return_dict=False,
                 **ip_scale_kw,
             )
-
-        
+            self.update_kvo_cache(kvo_cache_out)
 
         if self.guidance_scale > 1.0 and (self.cfg_type == "initialize"):
             noise_pred_text = model_pred[1:]
@@ -854,6 +857,19 @@ class StreamDiffusion:
             denoised_batch = self.scheduler_step_batch(model_pred, x_t_latent, idx)
 
         return denoised_batch, model_pred
+
+    def update_kvo_cache(self, kvo_cache_out: List[torch.Tensor]) -> None:
+        if not self.kvo_cache:
+            return
+
+        self.frame_idx += 1
+        if self.frame_idx % self.cache_interval != 0:
+            return
+
+        for i, new_kv in enumerate(kvo_cache_out):
+            if self.kvo_cache[i].shape[1] > 1:
+                self.kvo_cache[i] = torch.roll(self.kvo_cache[i], shifts=-1, dims=1)
+            self.kvo_cache[i][:, -1] = new_kv.detach()
 
     def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
         image_tensors = image_tensors.to(
