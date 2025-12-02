@@ -3,6 +3,7 @@ from diffusers import UNet2DConditionModel
 from typing import Optional, List
 from .unet_controlnet_export import create_controlnet_wrapper
 from .unet_ipadapter_export import create_ipadapter_wrapper
+from ..models.utils import convert_list_to_structure
 
 class UnifiedExportWrapper(torch.nn.Module):
     """
@@ -45,11 +46,7 @@ class UnifiedExportWrapper(torch.nn.Module):
         """Basic UNet forward that passes through all parameters to handle any model type"""
         formatted_kvo_cache = []
         if len(kvo_cache) > 0:
-            kvo_iter = iter(kvo_cache)
-            formatted_kvo_cache = [
-                [[next(kvo_iter)] for _ in range(num_layers)]
-                for num_layers in self.kvo_cache_structure
-            ]
+            formatted_kvo_cache = convert_list_to_structure(kvo_cache, self.kvo_cache_structure)
 
         unet_kwargs = {
             'sample': sample,

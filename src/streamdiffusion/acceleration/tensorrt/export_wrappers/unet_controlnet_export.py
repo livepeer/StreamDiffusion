@@ -3,6 +3,7 @@
 import torch
 from typing import List, Optional, Dict, Any
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
+from ..models.utils import convert_list_to_structure
 
 
 class ControlNetUNetExportWrapper(torch.nn.Module):
@@ -98,26 +99,9 @@ class ControlNetUNetExportWrapper(torch.nn.Module):
                     mid_block_control = None
         
         formatted_kvo_cache = []
-        idx = 0
-        
-        # Safety check for KVO cache
-        expected_cache_tensors = sum(self.kvo_cache_structure)
-        if len(kvo_cache) < expected_cache_tensors:
-             # If we don't have enough cache tensors, fill with None or dummy
-             # This prevents IndexError, though engine building might fail later if cache is required
-             pass
+        if len(kvo_cache) > 0:
+            formatted_kvo_cache = convert_list_to_structure(kvo_cache, self.kvo_cache_structure)
 
-        for num_layers in self.kvo_cache_structure:
-            block = []
-            for _ in range(num_layers):
-                if idx < len(kvo_cache):
-                    block.append([kvo_cache[idx]])
-                else:
-                    # Should ideally not happen if inputs are correct
-                    block.append(None) 
-                idx += 1
-            formatted_kvo_cache.append(block)
-        
         unet_kwargs = {
             'sample': sample,
             'timestep': timestep,
@@ -298,16 +282,8 @@ class MultiControlNetUNetExportWrapper(torch.nn.Module):
                     combined_mid_control += scaled_mid
         
         formatted_kvo_cache = []
-        idx = 0
-        for num_layers in self.kvo_cache_structure:
-            block = []
-            for _ in range(num_layers):
-                if idx < len(kvo_cache):
-                    block.append([kvo_cache[idx]])
-                else:
-                    block.append(None)
-                idx += 1
-            formatted_kvo_cache.append(block)
+        if len(kvo_cache) > 0:
+            formatted_kvo_cache = convert_list_to_structure(kvo_cache, self.kvo_cache_structure)
 
         unet_kwargs = {
             'sample': sample,
