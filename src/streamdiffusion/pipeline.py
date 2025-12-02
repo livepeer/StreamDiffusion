@@ -869,7 +869,7 @@ class StreamDiffusion:
         for i, new_kv in enumerate(kvo_cache_out):
             if self.kvo_cache[i].shape[1] > 1:
                 self.kvo_cache[i] = torch.roll(self.kvo_cache[i], shifts=-1, dims=1)
-            self.kvo_cache[i][:, -1] = new_kv.detach()
+            self.kvo_cache[i][:, -1] = new_kv.squeeze(1)
 
     def encode_image(self, image_tensors: torch.Tensor) -> torch.Tensor:
         image_tensors = image_tensors.to(

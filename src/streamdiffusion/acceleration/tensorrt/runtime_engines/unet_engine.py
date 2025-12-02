@@ -63,7 +63,7 @@ class UNet2DConditionModelEngine:
             timestep = timestep.float()
 
         kvo_cache_in_shape_dict = {f"kvo_cache_in_{i}": _kvo_cache.shape for i, _kvo_cache in enumerate(kvo_cache)}
-        kvo_cache_out_shape_dict = {f"kvo_cache_out_{i}": _kvo_cache.shape for i, _kvo_cache in enumerate(kvo_cache)}
+        kvo_cache_out_shape_dict = {f"kvo_cache_out_{i}": (*_kvo_cache.shape[:1], 1, *_kvo_cache.shape[2:]) for i, _kvo_cache in enumerate(kvo_cache)}
         kvo_cache_in_dict = {f"kvo_cache_in_{i}": _kvo_cache for i, _kvo_cache in enumerate(kvo_cache)}
 
         # Prepare base shape and input dictionaries

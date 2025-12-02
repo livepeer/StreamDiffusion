@@ -1625,7 +1625,7 @@ class StreamDiffusionWrapper:
                     processors = stream.unet.attn_processors
                     for name, processor in processors.items():
                         if isinstance(processor, AttnProcessor2_0):
-                            processor = CachedSTAttnProcessor2_0(name=name)
+                            processor = CachedSTAttnProcessor2_0()
                             processors[name] = processor
                     stream.unet.set_attn_processor(processors)
 
