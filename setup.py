@@ -59,6 +59,7 @@ _deps = [
     "onnx==1.18.0",
     "onnxruntime==1.22.0",
     "onnxruntime-gpu==1.22.0",
+    "polygraphy==0.49.24",
     "protobuf==4.25.3",
     "colored==2.2.4",
     "pywin32==306;sys_platform == 'win32'",

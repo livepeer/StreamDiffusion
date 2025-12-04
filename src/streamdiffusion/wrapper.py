@@ -10,7 +10,6 @@ from diffusers import AutoencoderTiny, StableDiffusionPipeline, StableDiffusionX
 from .pipeline import StreamDiffusion
 from .model_detection import detect_model
 from .image_utils import postprocess_image
-from .acceleration.tensorrt.models.utils import create_kvo_cache
 
 import logging
 logger = logging.getLogger(__name__)
@@ -1220,18 +1219,19 @@ class StreamDiffusionWrapper:
                     logger.info(f"LCM LoRA {lcm_lora} already present in lora_dict with scale {lora_dict[lcm_lora]}")
             else:
                 logger.info(f"LCM LoRA will not be loaded because use_lcm_lora is {self.use_lcm_lora} and sd_turbo is {self.sd_turbo}")
-                
+
                 # Remove use_lcm_lora from self
                 self.use_lcm_lora = None
                 logger.info(f"use_lcm_lora has been removed from self")
 
         if use_cached_attn:
-            kvo_cache, kvo_cache_structure = create_kvo_cache(pipe.unet, 
-                                                            batch_size=self.batch_size, 
-                                                            cache_maxframes=cache_maxframes, 
-                                                            height=self.height, 
-                                                            width=self.width, 
-                                                            device=self.device, 
+            from streamdiffusion.acceleration.tensorrt.models.utils import create_kvo_cache
+            kvo_cache, kvo_cache_structure = create_kvo_cache(pipe.unet,
+                                                            batch_size=self.batch_size,
+                                                            cache_maxframes=cache_maxframes,
+                                                            height=self.height,
+                                                            width=self.width,
+                                                            device=self.device,
                                                             dtype=self.dtype)
         else:
             kvo_cache = []
