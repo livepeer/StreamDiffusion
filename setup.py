@@ -49,7 +49,7 @@ if any(cmd in sys.argv for cmd in ("install", "develop")):
 _deps = [
     f"cuda-python{get_cuda_constraint()}",
     "xformers==0.0.30",
-    "diffusers @ git+https://github.com/varshith15/diffusers.git@b8774195fe28d7e6e6844f2e9960fc0d97e9c52e",
+    "diffusers @ git+https://github.com/varshith15/diffusers.git@3e3b72f557e91546894340edabc845e894f00922",
     "transformers==4.56.0",
     "accelerate==1.10.0",
     "huggingface_hub==0.35.0",
