@@ -86,6 +86,11 @@ def run_python(command: str, env: Dict[str, str] = None) -> str:
 def run_pip(command: str, env: Dict[str, str] = None) -> str:
     # Ensure pip is available - needed for uv-managed venvs which don't include pip by default
     if not is_installed("pip"):
+        if not is_installed("ensurepip"):
+            raise RuntimeError(
+                "Neither pip nor ensurepip is available. "
+                "Install pip manually: uv pip install pip (or apt install python3-venv)"
+            )
         print("pip not found, bootstrapping via ensurepip...")
         run_python("-m ensurepip", env)
     return run_python(f"-m pip {command}", env)
