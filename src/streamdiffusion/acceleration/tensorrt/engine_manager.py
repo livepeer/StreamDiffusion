@@ -221,6 +221,13 @@ class EngineManager:
         
         Moves compilation blocks from wrapper.py lines 1200-1252, 1254-1283, 1285-1313.
         """
+        if 'engine_build_options' not in kwargs:
+            kwargs['engine_build_options'] = {}
+             
+        if 'timing_cache' not in kwargs['engine_build_options']:
+            timing_cache_path = self.engine_dir / "timing_cache"
+            kwargs['engine_build_options']['timing_cache'] = str(timing_cache_path)
+
         if not engine_path.exists():
             # Get the appropriate compile function for this engine type
             config = self._configs[engine_type]

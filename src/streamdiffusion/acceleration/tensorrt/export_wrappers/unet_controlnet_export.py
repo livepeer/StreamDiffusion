@@ -289,7 +289,6 @@ class MultiControlNetUNetExportWrapper(torch.nn.Module):
             return res
         else:
             return res[0]
-        return res
 
 
 def create_controlnet_wrapper(unet: UNet2DConditionModel, 

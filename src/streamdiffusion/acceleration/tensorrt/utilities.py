@@ -19,6 +19,7 @@
 #
 
 import gc
+import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
@@ -249,10 +250,14 @@ class Engine:
         if not enable_all_tactics:
             config_kwargs["tactic_sources"] = []
 
+        load_timing_cache = timing_cache
+        if isinstance(timing_cache, (str, Path)) and not os.path.exists(timing_cache):
+            load_timing_cache = None
+
         engine = engine_from_network(
             network_from_onnx_path(onnx_path, flags=[trt.OnnxParserFlag.NATIVE_INSTANCENORM]),
             config=CreateConfig(
-                fp16=fp16, refittable=enable_refit, profiles=[p], load_timing_cache=timing_cache, **config_kwargs
+                fp16=fp16, refittable=enable_refit, profiles=[p], load_timing_cache=load_timing_cache, **config_kwargs
             ),
             save_timing_cache=timing_cache,
         )
@@ -498,6 +503,7 @@ def build_engine(
     build_dynamic_shape: bool = False,
     build_all_tactics: bool = False,
     build_enable_refit: bool = False,
+    timing_cache: str = None,
 ):
     _, free_mem, _ = cudart.cudaMemGetInfo()
     GiB = 2**30
@@ -520,6 +526,7 @@ def build_engine(
         input_profile=input_profile,
         enable_refit=build_enable_refit,
         enable_all_tactics=build_all_tactics,
+        timing_cache=timing_cache,
         workspace_size=max_workspace_size,
     )
 

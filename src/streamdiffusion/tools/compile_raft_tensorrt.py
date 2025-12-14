@@ -87,6 +87,7 @@ def export_raft_to_onnx(
                 opset_version=17,
                 export_params=True,
                 dynamic_axes=dynamic_axes,
+                dynamo=False,
             )
         
         del raft_model
