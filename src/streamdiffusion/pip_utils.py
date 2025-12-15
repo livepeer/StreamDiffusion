@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from typing import Dict, Literal, Optional
@@ -10,6 +11,7 @@ from packaging.version import Version
 
 python = sys.executable
 index_url = os.environ.get("INDEX_URL", "")
+uv = shutil.which("uv")
 
 
 def _check_torch_installed():
@@ -84,7 +86,26 @@ def run_python(command: str, env: Dict[str, str] = None) -> str:
 
 
 def run_pip(command: str, env: Dict[str, str] = None) -> str:
-    # Ensure pip is available - needed for uv-managed venvs which don't include pip by default
+    if uv:
+        # Use uv pip - much faster and doesn't require pip to be installed
+        # Explicitly target the current Python interpreter to match pip behavior
+        run_kwargs = {
+            "args": f'"{uv}" pip --python "{python}" {command}',
+            "shell": True,
+            "env": os.environ if env is None else env,
+            "encoding": "utf8",
+            "errors": "ignore",
+        }
+        print(run_kwargs["args"])
+        result = subprocess.run(**run_kwargs)
+
+        if result.returncode != 0:
+            print(f"Error running uv pip command: {command}", file=sys.stderr)
+            raise RuntimeError(f"Error running uv pip command: {command}")
+
+        return result.stdout or ""
+
+    # Fallback: ensure pip is available - needed for uv-managed venvs which don't include pip by default
     if not is_installed("pip"):
         if not is_installed("ensurepip"):
             raise RuntimeError(
