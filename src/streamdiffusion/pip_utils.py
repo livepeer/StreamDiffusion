@@ -11,7 +11,9 @@ from packaging.version import Version
 
 python = sys.executable
 index_url = os.environ.get("INDEX_URL", "")
-uv = shutil.which("uv")
+# Only use uv pip if there's an active virtual environment
+# This ensures uv pip will target the correct environment
+uv = shutil.which("uv") if os.environ.get("VIRTUAL_ENV") else None
 
 
 def _check_torch_installed():
@@ -88,9 +90,9 @@ def run_python(command: str, env: Dict[str, str] = None) -> str:
 def run_pip(command: str, env: Dict[str, str] = None) -> str:
     if uv:
         # Use uv pip - much faster and doesn't require pip to be installed
-        # Explicitly target the current Python interpreter to match pip behavior
+        # uv pip automatically uses the active virtual environment
         run_kwargs = {
-            "args": f'"{uv}" pip --python "{python}" {command}',
+            "args": f'"{uv}" pip {command}',
             "shell": True,
             "env": os.environ if env is None else env,
             "encoding": "utf8",
