@@ -11,15 +11,13 @@ from packaging.version import Version
 
 python = sys.executable
 index_url = os.environ.get("INDEX_URL", "")
-# Only use uv pip if there's an active virtual environment
-# This ensures uv pip will target the correct environment
-uv = shutil.which("uv") if os.environ.get("VIRTUAL_ENV") else None
+uv = shutil.which("uv")
 
 
 def _check_torch_installed():
     try:
         import torch
-        import torchvision
+        import torchvision  # type: ignore
     except Exception:
         msg = (
             "Missing required pre-installed packages: torch, torchvision\n"
@@ -33,7 +31,7 @@ def _check_torch_installed():
         raise RuntimeError("Detected CPU-only PyTorch. Install CUDA-enabled torch/vision/audio before installing this package.")
 
 
-def get_cuda_version() -> str:
+def get_cuda_version() -> str | None:
     _check_torch_installed()
 
     import torch
@@ -67,7 +65,7 @@ def is_installed(package: str) -> bool:
     return spec is not None
 
 
-def run_python(command: str, env: Dict[str, str] = None) -> str:
+def run_python(command: str, env: Dict[str, str] | None = None) -> str:
     run_kwargs = {
         "args": f"\"{python}\" {command}",
         "shell": True,
@@ -87,10 +85,11 @@ def run_python(command: str, env: Dict[str, str] = None) -> str:
     return result.stdout or ""
 
 
-def run_pip(command: str, env: Dict[str, str] = None) -> str:
-    if uv:
-        # Use uv pip - much faster and doesn't require pip to be installed
-        # uv pip automatically uses the active virtual environment
+def run_pip(command: str, env: Dict[str, str] | None = None) -> str:
+    # Only use uv pip if there's an active virtual environment.
+    # uv pip is much faster and doesn't require pip to be installed.
+    has_venv = os.environ.get("VIRTUAL_ENV") is not None
+    if uv and has_venv:
         run_kwargs = {
             "args": f'"{uv}" pip {command}',
             "shell": True,
@@ -107,7 +106,7 @@ def run_pip(command: str, env: Dict[str, str] = None) -> str:
 
         return result.stdout or ""
 
-    # Fallback: ensure pip is available - needed for uv-managed venvs which don't include pip by default
+    # Fallback: ensure pip is available - needed for some venvs which don't include pip by default
     if not is_installed("pip"):
         if not is_installed("ensurepip"):
             raise RuntimeError(
