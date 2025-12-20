@@ -837,6 +837,8 @@ class StreamParameterUpdater(OrchestratorUser):
         self.stream.t_list = t_index_list
         self.stream.denoising_steps_num = len(self.stream.t_list)
 
+        old_batch_size = self.stream.batch_size
+        
         if self.stream.use_denoising_batch:
             self.stream.batch_size = self.stream.denoising_steps_num * self.stream.frame_bff_size
             if self.stream.cfg_type == "initialize":
@@ -874,6 +876,26 @@ class StreamParameterUpdater(OrchestratorUser):
 
         self.stream.stock_noise = torch.zeros_like(self.stream.init_noise)
         self.stream.prompt_embeds = self.stream.prompt_embeds[0].repeat(self.stream.batch_size, 1, 1)
+
+        # Resize kvo_cache tensors if batch size changed
+        if self.stream.kvo_cache and old_batch_size != self.stream.batch_size:
+            logger.info(f"_recalculate_timestep_dependent_params: Resizing kvo_cache tensors from batch_size {old_batch_size} to {self.stream.batch_size}")
+            for i, cache_tensor in enumerate(self.stream.kvo_cache):
+                # KVO cache shape: (2, cache_maxframes, batch_size, seq_length, hidden_dim)
+                current_shape = cache_tensor.shape
+                new_shape = (current_shape[0], current_shape[1], self.stream.batch_size, current_shape[3], current_shape[4])
+                new_cache_tensor = torch.zeros(
+                    new_shape,
+                    dtype=cache_tensor.dtype,
+                    device=cache_tensor.device
+                )
+                
+                # Copy over as much data as possible from old cache
+                min_batch = min(old_batch_size, self.stream.batch_size)
+                new_cache_tensor[:, :, :min_batch, :, :] = cache_tensor[:, :, :min_batch, :, :]
+                
+                self.stream.kvo_cache[i] = new_cache_tensor
+            logger.info(f"_recalculate_timestep_dependent_params: KVO cache tensors resized to new batch_size {self.stream.batch_size}")
 
         # Update timestep-dependent calculations (shared with value-only path)
         self._update_timestep_calculations()
