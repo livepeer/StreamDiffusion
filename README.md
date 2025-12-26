@@ -1,3 +1,6 @@
+> [!WARNING]
+> **This repository has been archived.** Active development continues at [daydreamlive/StreamDiffusion](https://github.com/daydreamlive/StreamDiffusion).
+
 # StreamDiffusion
 
 [English](./README.md) | [日本語](./README-ja.md) | [한국어](./README-ko.md)
