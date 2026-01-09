@@ -46,6 +46,7 @@ class EngineBuilder:
         force_engine_build: bool = False,
         force_onnx_export: bool = False,
         force_onnx_optimize: bool = False,
+        timing_cache: str = None,
     ):
         if not force_onnx_export and os.path.exists(onnx_path):
             print(f"Found cached model: {onnx_path}")
@@ -89,6 +90,7 @@ class EngineBuilder:
                 build_dynamic_shape=build_dynamic_shape,
                 build_all_tactics=build_all_tactics,
                 build_enable_refit=build_enable_refit,
+                timing_cache=timing_cache,
             )
         for file in os.listdir(os.path.dirname(engine_path)):
             if file.endswith('.engine'):
